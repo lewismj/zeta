@@ -1,5 +1,8 @@
 from __future__ import annotations
 from typing import Any
+
+from attr.validators import is_callable
+
 from zeta.types import SExpression, Environment, Lambda, Symbol, MacroEnvironment, _substitute
 from zeta.errors import ZetaArityError, ZetaTypeError, ZetaError, ZetaInvalidSymbol
 from zeta.packages import import_module
@@ -335,9 +338,24 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
             raise ThrowException(tag, val)
 
         if head == Symbol("apply"):
-            fn = evaluate(tail[0], env, macros)
-            args = evaluate(tail[1], env, macros)
-            return fn(args, env)
+            fn_expr = tail[0]
+            args_expr = tail[1]
+
+            # Evaluate fn_expr to see if it's a symbol or a lambda
+            fn_or_symbol = evaluate(fn_expr, env, macros)
+
+            # Resolve symbol to actual lambda or callable
+            fn = env.lookup(fn_or_symbol) if isinstance(fn_or_symbol, Symbol) else fn_or_symbol
+            args = evaluate(args_expr, env, macros)  # must evaluate to a list
+
+            if isinstance(fn, Lambda):
+                arg_values = list(args)
+                return evaluate([fn] + arg_values, env, macros)
+            elif callable(fn):
+                return fn(env, args)
+            else:
+                raise ZetaTypeError(f"Cannot apply non-function {fn}")
+
 
         # Evaluate Lambda or Symbol head
         if isinstance(head, Symbol):

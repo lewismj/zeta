@@ -142,16 +142,19 @@ def cons(env: Environment, expr: list[Any]) -> list[Any]:
 def car(env: Environment, expr: list[Any]) -> Any:
     if len(expr) != 1:
         raise ZetaArityError("car requires exactly 1 argument")
-    if not expr[0]:
+    xs = expr[0]
+    if xs is Nil or not xs:
         return Nil
-    return expr[0][0]
+    return xs[0]
 
 def cdr(env: Environment, expr: list[Any]) -> Any:
     if len(expr) != 1:
         raise ZetaArityError("cdr requires exactly 1 argument")
-    if not expr[0]:
+    xs = expr[0]
+    if xs is Nil or not xs:
         return Nil
-    return expr[0][1:] if len(expr[0]) > 1 else []
+    return xs[1:] if len(xs) > 1 else Nil
+
 
 def list_builtin(env: Environment, expr: list[Any]) -> list[Any]:
     return list(expr)
@@ -168,7 +171,19 @@ def apply(env: Environment, expr: list[Any]) -> Any:
         raise ZetaTypeError("Second argument to apply must be iterable")
     return func(env, list(args))
 
-
+def join(env: Environment, expr: list[Any]) -> list[Any]:
+    """
+    Concatenate multiple lists.
+    Nil is treated as the empty list.
+    """
+    result = []
+    for item in expr:
+        if item is Nil:
+            continue
+        if not isinstance(item, list):
+            raise ZetaTypeError(f"join expects list arguments, got {type(item).__name__}")
+        result.extend(item)
+    return result
 
 # -------------------------------
 # Registration
@@ -196,7 +211,8 @@ def register(env: Environment):
         Symbol('list'): list_builtin,
         Symbol('apply'): apply,
         Symbol('nil?'): is_nil,
-        Symbol('symbol?'): is_symbol
+        Symbol('symbol?'): is_symbol,
+        Symbol('join'): join
     })
     env.define(Symbol("#t"), Symbol("#t"))
     env.define(Symbol("#f"), Symbol("#f"))
