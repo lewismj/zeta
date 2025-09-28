@@ -27,49 +27,101 @@ class UQSplice:
 
 
 # ----------------- Loop helpers -----------------
-class DoEval:
+class DoLoopEval:
     def __init__(self, varspecs, end_clause, body):
-        self.varspecs = varspecs       # list of [var, init, step?]
-        self.end_clause = end_clause   # list: [test_expr, exit_exprs...]
-        self.body = body               # list of body expressions
+        self.varspecs = varspecs
+        self.end_clause = end_clause
+        self.body = body
 
     def eval(self, env: Environment, macros: MacroEnvironment):
-        from zeta.types import Symbol
-
         if not self.end_clause:
             raise ZetaError("do requires an end clause")
 
-        # Use a local environment for loop variables only
         local_env = Environment(outer=env)
         steps = []
+
+        # Step 1: define all loop variables first
         for varspec in self.varspecs:
-            var_name, init, *step = varspec + [None] * (3 - len(varspec))
+            var_name, *_ = varspec
             if not isinstance(var_name, Symbol):
                 raise ZetaInvalidSymbol(f"do loop variable must be Symbol, got {var_name}")
-            local_env.define(var_name, evaluate(init, env, macros))
-            if step and step[0] is not None:
-                steps.append((var_name, step[0]))
+            local_env.define(var_name, None)
 
+        # Step 2: initialize loop variables
+        for varspec in self.varspecs:
+            var_name, init, *step_expr = varspec + [None]*(3-len(varspec))
+            local_env.set(var_name, evaluate(init, local_env, macros))
+            if step_expr and step_expr[0] is not None:
+                steps.append((var_name, step_expr[0]))
+
+        # Step 3: unpack end clause
         test_expr, *exit_exprs = self.end_clause
         if not exit_exprs:
             exit_exprs = [None]
 
+        # Step 4: loop
         while True:
             if evaluate(test_expr, local_env, macros):
                 result = None
                 for expr in exit_exprs:
                     if expr is not None:
-                        result = evaluate(expr, env, macros)  # body sees outer env
+                        # **Evaluate exit expressions in local_env** so loop vars exist
+                        result = evaluate(expr, local_env, macros)
                 return result
 
             for expr in self.body:
-                evaluate(expr, env, macros)  # evaluate in outer env
+                evaluate(expr, local_env, macros)
 
             for var, step_expr in steps:
                 local_env.set(var, evaluate(step_expr, local_env, macros))
 
 
-class DotimesEval:
+
+
+
+# class DoLoopEval:
+#     def __init__(self, varspecs, end_clause, body):
+#         self.varspecs = varspecs       # list of [var, init, step?]
+#         self.end_clause = end_clause   # list: [test_expr, exit_exprs...]
+#         self.body = body               # list of body expressions
+#
+#     def eval(self, env: Environment, macros: MacroEnvironment):
+#         from zeta.types import Symbol
+#
+#         if not self.end_clause:
+#             raise ZetaError("do requires an end clause")
+#
+#         # Use a local environment for loop variables only
+#         local_env = Environment(outer=env)
+#         steps = []
+#         for varspec in self.varspecs:
+#             var_name, init, *step = varspec + [None] * (3 - len(varspec))
+#             if not isinstance(var_name, Symbol):
+#                 raise ZetaInvalidSymbol(f"do loop variable must be Symbol, got {var_name}")
+#             local_env.define(var_name, evaluate(init, env, macros))
+#             if step and step[0] is not None:
+#                 steps.append((var_name, step[0]))
+#
+#         test_expr, *exit_exprs = self.end_clause
+#         if not exit_exprs:
+#             exit_exprs = [None]
+#
+#         while True:
+#             if evaluate(test_expr, local_env, macros):
+#                 result = None
+#                 for expr in exit_exprs:
+#                     if expr is not None:
+#                         result = evaluate(expr, env, macros)  # body sees outer env
+#                 return result
+#
+#             for expr in self.body:
+#                 evaluate(expr, env, macros)  # evaluate in outer env
+#
+#             for var, step_expr in steps:
+#                 local_env.set(var, evaluate(step_expr, local_env, macros))
+
+
+class DoTimesLoopEval:
     def __init__(self, varspec, body):
         self.varspec = varspec
         self.body = body
@@ -92,8 +144,7 @@ class DotimesEval:
 
         return last_value
 
-
-class DolistEval:
+class DoListLoopEval:
     def __init__(self, varspec, body):
         self.varspec = varspec
         self.body = body
@@ -107,16 +158,16 @@ class DolistEval:
             raise ZetaTypeError("dolist requires a list")
 
         last_value = None
-        # Only loop variable is local
+        # Loop variable is local
         local_env = Environment(outer=env)
 
         for item in lst_val:
             local_env.define(var_name, item)
             for expr in self.body:
-                last_value = evaluate(expr, env, macros)  # evaluate in outer env
+                # <-- evaluate in local_env so loop variable is visible
+                last_value = evaluate(expr, local_env, macros)
 
         return last_value
-
 
 
 # ----------------- Core evaluation -----------------
@@ -263,11 +314,11 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
 
         # Loop forms
         if head == Symbol("do"):
-            return DoEval(tail[0], tail[1], tail[2:]).eval(env, macros)
+            return DoLoopEval(tail[0], tail[1], tail[2:]).eval(env, macros)
         if head == Symbol("dotimes"):
-            return DotimesEval(tail[0], tail[1:]).eval(env, macros)
+            return DoTimesLoopEval(tail[0], tail[1:]).eval(env, macros)
         if head == Symbol("dolist"):
-            return DolistEval(tail[0], tail[1:]).eval(env, macros)
+            return DoListLoopEval(tail[0], tail[1:]).eval(env, macros)
 
         # Exception handling
         if head == Symbol("condition-case"):

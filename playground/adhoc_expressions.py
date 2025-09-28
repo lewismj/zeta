@@ -42,7 +42,7 @@ programs = [
     ''', 5)
 ]
 
-def run_adhoc():
+def main():
     env = Environment()
     macros = MacroEnvironment()
     register(env)
@@ -59,4 +59,4 @@ def run_adhoc():
 
 
 if __name__ == "__main__":
-    run_adhoc()
+    main()

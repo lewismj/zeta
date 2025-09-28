@@ -3,6 +3,8 @@
 
 from typing import Any, Callable
 
+
 SExpression = Any
 Nil = None
 TransformerFunction = Callable[[list[SExpression], 'Environment'], SExpression]
+

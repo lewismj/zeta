@@ -1,4 +1,4 @@
-
+# 'System' errors.
 class ZetaError(Exception):
     """ Base class for all Zeta errors"""
     pass
@@ -22,11 +22,3 @@ class ZetaArityError(ZetaError):
 
 class ZetaTypeError(ZetaError):
     """ Raised when the types of arguments passed to a function are incorrect"""
-
-# Should be:
-# class LispError(Exception):
-#     """Base class for all Lisp-level errors."""
-#     def __init__(self, tag: str, value: Any = None):
-#         super().__init__(f"LispError(tag={tag}, value={value})")
-#         self.tag = tag
-#         self.value = value
