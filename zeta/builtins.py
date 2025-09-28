@@ -157,6 +157,8 @@ def apply(env: Environment, expr: list[Any]) -> Any:
         raise ZetaTypeError("Second argument to apply must be iterable")
     return func(env, list(args))
 
+
+
 # -------------------------------
 # Registration
 # -------------------------------
@@ -181,5 +183,5 @@ def register(env: Environment):
         Symbol('list'): list_builtin,
         Symbol('apply'): apply,
         Symbol('nil?'): is_nil,
-        Symbol('symbol?'): is_symbol,
+        Symbol('symbol?'): is_symbol
     })
