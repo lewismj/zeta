@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any
 from zeta.types import SExpression, Environment, Lambda, Symbol, MacroEnvironment, _substitute
 from zeta.errors import ZetaArityError, ZetaTypeError, ZetaError, ZetaInvalidSymbol
-
+from zeta.packages import import_module
 
 class ThrowException(Exception):
     """Custom exception for Lisp-style throw/catch non-local exit."""
@@ -81,47 +81,6 @@ class DoLoopEval:
 
 
 
-# class DoLoopEval:
-#     def __init__(self, varspecs, end_clause, body):
-#         self.varspecs = varspecs       # list of [var, init, step?]
-#         self.end_clause = end_clause   # list: [test_expr, exit_exprs...]
-#         self.body = body               # list of body expressions
-#
-#     def eval(self, env: Environment, macros: MacroEnvironment):
-#         from zeta.types import Symbol
-#
-#         if not self.end_clause:
-#             raise ZetaError("do requires an end clause")
-#
-#         # Use a local environment for loop variables only
-#         local_env = Environment(outer=env)
-#         steps = []
-#         for varspec in self.varspecs:
-#             var_name, init, *step = varspec + [None] * (3 - len(varspec))
-#             if not isinstance(var_name, Symbol):
-#                 raise ZetaInvalidSymbol(f"do loop variable must be Symbol, got {var_name}")
-#             local_env.define(var_name, evaluate(init, env, macros))
-#             if step and step[0] is not None:
-#                 steps.append((var_name, step[0]))
-#
-#         test_expr, *exit_exprs = self.end_clause
-#         if not exit_exprs:
-#             exit_exprs = [None]
-#
-#         while True:
-#             if evaluate(test_expr, local_env, macros):
-#                 result = None
-#                 for expr in exit_exprs:
-#                     if expr is not None:
-#                         result = evaluate(expr, env, macros)  # body sees outer env
-#                 return result
-#
-#             for expr in self.body:
-#                 evaluate(expr, env, macros)  # evaluate in outer env
-#
-#             for var, step_expr in steps:
-#                 local_env.set(var, evaluate(step_expr, local_env, macros))
-
 
 class DoTimesLoopEval:
     def __init__(self, varspec, body):
@@ -198,6 +157,36 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
         head, *tail = expr
 
         # Special forms
+        if head == Symbol("import"):
+            """
+            Usage:
+                (import "module_name" as "alias" helpers "helper_module_name")
+            """
+            module_name = tail[0]
+            alias = None
+            helpers_module = None
+
+            i = 1
+            while i < len(tail):
+                key = tail[i]
+                if key == "as":
+                    alias = tail[i + 1]
+                    i += 2
+                elif key == "helpers":
+                    helpers_module = tail[i + 1]
+                    i += 2
+                else:
+                    i += 1
+
+            import_module(env, module_name, alias=alias, register_functions_module=helpers_module)
+            return None
+
+        if head == Symbol("eval"):
+            if len(tail) != 1:
+                raise ZetaArityError("eval expects exactly one argument")
+            expr_to_eval = tail[0]
+            return evaluate(expr_to_eval, env, macros)
+
         if head == Symbol("defmacro"):
             if len(tail) < 2:
                 raise ZetaArityError("defmacro requires a name and parameter list")

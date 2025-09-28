@@ -3,8 +3,10 @@ from typing import Any
 from zeta import Nil
 from zeta.types import Environment, Symbol, TransformerFunction
 from zeta.errors import ZetaTypeError, ZetaArityError
+from zeta.packages import import_module
 
-# -------------------------------
+
+#-----------------------------
 # Equality and basic predicates
 # -------------------------------
 def equals(env: Environment, expr: list[Any]) -> bool:

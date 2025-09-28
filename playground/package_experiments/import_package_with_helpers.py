@@ -100,6 +100,7 @@ def main():
     # Example Lisp code
     examples = [
         "(np:to-list (np:dot (np:array (1 2)) (np:array (3 4))))",  # explicit conversion
+        "(np:array (1 2 3))"
     ]
 
     for code in examples:
