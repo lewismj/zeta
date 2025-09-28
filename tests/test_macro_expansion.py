@@ -1,7 +1,10 @@
 import pytest
 from zeta import SExpression
-from zeta.types import Symbol, Lambda, MacroEnvironment, Environment
-from zeta.errors import ZetaUnboundSymbol, ZetaArityError
+from zeta.types.macro_environment import MacroEnvironment
+from zeta.types.lambda_fn import Lambda
+from zeta.types.environment import Environment
+from zeta.types.symbol import Symbol
+from zeta.types.errors import ZetaArityError
 
 
 # def dummy_eval(expr: SExpression, env: Environment) -> SExpression:
@@ -38,7 +41,7 @@ def dummy_eval(expr: SExpression, env: Environment, macros=None) -> SExpression:
       - Tuples (dotted lists)
       - Literals unchanged
     """
-    from zeta.errors import ZetaUnboundSymbol
+    from zeta.types.errors import ZetaUnboundSymbol
 
     if isinstance(expr, Symbol):
         try:

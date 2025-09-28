@@ -1,9 +1,9 @@
 # main.py
-import numpy as np
 
-from zeta.types import Environment, MacroEnvironment, Symbol
+from zeta.types.macro_environment import MacroEnvironment
+from zeta.types.environment import Environment
 from zeta.eval import evaluate
-from zeta.builtins import register
+from zeta.env_builtin import register
 from zeta.parser import lex, TokenStream
 from zeta.packages import import_module
 

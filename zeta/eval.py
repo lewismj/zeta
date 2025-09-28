@@ -1,12 +1,15 @@
 from __future__ import annotations
 from typing import Any
 
-from attr.validators import is_callable
-
-from zeta.types import SExpression, Environment, Lambda, Symbol, MacroEnvironment, _substitute
-from zeta.errors import ZetaArityError, ZetaTypeError, ZetaError, ZetaInvalidSymbol
+from zeta import SExpression
+from zeta.types.nil import Nil
+from zeta.types.macro_environment import _substitute, MacroEnvironment
+from zeta.types.lambda_fn import Lambda
+from zeta.types.environment import Environment
+from zeta.types.symbol import Symbol
+from zeta.types.errors import ZetaArityError, ZetaTypeError, ZetaError, ZetaInvalidSymbol
 from zeta.packages import import_module
-from zeta import Nil
+
 
 class ThrowException(Exception):
     """Custom exception for Lisp-style throw/catch non-local exit."""
@@ -418,7 +421,7 @@ def apply_callable(fn: Any, args: list[SExpression], env: Environment, macros: M
 
 # ----------------- Quasiquote evaluation -----------------
 def eval_quasiquote(expr, env, macros, depth=1):
-    from zeta.types import Symbol
+    from zeta.types.symbol import Symbol
 
     if isinstance(expr, QQ):
         return [Symbol("quasiquote"), eval_quasiquote(expr.value, env, macros, depth)]

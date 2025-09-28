@@ -1,5 +1,6 @@
-from zeta.errors import ZetaArityError
-from zeta.types import MacroEnvironment, Symbol
+from zeta.types.errors import ZetaArityError
+from zeta.types.macro_environment import MacroEnvironment
+from zeta.types.symbol import Symbol
 
 
 def let_macro(args, env):

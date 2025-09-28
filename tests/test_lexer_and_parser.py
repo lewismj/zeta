@@ -1,7 +1,7 @@
 import pytest
 from hypothesis import given, strategies as st
 
-from zeta import Nil
+from zeta.types.nil import Nil
 from zeta.parser import lex, TokenStream
 
 # Convert nested list to Lisp source string

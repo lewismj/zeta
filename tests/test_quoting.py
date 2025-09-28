@@ -1,5 +1,6 @@
 import pytest
-from zeta.types import Environment, Symbol
+from zeta.types.environment import Environment
+from zeta.types.symbol import Symbol
 from zeta.eval import evaluate
 
 

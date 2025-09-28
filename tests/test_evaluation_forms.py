@@ -1,7 +1,10 @@
 import pytest
-from zeta.types import Environment, MacroEnvironment, Symbol
-from zeta.eval import evaluate, Lambda
-from zeta.errors import ZetaTypeError
+from zeta.types.macro_environment import MacroEnvironment
+from zeta.types.environment import Environment
+from zeta.types.symbol import Symbol
+from zeta.eval import evaluate
+from zeta.types.lambda_fn import Lambda
+from zeta.types.errors import ZetaTypeError
 
 @pytest.fixture
 def env():

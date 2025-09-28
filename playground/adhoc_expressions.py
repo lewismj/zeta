@@ -1,10 +1,11 @@
-from zeta.builtins import register
+from zeta.env_builtin import register
 from zeta.eval import evaluate
-from zeta.parser import lex, TokenStream, Symbol
-from zeta.types import Environment, MacroEnvironment
-from zeta.errors import ZetaArityError
-from zeta import Nil
-
+from zeta.parser import lex, TokenStream
+from zeta.types.symbol import Symbol
+from zeta.types.nil import Nil
+from zeta.types.macro_environment import MacroEnvironment
+from zeta.types.environment import Environment
+from zeta.types.errors import ZetaArityError
 
 programs = [
     ("(define add2 (lambda (a b) (+ a b)))", Nil),

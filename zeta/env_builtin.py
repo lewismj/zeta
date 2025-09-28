@@ -1,8 +1,9 @@
 from __future__ import annotations
 from typing import Any
-from zeta import Nil
-from zeta.types import Environment, Symbol
-from zeta.errors import ZetaTypeError, ZetaArityError
+from zeta.types.nil import Nil
+from zeta.types.environment import Environment
+from zeta.types.symbol import Symbol
+from zeta.types.errors import ZetaTypeError, ZetaArityError
 
 #-----------------------------
 # Equality and basic predicates

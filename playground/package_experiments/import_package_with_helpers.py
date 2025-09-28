@@ -2,12 +2,13 @@ from typing import Callable, Any
 import importlib
 import numpy as np
 
-from zeta.types import Environment, MacroEnvironment, Symbol
+from zeta.types.macro_environment import MacroEnvironment
+from zeta.types.environment import Environment
+from zeta.types.symbol import Symbol
 from zeta.parser import lex
 from zeta.eval import evaluate
-from zeta.builtins import register
+from zeta.env_builtin import register
 from zeta.parser import TokenStream
-from zeta.packages import import_module
 
 
 def import_module1(

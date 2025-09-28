@@ -1,7 +1,8 @@
 import importlib
 import sys
 import pathlib
-from zeta.types import Environment, Symbol
+from zeta.types.environment import Environment
+from zeta.types.symbol import Symbol
 
 CWD = pathlib.Path.cwd()
 ZETA_PACKAGE_PATH = [

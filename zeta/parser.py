@@ -24,9 +24,10 @@
 
 import re
 from typing import Iterator, Callable, Optional
-from zeta.errors import ZetaSyntaxError
-from zeta import SExpression, Nil
-from zeta.types import Symbol
+from zeta.types.errors import ZetaSyntaxError
+from zeta import SExpression
+from zeta.types.nil import Nil
+from zeta.types.symbol import Symbol
 
 ReaderMacroFunction = Callable[['TokenStream'], SExpression]
 

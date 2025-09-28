@@ -1,6 +1,6 @@
 import pytest
 from zeta.parser import lex
-from zeta.types import Symbol
+
 
 # ----------------------------------------
 # 1. Character reader macro tests

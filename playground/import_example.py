@@ -1,6 +1,7 @@
-from zeta.types import Symbol, Environment, MacroEnvironment
+from zeta.types.macro_environment import MacroEnvironment
+from zeta.types.environment import Environment
 from zeta.parser import lex, TokenStream
-from zeta.builtins import register
+from zeta.env_builtin import register
 from zeta.eval import evaluate
 
 

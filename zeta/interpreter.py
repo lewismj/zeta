@@ -1,9 +1,11 @@
 from zeta.parser import lex, TokenStream
 from zeta.eval import evaluate
-from zeta.types import Environment, MacroEnvironment, Symbol
-from zeta.builtins import register
-from zeta.macro_builtins import register as register_macros
-from zeta import Nil
+from zeta.types.nil import Nil
+from zeta.types.macro_environment import MacroEnvironment
+from zeta.types.environment import Environment
+from zeta.env_builtin import register
+from zeta.macro_builtin import register as register_macros
+
 
 class Interpreter:
     """
