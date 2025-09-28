@@ -1,9 +1,10 @@
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 from zeta.types.lambda_fn import Lambda
-from zeta.types.errors import ZetaArityError
+from zeta.types.errors import ZetaArityError, ZetaTypeError
 
-def apply_lambda(fn, args, macros, envaluate_fn):
+
+def apply_lambda(fn, args, macros, evaluate_fn):
     formals = list(fn.formals)
     supplied = list(args)
     remaining_formals = []
@@ -28,4 +29,12 @@ def apply_lambda(fn, args, macros, envaluate_fn):
     if supplied:
         raise ZetaArityError(f"Too many arguments: {supplied}")
 
-    return envaluate_fn(fn.body, local_env, macros)
+    return evaluate_fn(fn.body, local_env, macros)
+
+def apply(head, args, env, macros, evaluate_fn):
+    if isinstance(head, Lambda):
+        return apply_lambda(head, args, macros, evaluate_fn)
+    if callable(head):
+        return head(env, args)
+    else:
+        raise ZetaTypeError(f"Cannot apply non-function {head}")
