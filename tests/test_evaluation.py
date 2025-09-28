@@ -20,6 +20,8 @@ def env():
     env.define(Symbol("/"), lambda _, args: args[0] // args[1] if args[1] != 0 else None)
     env.define(Symbol("x"), 42)
     env.define(Symbol("y"), 100)
+    env.define(Symbol("#t"), Symbol("#t"))
+    env.define(Symbol("#f"), Symbol("#f"))
     return env
 
 # -----------------------------------------------------
@@ -66,10 +68,10 @@ def test_define_and_lookup(env):
     assert evaluate(Symbol("y"), env) == 100
 
 def test_if_expression(env):
-    expr = [Symbol("if"), True, 1, 2]
+    expr = [Symbol("if"), Symbol('#t'), 1, 2]
     assert evaluate(expr, env) == 1
 
-    expr = [Symbol("if"), False, 1, 2]
+    expr = [Symbol("if"), Symbol('#f'), 1, 2]
     assert evaluate(expr, env) == 2
 
 def test_progn_sequencing(env):

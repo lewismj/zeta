@@ -280,14 +280,17 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
         if head == Symbol("if"):
             if len(tail) < 2:
                 raise ZetaArityError("if requires a condition and a then-expression")
+
             cond = evaluate(tail[0], env, macros)
-            is_true = cond != 0 and cond != False and cond != Nil and cond != Symbol("#f")
+            # Lisp truthiness: anything not Nil or #f is true
+            is_true = cond not in (Nil, Symbol("#f"))
+
             if is_true:
                 return evaluate(tail[1], env, macros)
             elif len(tail) > 2:
                 return evaluate(tail[2], env, macros)
             else:
-                return Nil
+                return Symbol("#f")  # default "false" if no else
 
         if head == Symbol("set"):
             if len(tail) != 2:

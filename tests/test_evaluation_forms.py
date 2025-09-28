@@ -21,6 +21,8 @@ def env():
     e.define(Symbol(">"), lambda env, args: args[0] > args[1])
     e.define(Symbol("<"), lambda env, args: args[0] < args[1])
     e.define(Symbol("="), lambda env, args: args[0] == args[1])
+    e.define(Symbol('#t'), Symbol('#t'))
+    e.define(Symbol('#f'), Symbol('#f'))
 
     return e
 
@@ -114,9 +116,9 @@ def test_do_loop(env):
 
 def test_if_else(env):
     # Test 'if' evaluates correct branch
-    expr = [Symbol("if"), True, 1, 2]
+    expr = [Symbol("if"), Symbol('#t'), 1, 2]
     assert evaluate(expr, env) == 1  # condition True -> then branch
-    expr_false = [Symbol("if"), False, 1, 2]
+    expr_false = [Symbol("if"), Symbol('#f'), 1, 2]
     assert evaluate(expr_false, env) == 2  # condition False -> else branch
 
 def test_progn_sequencing(env):

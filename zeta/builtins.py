@@ -7,18 +7,21 @@ from zeta.errors import ZetaTypeError, ZetaArityError
 #-----------------------------
 # Equality and basic predicates
 # -------------------------------
-def equals(env: Environment, expr: list[Any]) -> bool:
+
+def equals(env: Environment, expr: list[Any]):
     if len(expr) <= 1:
-        return True
+        return Symbol("#t")
     first = expr[0]
     for other in expr[1:]:
         if not is_equal(first, other):
-            return False
-    return True
+            return Symbol("#f")
+    return Symbol("#t")
 
 
-def not_equals(env: Environment, expr: list[Any]) -> bool:
-    return not equals(env, expr)
+def not_equals(env: Environment, expr: list[Any]):
+    result = equals(env, expr)
+    return Symbol("#f") if result == Symbol("#t") else Symbol("#t")
+
 
 def is_equal(a, b):
     if a is b:
@@ -26,23 +29,20 @@ def is_equal(a, b):
     if type(a) != type(b):
         return False
 
-    # If both are lists (or SExpressions)
     if isinstance(a, list) and isinstance(b, list):
-        a_list = list(a)
-        b_list = list(b)
-        if len(a_list) != len(b_list):
+        if len(a) != len(b):
             return False
-        return all(is_equal(x, y) for x, y in zip(a_list, b_list))
+        return all(is_equal(x, y) for x, y in zip(a, b))
 
-    # Fallback for other types
     return a == b
 
 def is_nil(env: Environment, expr: list[Any]) -> bool:
-    return len(expr) == 1 and expr[0] is Nil
+    return Symbol("#t") if len(expr) == 1 and expr[0] is Nil else Symbol("#f")
 
 def is_symbol(env: Environment, expr: list[Any]) -> bool:
     from zeta.types import Symbol
-    return len(expr) == 1 and isinstance(expr[0], Symbol)
+    return Symbol("#t") if len(expr) == 1 and isinstance(expr[0], Symbol) else Symbol("#f")
+
 
 # -------------------------------
 # Arithmetic
@@ -93,31 +93,38 @@ def div(env: Environment, expr: list[Any]) -> Any:
 # -------------------------------
 # Comparison
 # -------------------------------
-def lt(env: Environment, expr: list[Any]) -> bool:
-    return all(a < b for a, b in zip(expr, expr[1:]))
+def lt(env, expr: list[Any]):
+    return Symbol("#t") if all(a < b for a, b in zip(expr, expr[1:])) else Symbol("#f")
 
-def lte(env: Environment, expr: list[Any]) -> bool:
-    return all(a <= b for a, b in zip(expr, expr[1:]))
+def lte(env, expr: list[Any]):
+    return Symbol("#t") if all(a <= b for a, b in zip(expr, expr[1:])) else Symbol("#f")
 
-def gt(env: Environment, expr: list[Any]) -> bool:
-    return all(a > b for a, b in zip(expr, expr[1:]))
+def gt(env, expr: list[Any]):
+    return Symbol("#t") if all(a > b for a, b in zip(expr, expr[1:])) else Symbol("#f")
 
-def gte(env: Environment, expr: list[Any]) -> bool:
-    return all(a >= b for a, b in zip(expr, expr[1:]))
+def gte(env, expr: list[Any]):
+    return Symbol("#t") if all(a >= b for a, b in zip(expr, expr[1:])) else Symbol("#f")
 
 # -------------------------------
 # Boolean logic
 # -------------------------------
-def logical_and(env: Environment, expr: list[Any]) -> bool:
-    return all(e != Symbol("#f") and e != Nil for e in expr)
+def logical_and(env, expr: list) -> Symbol:
+    for e in expr:
+        if e in (Nil, Symbol("#f")):
+            return Symbol("#f")
+    return Symbol("#t")
 
-def logical_or(env: Environment, expr: list[Any]) -> bool:
-    return any(e != Symbol("#f") and e != Nil for e in expr)
+def logical_or(env, expr: list) -> Symbol:
+    for e in expr:
+        if e not in (Nil, Symbol("#f")):
+            return Symbol("#t")
+    return Symbol("#f")
 
-def logical_not(env: Environment, expr: list[Any]) -> bool:
+def logical_not(env, expr: list) -> Symbol:
     if len(expr) != 1:
         raise ZetaArityError("not requires exactly 1 argument")
-    return not expr[0]
+    val = expr[0]
+    return Symbol("#f") if val not in (Nil, Symbol("#f")) else Symbol("#t")
 
 # -------------------------------
 # List operations
