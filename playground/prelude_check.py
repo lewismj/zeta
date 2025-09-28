@@ -10,67 +10,67 @@ def main():
     register_macros(macros)
 
     prelude = '''
-    ;; -----------------------
-    ;; List utilities
-    ;; -----------------------
-    
-    (defun tail (xs) (cdr xs))
-        
-    (defun head (xs) (car xs))
-    
-    (defun len (xs)
-        (if (== xs Nil) 
-            0 
-            (+ 1 (len (tail xs)))
-        ))
-    
-    (defun drop (n xs)
-        (if (== n 0)
-            xs
-            (drop (- n 1) (tail xs))
-        ))
-    
-    (defun foldl (f z xs)
-        (if (== xs Nil)
-            z
-            (foldl f (f z (head xs)) (tail xs))
-        ))
-    
-    (defun map (f xs)
-        (if (== xs Nil)
-            Nil
-            (join (list (f (head xs))) (map f (tail xs)))
-        ))
-        
-    
-    (defun apply (f xs)
-        (foldl (lambda (acc x) (f x)) Nil xs)
-    )
-    
-    (defun filter (f xs)
-        (if (== xs Nil)
-            Nil
-            (join (if (f (head xs)) (list (head xs)) Nil) (filter f (tail xs)))
-        ))
-    
-    (defun is_empty (xs)
-        (== xs Nil))
-    
-    (defun is_empty1 (xs)
-        (== (len xs) 0))
-    
-    (defun sort (xs)
-        (if (<= (len xs) 1)
-            xs
-            (let ((pivot (head xs)))
-                (join
-                    (sort (filter (lambda (n) (> pivot n)) xs))
-                    (list pivot)
-                    (sort (filter (lambda (n) (<= pivot n)) (tail xs)))
+            ;; -----------------------
+            ;; List utilities
+            ;; -----------------------
+            
+            (defun tail (xs) (cdr xs))
+                
+            (defun head (xs) (car xs))
+            
+            (defun len (xs)
+                (if (== xs Nil) 
+                    0 
+                    (+ 1 (len (tail xs)))
+                ))
+            
+            (defun drop (n xs)
+                (if (== n 0)
+                    xs
+                    (drop (- n 1) (tail xs))
+                ))
+            
+            (defun foldl (f z xs)
+                (if (== xs Nil)
+                    z
+                    (foldl f (f z (head xs)) (tail xs))
+                ))
+            
+            (defun map (f xs)
+                (if (== xs Nil)
+                    Nil
+                    (join (list (f (head xs))) (map f (tail xs)))
+                ))
+                
+            
+            (defun apply (f xs)
+                (foldl (lambda (acc x) (f x)) Nil xs)
+            )
+            
+            (defun filter (f xs)
+                (if (== xs Nil)
+                    Nil
+                    (join (if (f (head xs)) (list (head xs)) Nil) (filter f (tail xs)))
+                ))
+            
+            (defun is_empty (xs)
+                (== xs Nil))
+            
+            (defun is_empty1 (xs)
+                (== (len xs) 0))
+            
+            (defun sort (xs)
+                (if (<= (len xs) 1)
+                    xs
+                    (let ((pivot (head xs)))
+                        (join
+                            (sort (filter (lambda (n) (> pivot n)) xs))
+                            (list pivot)
+                            (sort (filter (lambda (n) (<= pivot n)) (tail xs)))
+                        )
+                    )
                 )
             )
-        )
-    )
     '''
 
     interp = Interpreter(prelude=prelude)
