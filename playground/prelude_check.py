@@ -1,7 +1,7 @@
 from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.environment import Environment
-from zeta.env_builtin import register
-from zeta.macro_builtin import register as register_macros
+from zeta.builtin.env_builtin import register
+from zeta.builtin.macro_builtin import register as register_macros
 from zeta.interpreter import Interpreter
 
 def main():

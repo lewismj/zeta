@@ -6,7 +6,7 @@ from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 from zeta.parser import lex
 from zeta.eval import evaluate
-from zeta.env_builtin import register
+from zeta.builtin.env_builtin import register
 from zeta.parser import TokenStream
 
 def import_module_package0(env: Environment, module_name: str, alias: str | None = None):

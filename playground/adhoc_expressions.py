@@ -1,4 +1,4 @@
-from zeta.env_builtin import register
+from zeta.builtin.env_builtin import register
 from zeta.eval import evaluate
 from zeta.parser import lex, TokenStream
 from zeta.types.symbol import Symbol
