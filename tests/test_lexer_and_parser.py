@@ -1,5 +1,7 @@
 import pytest
 from hypothesis import given, strategies as st
+
+from zeta import Nil
 from zeta.parser import lex, TokenStream
 
 # Convert nested list to Lisp source string
@@ -46,7 +48,7 @@ def test_lexer_basic(source, expected):
 @pytest.mark.parametrize(
     "source, expected",
     [
-        ("nil", None),
+        ("nil", Nil),
         ("123", 123),
         ("-45", -45),
         ("3.14", 3.14),

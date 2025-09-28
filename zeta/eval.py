@@ -3,6 +3,7 @@ from typing import Any
 from zeta.types import SExpression, Environment, Lambda, Symbol, MacroEnvironment, _substitute
 from zeta.errors import ZetaArityError, ZetaTypeError, ZetaError, ZetaInvalidSymbol
 from zeta.packages import import_module
+from zeta import Nil
 
 class ThrowException(Exception):
     """Custom exception for Lisp-style throw/catch non-local exit."""
@@ -179,7 +180,7 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
                     i += 1
 
             import_module(env, module_name, alias=alias, register_functions_module=helpers_module)
-            return None
+            return Nil
 
         if head == Symbol("eval"):
             if len(tail) != 1:
@@ -224,7 +225,7 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
             # Register the macro TransformerFunction
             macros.define_macro(macro_name, transformer)
 
-            return None  # defmacro evaluates to None
+            return Nil  # defmacro evaluates to None
 
         if head == Symbol("defstruct"):
             if not tail or not isinstance(tail[0], Symbol):
@@ -247,7 +248,7 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
                 def make_accessor(f):
                     return lambda env_inner, args: args[0][f]
                 env.define(accessor_name, make_accessor(field))
-            return None
+            return Nil
 
         if head == Symbol("quote"):
             if len(tail) != 1:
@@ -274,18 +275,19 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
             name, val_expr = tail
             value = evaluate(val_expr, env, macros)
             env.define(name, value)
-            return None
+            return Nil
 
         if head == Symbol("if"):
             if len(tail) < 2:
                 raise ZetaArityError("if requires a condition and a then-expression")
             cond = evaluate(tail[0], env, macros)
-            if cond:
+            is_true = cond != 0 and cond != False and cond != Nil and cond != Symbol("#f")
+            if is_true:
                 return evaluate(tail[1], env, macros)
             elif len(tail) > 2:
                 return evaluate(tail[2], env, macros)
             else:
-                return None
+                return Nil
 
         if head == Symbol("set"):
             if len(tail) != 2:

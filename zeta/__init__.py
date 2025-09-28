@@ -5,6 +5,12 @@ from typing import Any, Callable
 
 
 SExpression = Any
-Nil = None
+
+class NilType:
+    def __repr__(self): return "nil"
+    def __bool__(self): return False
+
+Nil = NilType()
+
 TransformerFunction = Callable[[list[SExpression], 'Environment'], SExpression]
 

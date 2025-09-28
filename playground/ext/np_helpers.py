@@ -1,5 +1,3 @@
-import numpy as np
-
 def to_list(x):
     """Convert any iterable to Python list; wrap scalars in list."""
     try:

@@ -3,19 +3,21 @@ from zeta.eval import evaluate
 from zeta.parser import lex, TokenStream, Symbol
 from zeta.types import Environment, MacroEnvironment
 from zeta.errors import ZetaArityError
+from zeta import Nil
+
 
 programs = [
-    ("(define add2 (lambda (a b) (+ a b)))", None),
-    ("(define add2_partial (add2 5))", None),
+    ("(define add2 (lambda (a b) (+ a b)))", Nil),
+    ("(define add2_partial (add2 5))", Nil),
     ("(add2_partial 10)", 15),
-    ("(defmacro unless (cond body) `(if (not ,cond) ,body))", None),
-    ("(define x 10)", None),
-    ("(define y 20)", None),
-    ("(unless (> x y) (define z 100))", None),
+    ("(defmacro unless (cond body) `(if (not ,cond) ,body))", Nil),
+    ("(define x 10)", Nil),
+    ("(define y 20)", Nil),
+    ("(unless (> x y) (define z 100))", Nil),
     ("z", 100),
     ("(+ x y)", 30),
-    ("(defmacro inc (x) `(+ ,x 1))", None),
-    ("(defmacro dec (x) `(+ ,x -1))", None),
+    ("(defmacro inc (x) `(+ ,x 1))", Nil),
+    ("(defmacro dec (x) `(+ ,x -1))", Nil),
     ("(inc x)", 11),
     ("(dec y)", 19),
     ("(* x y)", 200),
@@ -24,10 +26,10 @@ programs = [
     ("((lambda (a b) (+ a b)) 5 7)", 12),
     ("(car (list 1 2 3))", 1),
     ("(cdr (list 1 2 3))", [2, 3]),
-    ("(define fact (lambda (n) (if (< n 2) 1 (* n (fact (- n 1))))))", None),
+    ("(define fact (lambda (n) (if (< n 2) 1 (* n (fact (- n 1))))))", Nil),
     ("(fact 5)", 120),
-    ("(defstruct person name age)", None),
-    ("(define p (make-person \"Fred\" 30))", None),
+    ("(defstruct person name age)", Nil),
+    ("(define p (make-person \"Fred\" 30))", Nil),
     ("p", {"__type__": 'person', 'name': "Fred", 'age': 30}),
     ("(person-name p)", "Fred"),
     ("(person-age p)", 30),
@@ -35,7 +37,7 @@ programs = [
           (define a 1) 
           (define b 2) 
           (+ a b)))''', 3),
-    ('(define counter 0)', None),
+    ('(define counter 0)', Nil),
     ('''
       (progn
         (dotimes (i 5) (set counter (+ counter 1)))
@@ -48,7 +50,7 @@ programs = [
       (set temp b)
       (set b (+ a b))
       (set a temp))))
-    ''', None),
+    ''', Nil),
     ('(fib-iter 15)',610)
 ]
 

@@ -1,10 +1,8 @@
 from __future__ import annotations
 from typing import Any
 from zeta import Nil
-from zeta.types import Environment, Symbol, TransformerFunction
+from zeta.types import Environment, Symbol
 from zeta.errors import ZetaTypeError, ZetaArityError
-from zeta.packages import import_module
-
 
 #-----------------------------
 # Equality and basic predicates
@@ -18,21 +16,25 @@ def equals(env: Environment, expr: list[Any]) -> bool:
             return False
     return True
 
+
 def not_equals(env: Environment, expr: list[Any]) -> bool:
     return not equals(env, expr)
 
-def is_equal(a: Any, b: Any) -> bool:
-    # Recursively check equality
+def is_equal(a, b):
     if a is b:
         return True
     if type(a) != type(b):
         return False
-    try:
-        if hasattr(a, "__iter__") and hasattr(b, "__iter__"):
-            return all(is_equal(x, y) for x, y in zip(a, b)) and len(list(a)) == len(list(b))
-    except TypeError:
-        # Not iterable
-        pass
+
+    # If both are lists (or SExpressions)
+    if isinstance(a, list) and isinstance(b, list):
+        a_list = list(a)
+        b_list = list(b)
+        if len(a_list) != len(b_list):
+            return False
+        return all(is_equal(x, y) for x, y in zip(a_list, b_list))
+
+    # Fallback for other types
     return a == b
 
 def is_nil(env: Environment, expr: list[Any]) -> bool:
@@ -107,10 +109,10 @@ def gte(env: Environment, expr: list[Any]) -> bool:
 # Boolean logic
 # -------------------------------
 def logical_and(env: Environment, expr: list[Any]) -> bool:
-    return all(expr)
+    return all(e != Symbol("#f") and e != Nil for e in expr)
 
 def logical_or(env: Environment, expr: list[Any]) -> bool:
-    return any(expr)
+    return any(e != Symbol("#f") and e != Nil for e in expr)
 
 def logical_not(env: Environment, expr: list[Any]) -> bool:
     if len(expr) != 1:
@@ -171,6 +173,8 @@ def register(env: Environment):
         Symbol('*'): mul,
         Symbol('/'): div,
         Symbol('='): equals,
+        Symbol('=='): equals,
+        Symbol('eq'): equals,
         Symbol('/='): not_equals,
         Symbol('<'): lt,
         Symbol('<='): lte,
@@ -187,3 +191,5 @@ def register(env: Environment):
         Symbol('nil?'): is_nil,
         Symbol('symbol?'): is_symbol
     })
+    env.define(Symbol("#t"), Symbol("#t"))
+    env.define(Symbol("#f"), Symbol("#f"))

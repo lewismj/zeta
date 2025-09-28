@@ -213,7 +213,8 @@ class TokenStream:
     def parse_expr(self) -> SExpression:
         tok_type, tok_val = self.peek()
         if tok_type is None:
-            raise ZetaSyntaxError("Unexpected end of token stream")
+            #raise ZetaSyntaxError("Unexpected end of token stream")
+            return None
 
         if tok_type == "symbol":
             self.advance()

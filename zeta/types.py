@@ -2,10 +2,11 @@ from __future__ import annotations
 from io import StringIO
 from itertools import count
 import sys
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from zeta.errors import ZetaInvalidSymbol, ZetaUnboundSymbol, ZetaNameError, ZetaArityError
 from zeta import SExpression, TransformerFunction
+
 
 class Symbol(str):
     def __new__(cls, name: str) -> str:
