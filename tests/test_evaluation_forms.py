@@ -2,7 +2,7 @@ import pytest
 from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
-from zeta.eval import evaluate
+from zeta.evaluation.evaluator import evaluate
 from zeta.types.lambda_fn import Lambda
 from zeta.types.errors import ZetaTypeError
 
@@ -196,8 +196,8 @@ def test_defstruct_basic(env, macros):
 
     # Check that it's a dict with correct fields
     assert isinstance(point_instance, dict)
-    assert point_instance["x"] == 10
-    assert point_instance["y"] == 20
+    assert point_instance[Symbol("x")] == 10
+    assert point_instance[Symbol("y")] == 20
 
     # Check that field accessors exist: point-x, point-y
     point_x_fn = env.lookup(Symbol("point-x"))
@@ -220,14 +220,14 @@ def test_defstruct_with_defaults(env, macros):
 
     # Create instance with both fields
     rect1 = evaluate([Symbol("make-rect"), 5, 10], env, macros)
-    assert rect1["width"] == 5
-    assert rect1["height"] == 10
+    assert rect1[Symbol("width")] == 5
+    assert rect1[Symbol("height")] == 10
 
     # Create instance with only width (simulate default via missing args)
     # In your current defstruct, height defaulting needs handling, otherwise KeyError
     rect2 = evaluate([Symbol("make-rect"), 7, 1], env, macros)
-    assert rect2["width"] == 7
-    assert rect2["height"] == 1
+    assert rect2[Symbol("width")] == 7
+    assert rect2[Symbol("height")] == 1
 
     # Field accessors
     rect_width_fn = env.lookup(Symbol("rect-width"))

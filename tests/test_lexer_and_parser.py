@@ -2,6 +2,7 @@ import pytest
 from hypothesis import given, strategies as st
 
 from zeta.types.nil import Nil
+from zeta.types.symbol import Symbol
 from zeta.parser import lex, TokenStream
 
 # Convert nested list to Lisp source string
@@ -52,15 +53,15 @@ def test_lexer_basic(source, expected):
         ("123", 123),
         ("-45", -45),
         ("3.14", 3.14),
-        ("'a", ["quote", "a"]),
-        ("(a b c)", ["a", "b", "c"]),
-        ("(a . b)", (["a"], "b")),  # dotted list
+        ("'a",  [Symbol('quote'), Symbol('a')]),
+        ("(a b c)", [Symbol('a'), Symbol('b'), Symbol('c')]),
+        ("(a . b)", ([Symbol('a')], Symbol('b'))),  # dotted list
         ("#C(1 2)", complex(1, 2)),
         ('"hello"', "hello"),
         ("#*1010", [1, 0, 1, 0]),
-        ("#s(point :x 1 :y 2)", {"type": "point", "fields": {":x": 1, ":y": 2}}),
-        ("#.(+ 1 2)", {"read-eval": ["+", 1, 2]}),
-        ("#'my-func", ["function", "my-func"]),
+        ("#s(point :x 1 :y 2)", {"type": Symbol("point"), "fields": {":x": 1, ":y": 2}}),
+        ("#.(+ 1 2)", {"read-eval": [Symbol("+"), 1, 2]}),
+        ("#'my-func", ["function", Symbol("my-func")]),
         ("#b1010", 10),
         ("#o12", 10),
         ("#xA", 10),
@@ -73,7 +74,7 @@ def test_parser(source, expected):
 
 def test_nested_lists():
     source = "((a b) (c d))"
-    expected = [["a", "b"], ["c", "d"]]
+    expected = [[Symbol('a'), Symbol('b')], [Symbol('c'), Symbol('d')]]
     stream = TokenStream(lex(source))
     result = list(stream.parse_all())
     assert result[0] == expected
@@ -112,8 +113,8 @@ def test_char_lexer_tokens(source, expected):
 @pytest.mark.parametrize(
     "source,expected",
     [
-        ("#'my-func", ["function", "my-func"]),
-        ("#.(+ 1 2)", {"read-eval": ["+", 1, 2]}),
+        ("#'my-func", ["function", Symbol("my-func")]),
+        ("#.(+ 1 2)", {"read-eval": [Symbol("+"), 1, 2]}),
     ]
 )
 def test_reader_macro_parsing(source, expected):
@@ -138,9 +139,9 @@ def test_lexer_edge_cases_no_crash(source):
         assert False, f"Lexer crashed on {source!r}: {e}"
 
 @pytest.mark.parametrize("source,expected", [
-    ("(a b c)", ["a", "b", "c"]),
+    ("(a b c)", [Symbol('a'), Symbol('b'), Symbol('c')]),
     ("#(1 2 3)", [1, 2, 3]),
-    ("(a . b)", (["a"], "b")),
+    ("(a . b)", ([Symbol('a')], Symbol('b'))),
     ("#C(1 2)", complex(1, 2)),
 ])
 def test_parse_roundtrip(source, expected):

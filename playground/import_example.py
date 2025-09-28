@@ -2,7 +2,7 @@ from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.environment import Environment
 from zeta.parser import lex, TokenStream
 from zeta.builtin.env_builtin import register
-from zeta.eval import evaluate
+from zeta.evaluation.evaluator import evaluate
 
 
 # --- Example usage ---

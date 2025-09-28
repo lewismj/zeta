@@ -1,5 +1,5 @@
 from zeta.builtin.env_builtin import register
-from zeta.eval import evaluate
+from zeta.evaluation.evaluator import evaluate
 from zeta.parser import lex, TokenStream
 from zeta.types.symbol import Symbol
 from zeta.types.nil import Nil
@@ -23,7 +23,7 @@ programs = [
     ("(dec y)", 19),
     ("(* x y)", 200),
     ("(if (> x y) x y)", 20),
-    ("(quote (a b c))", ['a', 'b', 'c']),
+    ("(quote (a b c))", [Symbol('a'), Symbol('b'), Symbol('c')]),
     ("((lambda (a b) (+ a b)) 5 7)", 12),
     ("(car (list 1 2 3))", 1),
     ("(cdr (list 1 2 3))", [2, 3]),
@@ -31,7 +31,7 @@ programs = [
     ("(fact 5)", 120),
     ("(defstruct person name age)", Nil),
     ("(define p (make-person \"Fred\" 30))", Nil),
-    ("p", {"__type__": 'person', 'name': "Fred", 'age': 30}),
+    ("p", {"__type__": Symbol('person'), Symbol('name'): 'Fred', Symbol('age'): 30}),
     ("(person-name p)", "Fred"),
     ("(person-age p)", 30),
     ( '''(progn 
@@ -72,7 +72,7 @@ def let_macro(args, env):
     vars_ = [var for var, *_ in bindings]
     vals_ = [val for _, val, *rest in bindings]
 
-    return [['lambda', vars_] + body] + vals_
+    return [[Symbol('lambda'), vars_] + body] + vals_
 
 
 def defun_macro(args, env):
@@ -85,7 +85,7 @@ def defun_macro(args, env):
 
     # Expand (defun name (params) body...)
     # into (define name (lambda (params) body...))
-    return ['define', name, ['lambda', params] + body]
+    return [ Symbol('define'), name, [Symbol('lambda'), params] + body]
 
 
 def main():

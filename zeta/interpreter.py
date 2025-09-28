@@ -1,5 +1,5 @@
 from zeta.parser import lex, TokenStream
-from zeta.eval import evaluate
+from zeta.evaluation.evaluator import evaluate
 from zeta.types.nil import Nil
 from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.environment import Environment

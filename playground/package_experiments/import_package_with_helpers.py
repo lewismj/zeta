@@ -6,7 +6,7 @@ from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 from zeta.parser import lex
-from zeta.eval import evaluate
+from zeta.evaluation.evaluator import evaluate
 from zeta.builtin.env_builtin import register
 from zeta.parser import TokenStream
 

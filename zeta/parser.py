@@ -29,6 +29,7 @@ from zeta import SExpression
 from zeta.types.nil import Nil
 from zeta.types.symbol import Symbol
 
+
 ReaderMacroFunction = Callable[['TokenStream'], SExpression]
 
 class ReaderMacros:
@@ -60,10 +61,10 @@ class ReaderMacros:
 reader_macros = ReaderMacros()
 
 QUOTE_FORMS = {
-    "'": "quote",
-    "`": "quasiquote",
-    ",": "unquote",
-    ",@": "unquote-splicing"
+    "'": Symbol("quote"),
+    "`": Symbol("quasiquote"),
+    ",": Symbol("unquote"),
+    ",@": Symbol("unquote-splicing")
 }
 
 # Quote forms: ', `, , ,@

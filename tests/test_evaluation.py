@@ -1,7 +1,7 @@
 import pytest
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
-from zeta.eval import  evaluate
+from zeta.evaluation.evaluator import  evaluate
 from zeta.types import errors
 
 

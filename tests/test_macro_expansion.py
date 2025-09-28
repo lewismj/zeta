@@ -95,7 +95,7 @@ def test_simple_macro_expansion(macro_env, base_env):
     expanded = macro_env.macro_expand_head(expr, dummy_eval, base_env)
 
     # Expect expansion: (+ 5 1)
-    assert expanded == ["+", 5, 1]
+    assert expanded == [Symbol("+"), 5, 1]
 
 
 # -------------------------
@@ -115,7 +115,7 @@ def test_nested_macro_expansion(macro_env, base_env):
 
     # Should expand fully to (+ 10 1)
     fully_expanded = macro_env.macro_expand_all(expr, dummy_eval, base_env)
-    assert fully_expanded == ["+", 10, 1]
+    assert fully_expanded == [Symbol("+"), 10, 1]
 
 
 # -------------------------
@@ -203,7 +203,7 @@ def test_macro_recursive_nested_lists(macro_env, base_env):
     expr = [[Symbol("inc"), 1], [Symbol("inc"), 2]]  # ((inc 1) (inc 2))
     expanded = macro_env.macro_expand_all(expr, dummy_eval, base_env)
 
-    assert expanded == [["+", 1, 1], ["+", 2, 1]]
+    assert expanded == [[Symbol("+"), 1, 1], [Symbol("+"), 2, 1]]
 
 
 # -------------------------
@@ -220,8 +220,8 @@ def test_gen_sym_uniqueness(macro_env):
     s4 = macro_env.gen_sym("X")
     assert s1 != s2
     assert s3 != s4
-    assert s1.startswith("G")
-    assert s3.startswith("X")
+    assert s1.id.startswith("G")
+    assert s3.id.startswith("X")
 
 
 def test_macro_closure_env2(macro_env, base_env):

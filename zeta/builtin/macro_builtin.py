@@ -17,7 +17,7 @@ def let_macro(args, env):
     vars_ = [var for var, *_ in bindings]
     vals_ = [val for _, val, *rest in bindings]
 
-    return [['lambda', vars_] + body] + vals_
+    return [[Symbol('lambda'), vars_] + body] + vals_
 
 
 def defun_macro(args, env):
@@ -30,7 +30,7 @@ def defun_macro(args, env):
 
     # Expand (defun name (params) body...)
     # into (define name (lambda (params) body...))
-    return ['define', name, ['lambda', params] + body]
+    return [Symbol('define'), name, [Symbol('lambda'), params] + body]
 
 
 def register(macro_env: MacroEnvironment):
