@@ -1,0 +1,40 @@
+# main.py
+import numpy as np
+
+from zeta.types import Environment, MacroEnvironment, Symbol
+from zeta.eval import evaluate
+from zeta.builtins import register
+from zeta.parser import lex, TokenStream
+from zeta.packages import import_module
+
+def main():
+    env = Environment()
+    macros = MacroEnvironment()
+
+    # Register core builtins
+    register(env)
+
+    import_module(env, "numpy", alias="np", register_functions_module="np_helpers")
+
+
+
+    # Example Lisp code
+    examples = [
+        "(np:array (1 2 3))",
+        "(np:sum (np:array (1 2 3 4)))",
+        "(np:dot (np:array (1 2)) (np:array (3 4)))",
+        # Use a helper function defined in numpy_helpers.py
+        "(np:to_list (np:dot (np:array (1 2)) (np:array (3 4))))"
+    ]
+
+    for code in examples:
+        print("Code:", code)
+        tokens = lex(code)
+        stream = TokenStream(tokens)
+        expr = stream.parse_expr()
+        result = evaluate(expr, env, macros)
+        print("Result:", result)
+        print("---")
+
+if __name__ == "__main__":
+    main()

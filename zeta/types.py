@@ -37,7 +37,15 @@ class Environment:
             raise ZetaUnboundSymbol(f'Cannot set unbound symbol {name}.')
         env.vars[name] = value
 
-    def lookup(self, name: Symbol) -> SExpression:
+    def lookup(self, name: Symbol):
+        s = str(name)
+        if ":" in s:
+            pkg, sym = s.split(":", 1)
+            if pkg in self.package_aliases:
+                pkg = self.package_aliases[pkg]
+            pkg_env = self.packages.get(pkg)
+            if pkg_env:
+                return pkg_env.lookup(Symbol(sym))
         env = self.find(name)
         if env is None:
             raise ZetaUnboundSymbol(f'Cannot lookup unbound symbol {name}.')
