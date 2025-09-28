@@ -1,0 +1,55 @@
+# ------------------------
+# Python
+# ------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.pdb
+
+# Byte-compiled / optimized / DLL files
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.manifest
+*.spec
+
+# ------------------------
+# PyCharm
+# ------------------------
+# IDE project files
+.idea/
+*.iml
+*.iws
+
+# Ignore virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# ------------------------
+# Hypothesis
+# ------------------------
+# Hypothesis saves examples in .hypothesis directory
+.hypothesis/
+
+# ------------------------
+# Other common
+# ------------------------
+*.log
+*.sqlite3
+*.db
+*.DS_Store
+*.coverage
+htmlcov/
+.coverage.*
+.cache
+.tox/
+.pytest_cache/
+mypy_cache/
