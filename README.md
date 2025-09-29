@@ -1,30 +1,28 @@
-<img src="docs/resources/greek_lc_zeta.svg.png" title="" alt="greek_lc_zeta.svg.png" width="77"> **Zeta**
+<img src="docs/resources/greek_lc_zeta.svg.png" width="77" style="vertical-align: middle;">
+<span style="font-size: 22px; font-weight: bold; vertical-align: middle;">Zeta</span>
 
 ### Summary
 
-Zeta is a Lisp interpreter written in Python. 
+**Zeta** is a Lisp interpreter written in Python. 
 
 Primarily, it enables Python modules within a Lisp environment. Or, embedding Lisp within Python code.  
 
-
 Why? Use of Lisp (particularly **_metaprogramming_**) techniques whilst leveraging the Python ecosystem of Numpy, DoWhy, etc.
-
-
 
 The interpreter can import modules into first-class Lisp values. Rather than have some external 'exec' mechanism that passes a string containing Python code to an externally running interpreter.
 
- 
 Example, calling numpy module level functions:
 
 ```lisp
              (progn
                 (import "numpy" as "np" helpers "np_helpers")
                 (np:to_list (np:dot (np:array (1 2)) (np:array (3 4)))))
-    
+
 [np.int64(11)], type:<class 'list'>
 ```
 
 Importing Pandas, and invoking data frame functions:
+
 ```lisp
         ;; CSV file is:
         ;; col_a,col_b,col_c
@@ -34,26 +32,26 @@ Importing Pandas, and invoking data frame functions:
         (progn
           ;; Import Pandas
           (import "pandas" as "pd")
-        
+
           ;; Try reading CSV, fallback to empty DataFrame on error
           (define df
             (catch 'any ;; ensure we have an exception handler.
               (pd:read_csv "C://tmp//data.csv")
               (pd:DataFrame ())));; optional fallback value on exception.
-        
+
           ;; Sum columns
           (define col-sum (df:sum))
-        
+
           ;; Return the sum
           col-sum
         )
-        
+
 
  col_a     5
  col_b    7
  col_c    9
 dtype: int64, type:<class 'pandas.core.series.Series'>
-            
+
  0    4
  1    6
 dtype: int64, type:<class 'pandas.core.series.Series'>            
@@ -63,6 +61,7 @@ dtype: int64, type:<class 'pandas.core.series.Series'>
 
 ```lisp
 (defmacro inc (x) `(+ ,x 1))
+(defmacro unless (cond body) `(if (not ,cond) ,body))
 ```
 
 Have built-in functions and macros, e.g.
@@ -90,18 +89,32 @@ Structures:
 (person-age p)
 ```
 
-  See 'playground' examples *import_examply.py* and *prelude_check.py*
+Standard functionality, Lambda, partial function application, etc.,
 
-- Can embed Lisp within Python code and retrieve the results into Python objects,
-  if required.
+```lisp
+(define my_add (lambda (a b) (+ a b)))
+(define my_add_5 (my_add 5)) ;; partially apply my_add
+(defun bar (n) ;; Lambda in a macro defn.
+    (let ((f (lambda (y x) (+ 1 x))))
+    (f n n)))
+...
+...
+```
 
-#### Use Cases,
+See 'playground' examples *import_examply.py* and *prelude_check.py*
+Can embed the interpreter within Python code and retrieve the results into Python objects, as required.
 
-##### Term ReWriting,
+### Use Cases,
+
+#### Term ReWriting,
 
 TBD
 
-##### Neural Networks & Causal Factor Analysis,
+#### Neural Networks & Causal Factor Analysis,
+
+TBD
+
+### Prolog Query Engine
 
 TBD
 
@@ -148,7 +161,7 @@ TBD
 ```rust
 pub enum Tag {
     Int32 = 0,
-    Bool = 1, // Will drop as we use Nil and #t.
+    Bool = 1, // Will drop as we will use Nil and #t.
     String = 2,
     Symbol = 3,   
     HeapObject = 4,
@@ -156,6 +169,20 @@ pub enum Tag {
     Nan = 6,
     Nil = 7,  
 }
+
+pub struct NaNBoxed {
+    /// The underlying 64-bit representation (tag + payload).
+    pub bits: u64,
+}
+
+pub trait Encode {
+    fn encode(&self) -> NaNBoxed;
+}
+
+pub trait Decode: Sized {
+    fn decode(nb: NaNBoxed) -> Option<Self>;
+}
+
 
 pub enum HeapObject {
     Int64(i64),
@@ -165,7 +192,7 @@ pub enum HeapObject {
 }
 ```
 
-  We can write native Lisp objects into a managed Heap.
+We can write native Lisp objects into a managed Heap:
 
 ```rust
 pub struct Cons {
