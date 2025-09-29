@@ -52,7 +52,10 @@ programs = [
       (set b (+ a b))
       (set a temp))))
     ''', Nil),
-    ('(fib-iter 15)',610)
+    ('(fib-iter 15)',610),
+    (
+    '''(catch 'my-tag (/ 1 0))''',
+    {Symbol('tag'): Symbol('system-error'), Symbol('exception'): Symbol('ZeroDivisionError'), Symbol('message'): 'Division by zero'} )
 ]
 
 # These should be default macros.

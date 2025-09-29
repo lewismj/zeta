@@ -34,7 +34,7 @@ def apply_lambda(fn, args, macros, evaluate_fn):
 def apply(head, args, env, macros, evaluate_fn):
     if isinstance(head, Lambda):
         return apply_lambda(head, args, macros, evaluate_fn)
-    if callable(head):
+    elif callable(head):
         return head(env, args)
     else:
         raise ZetaTypeError(f"Cannot apply non-function {head}")

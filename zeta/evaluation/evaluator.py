@@ -13,48 +13,53 @@ from zeta.evaluation.special_forms import SPECIAL_FORMS
 
 # ----------------- Core evaluation -----------------
 def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = None) -> SExpression:
-    """Evaluate a Zeta expression in the given environment with macro support."""
+    """
+    Core evaluation function, evaluates Lisp values.
+    """
     if macros is None:
         macros = MacroEnvironment()
 
-    if isinstance(expr, QQ):
-        return [Symbol("quasiquote"), evaluate(expr.value, env, macros)]
-    if isinstance(expr, UQ):
-        return evaluate(expr.value, env, macros)
-    if isinstance(expr, UQSplice):
-        result = evaluate(expr.value, env, macros)
-        if not isinstance(result, list):
-            raise ZetaTypeError("unquote-splicing must produce a list")
-        return result
+    match expr: # Macro Expansion & Quasi-quoting.
+        case QQ(value):
+            return [Symbol("quasiquote"), evaluate(value, env, macros)]
 
-    if isinstance(expr, list) and not expr:
-        return []
+        case UQ(value):
+            return evaluate(value, env, macros)
 
-    if isinstance(expr, list) and expr:
-        expr = macros.macro_expand_all(expr, evaluate, env)
+        case UQSplice(value):
+            result = evaluate(value, env, macros)
+            if not isinstance(result, list):
+                raise ZetaTypeError("Unquote-splicing must produce a list")
+            return result
 
-    if isinstance(expr, list) and expr:
-        head, *tail = expr
+        case []:
+            return []
 
-        # Special forms
-        if isinstance(head, Symbol) and head in SPECIAL_FORMS:
-            return SPECIAL_FORMS[head](tail, env, macros, evaluate)
+        case list() as xs if xs:
+            expr = macros.macro_expand_all(xs, evaluate, env)
 
-        # Check head, if it is a Symbol, then move head to the lookup of the symbol.
-        if isinstance(head, Symbol):
-            head = env.lookup(head)
+    # Note, we need to split the expression match, the macro expansion needs to occur
+    # prior to the evaluation.
 
-        # Handle Lambda head
-        if isinstance(head, Lambda) or callable(head):
-            args = [evaluate(arg, env, macros) for arg in tail]
-            return apply(head, args, env, macros, evaluate)
+    match expr:
+        case [head, * tail]:
+            if isinstance(head, Symbol):   # Handle special forms first.
+                if head in SPECIAL_FORMS:
+                    return SPECIAL_FORMS[head](tail, env, macros, evaluate)
+                else: # If the head is a symbol and not a special form, lookup in env.
+                    head = env.lookup(head)
 
-        if isinstance(head, list):
-            head_eval = evaluate(head, env, macros)
-            return evaluate([head_eval] + tail, env, macros)
+            # Check if we have Lambda or Callable.
+            if isinstance(head, Lambda) or callable(head):
+                args = [evaluate(arg, env, macros) for arg in tail]
+                return apply(head, args, env, macros, evaluate)
 
-    if isinstance(expr, Symbol):
-        return env.lookup(expr)
+            # Evaluate head, then tail recursively.
+            if isinstance(head, list):
+                head_eval = evaluate(head, env, macros)
+                return evaluate([head_eval] + tail, env, macros)
 
-    # Return Atoms.
-    return expr
+        case Symbol():
+            return env.lookup(expr) # lookup symbol.
+
+    return expr # Return atom.

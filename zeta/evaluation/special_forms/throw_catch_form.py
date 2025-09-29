@@ -1,4 +1,14 @@
+# Try-Throw handling
+# Usage:
+#   ````
+#   (catch 'my-tag
+#   (throw 'my-tag 42)) ; => 42
+#
+#   (catch 'my-tag
+#   (/ 1 0))
+#   ; => {'exception': 'ZeroDivisionError', 'message': 'Division by zero'}
 
+from zeta.types.symbol import Symbol
 
 class ThrowException(Exception):
     """Custom exception for Lisp-style throw/catch non-local exit."""
@@ -19,7 +29,13 @@ def catch_form(tail, env, macros, evaluate_fn):
     try:
         return evaluate_fn(body_expr, env, macros)
     except ThrowException as ex:
-        if ex.tag == tag:
+        if ex.tag == tag or tag == Symbol("any"):
             return ex.value
         else:
             raise ex
+    except Exception as e:
+        return {
+            Symbol("tag"): Symbol("system-error"),
+            Symbol("exception"): Symbol(type(e).__name__),
+            Symbol("message"): str(e)
+        }
