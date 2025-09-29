@@ -31,7 +31,7 @@ def main():
                     (drop (- n 1) (tail xs))
                 ))
             
-            (defun foldl (f z xs)
+            (defun fold (f z xs)
                 (if (== xs Nil)
                     z
                     (foldl f (f z (head xs)) (tail xs))

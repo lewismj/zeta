@@ -1,3 +1,6 @@
 pytest==8.4.2
 hypothesis==6.139.1
+ # Used for examples.
 numpy==2.3.3
+pandas==2.3.2
+fsspec==2025.9.0

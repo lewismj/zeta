@@ -10,6 +10,7 @@ from zeta.evaluation.apply import apply
 
 from zeta.evaluation.special_forms.quote_forms import QQ, UQ, UQSplice
 from zeta.evaluation.special_forms import SPECIAL_FORMS
+from zeta.evaluation.py_module_util import resolve_object_path
 
 # ----------------- Core evaluation -----------------
 def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = None) -> SExpression:
@@ -46,6 +47,14 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
             if isinstance(head, Symbol):   # Handle special forms first.
                 if head in SPECIAL_FORMS:
                     return SPECIAL_FORMS[head](tail, env, macros, evaluate)
+                elif ':' in head.id or '/' in head.id:
+                    # Deal with imported Python modules functions, objects and methods.
+                    attr = resolve_object_path(env, head)
+                    args = [evaluate(arg, env, macros) for arg in tail]
+                    if callable(attr) and getattr(attr, "_zeta_wrapped", False):
+                        return attr(env, args) # package level function.
+                    else:
+                        return attr(*args) # bound object level function.
                 else: # If the head is a symbol and not a special form, lookup in env.
                     head = env.lookup(head)
 

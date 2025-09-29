@@ -44,6 +44,8 @@ def import_module(
             if len(args) == 1:
                 return f(args[0])
             return f(*args)
+
+        zeta_fn._zeta_wrapped = True
         return zeta_fn
 
     # Register all callable attributes from the main module
@@ -62,7 +64,6 @@ def import_module(
                 continue
             func = getattr(helpers, name)
             if callable(func):
-                print(f'registering ... {name}')
                 pkg_env.define(Symbol(name), wrap_func(func))
 
     # Alias support

@@ -17,10 +17,47 @@ def main():
     #     (np:to_list (np:dot (np:array (1 2)) (np:array (3 4))))
     # """
     examples = [
+        # '''
+        # (progn
+        #     (import "numpy" as "np" helpers "np_helpers")
+        #     (np:to_list (np:dot (np:array (1 2)) (np:array (3 4))))
+        # )
+        # ''',
+        # '''
+        #     (progn
+        #       (import "pandas" as "pd")
+        #       (define data (list (list 1 2) (list 3 4)))
+        #       (define df (pd:DataFrame data))
+        #       (define first-row (df:head 1))
+        #       (define col-sum (df:sum))
+        #       col-sum
+        #     )
+        # ''',
         '''
         (progn
-            (import "numpy" as "np" helpers "np_helpers")
-            (np:to_list (np:dot (np:array (1 2)) (np:array (3 4))))
+          (import "pandas" as "pd")
+          (define empty (list (list 0 0 0) (list 0 0 0)))
+           (pd:DataFrame empty)))
+          (define col-sum (df:sum))
+          col-sum
+        )
+        ''',
+        '''
+        (progn
+          ;; Import Pandas
+          (import "pandas" as "pd")
+          (define empty (list (list 0 0 0) (list 0 0 0)))
+          ;; Try reading CSV, fallback to empty DataFrame on error
+          (define df
+            (catch 'any
+              (pd:read_csv "C://tmp//data.csv")
+              (pd:DataFrame empty))) ;; optional fallback, if we have exception 'any
+
+          ;; Sum columns
+          (define col-sum (df:sum))
+
+          ;; Return the sum
+          col-sum
         )
         '''
     ]
@@ -31,7 +68,7 @@ def main():
         stream = TokenStream(tokens)
         expr = stream.parse_expr()
         result = evaluate(expr, env, macros)
-        print("Result:", result)
+        print(f"Result:\n {result}, type:{type(result)}")
         print("---")
 
 
