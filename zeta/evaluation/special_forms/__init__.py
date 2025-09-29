@@ -33,6 +33,7 @@ SPECIAL_FORMS = {
     Symbol("dotimes"): do_times_n_loop_form,
     Symbol("dolist"): do_list_loop_form,
     Symbol("condition-case"): condition_case_form,
+    Symbol("cond"): condition_case_form,
     Symbol("throw"): throw_form,
     Symbol("catch"): catch_form,
     Symbol("apply"): apply_form,

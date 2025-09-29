@@ -189,7 +189,7 @@ def join(env: Environment, expr: list[Any]) -> list[Any]:
     return result
 
 
-def atom(args):
+def atom(env, args):
     """
     (atom x) -> returns True if x is an atom.
     Definition of atom:
@@ -200,28 +200,44 @@ def atom(args):
       - Numbers, strings, booleans are atoms
     """
     if len(args) != 1:
-        raise ZetaTypeError("atom expects exactly one argument")
-
+        return Symbol("#f")  # multiple args cannot be an atom
     x = args[0]
+    match x:
+        case list():
+            return Symbol("#f")
+        case Lambda():
+            return Symbol("#t")
+        case Symbol():
+            return Symbol("#t")
+        case _ if callable(x):
+            return Symbol("#f")
+        case _:
+            return Symbol("#t")
 
-    # Lists are NOT atoms
-    if isinstance(x, list):
-        return False
 
-    # Lambda forms (unevaluated) ARE atoms
-    if isinstance(x, Lambda):
-        return True
+def null(env, args):
+    if len(args) != 1:
+        return Symbol("#f")
+    x = args[0]
+    return Symbol("#t") if x is Nil or x == [] else Symbol("#f")
 
-    # Symbols ARE atoms
-    if isinstance(x, Symbol):
-        return True
+def symbol_to_string(env, args):
+    """(symbol->string x) -> string representation of symbol x"""
+    if len(args) != 1:
+        return Symbol("#f")
+    x = args[0]
+    if not isinstance(x, Symbol):
+        return Symbol("#f")
+    return str(x.id)  # or x.name depending on your Symbol class
 
-    # Evaluated functions / callables are NOT atoms (reducible)
-    if callable(x):
-        return False
-
-    # Numbers, strings, booleans -> atoms
-    return True
+def string_to_symbol(env, args):
+    """(string->symbol x) -> Symbol corresponding to string x"""
+    if len(args) != 1:
+        return Symbol("#f")
+    x = args[0]
+    if not isinstance(x, str):
+        return Symbol("#f")
+    return Symbol(x)
 
 # -------------------------------
 # Registration
@@ -251,7 +267,10 @@ def register(env: Environment):
         Symbol('nil?'): is_nil,
         Symbol('symbol?'): is_symbol,
         Symbol('join'): join,
-        Symbol('atom'): atom
+        Symbol('atom'): atom,
+        Symbol('null?'): null,
+        Symbol('symbol->string'): symbol_to_string,
+        Symbol('string->symbol'): string_to_symbol,
     })
     env.define(Symbol("#t"), Symbol("#t"))
     env.define(Symbol("#f"), Symbol("#f"))
