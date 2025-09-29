@@ -47,7 +47,7 @@ def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = Non
             if isinstance(head, Symbol):   # Handle special forms first.
                 if head in SPECIAL_FORMS:
                     return SPECIAL_FORMS[head](tail, env, macros, evaluate)
-                elif ':' in head.id or '/' in head.id:
+                elif ':' in head.id and head.id != '/':
                     # Deal with imported Python modules functions, objects and methods.
                     attr = resolve_object_path(env, head)
                     args = [evaluate(arg, env, macros) for arg in tail]

@@ -9,6 +9,8 @@
 #   ; => {'exception': 'ZeroDivisionError', 'message': 'Division by zero'}
 
 from zeta.types.symbol import Symbol
+from zeta.types.errors import ZetaArityError
+
 
 class ThrowException(Exception):
     """Custom exception for Lisp-style throw/catch non-local exit."""
@@ -19,19 +21,22 @@ class ThrowException(Exception):
 
 
 def throw_form(tail, env, macros, evaluate_fn):
-    tag, val_expr = tail[0], tail[1]
+    tag_expr, val_expr = tail[0], tail[1]
+    tag = evaluate_fn(tag_expr, env, macros)
     val = evaluate_fn(val_expr, env, macros)
     raise ThrowException(tag, val)
 
 
+from zeta.evaluation.special_forms.throw_catch_form import ThrowException
+
 def catch_form(tail, env, macros, evaluate_fn):
     """
-    Usage in Lisp:
-      (catch 'my-tag
-         body
-         fallback) ; optional fallback if an exception occurs
+    Lisp-style catch with fallback and Python exception embedding.
 
-      (catch 'any body fallback) ; catches all Python exceptions
+    (catch 'tag body [fallback])
+    - Catches (throw 'tag value)
+    - 'any' tag catches all Python exceptions
+    - fallback is evaluated if throw tag doesn't match or if Python exception occurs
     """
     tag_expr = tail[0]
     body_expr = tail[1]
@@ -41,16 +46,22 @@ def catch_form(tail, env, macros, evaluate_fn):
 
     try:
         return evaluate_fn(body_expr, env, macros)
+
     except ThrowException as ex:
-        if ex.tag == tag or tag == Symbol("any"):
+        # Matches tag or 'any'
+        if ex.tag == tag or tag == 'any':
             return ex.value
-        else:
-            raise ex
-    except Exception as py_ex:
-        # If a fallback is provided, evaluate and return it
+        # Fallback for non-matching throw
         if fallback_expr is not None:
             return evaluate_fn(fallback_expr, env, macros)
-        # Otherwise return structured error info
+        # Re-raise if no fallback
+        raise ex
+
+    except Exception as py_ex:
+        # Fallback if provided
+        if fallback_expr is not None:
+            return evaluate_fn(fallback_expr, env, macros)
+        # Otherwise, structured system-error as plain dict
         return {
             "tag": "system-error",
             "exception": type(py_ex).__name__,

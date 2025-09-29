@@ -28,54 +28,9 @@ from zeta.types.errors import ZetaSyntaxError
 from zeta import SExpression
 from zeta.types.nil import Nil
 from zeta.types.symbol import Symbol
+from zeta.reader_macros import reader_macros, QUOTE_FORMS
 
 
-ReaderMacroFunction = Callable[['TokenStream'], SExpression]
-
-class ReaderMacros:
-    """
-    Registry of reader macros.
-    Maps special characters or sequences (like ', `, #') to
-    functions that consume a TokenStream and return an s-expression.
-    """
-    def __init__(self):
-        self.macros: dict[str, ReaderMacroFunction] = {}
-
-    def define(self, char: str, fn: ReaderMacroFunction) -> None:
-        """Register a reader macro for a given character or sequence."""
-        self.macros[char] = fn
-
-    def is_macro(self, char: str) -> bool:
-        return char in self.macros
-
-    def dispatch(self, char: str, stream: 'TokenStream') -> SExpression:
-        """Invoke the reader macro on the TokenStream."""
-        if char not in self.macros:
-            raise ValueError(f"No reader macro defined for {char!r}")
-        return self.macros[char](stream)
-
-
-# -------------------------
-# Single global instance
-# -------------------------
-reader_macros = ReaderMacros()
-
-QUOTE_FORMS = {
-    "'": Symbol("quote"),
-    "`": Symbol("quasiquote"),
-    ",": Symbol("unquote"),
-    ",@": Symbol("unquote-splicing")
-}
-
-# Quote forms: ', `, , ,@
-for key, name in QUOTE_FORMS.items():
-    reader_macros.define(key, lambda stream, n=name: [n, stream.parse_expr()])
-
-# Function shorthand #: #'expr => (function expr)
-reader_macros.define("#'", lambda stream: ["function", stream.parse_expr()])
-
-# Read-time evaluation: #.(expr) => {"read-eval": expr}
-reader_macros.define("#.", lambda stream: {"read-eval": stream.parse_expr()})
 
 TOKEN_RE = re.compile(
     r'\s*('
@@ -97,7 +52,6 @@ TOKEN_RE = re.compile(
     r'|(?P<func_shorthand>#\')'                 # function shorthand #'
     r'|(?P<read_eval>#\.)'                      # read-eval macro
     r'|(?P<complex>#C)'                         # complex number
-    r'|(?P<struct>#s)'                          # struct
     r'|(?P<radix>#b[01]+|#o[0-7]+|#x[0-9A-Fa-f]+)'  # binary, octal, hex
     r'|(?P<symbol>[^\s(){}\'",;]+)'             # fallback: symbols
     r')',
@@ -215,8 +169,14 @@ class TokenStream:
     def parse_expr(self) -> SExpression:
         tok_type, tok_val = self.peek()
         if tok_type is None:
-            #raise ZetaSyntaxError("Unexpected end of token stream")
             return None
+
+        # ------------------------
+        # Dispatch reader macros first
+        # ------------------------
+        if tok_val in reader_macros.macros:
+            self.advance()  # consume the macro token
+            return reader_macros.dispatch(tok_val, self)
 
         if tok_type == "symbol":
             self.advance()
@@ -325,21 +285,6 @@ class TokenStream:
                 return int(radix_val[2:], 8)
             elif radix_val.startswith("#x"):
                 return int(radix_val[2:], 16)
-
-        # Struct
-        if tok_type == "struct":
-            self.advance()
-            if self.peek()[0] != "lparen":
-                raise SyntaxError("Expected '(' after #s")
-            self.advance()
-            struct_name = self.parse_expr()
-            fields = {}
-            while self.peek()[0] != "rparen":
-                ky = self.parse_expr()
-                value = self.parse_expr()
-                fields[str(ky)] = value
-            self.advance()
-            return {"type": struct_name, "fields": fields}
 
         # Complex
         if tok_type == "complex":

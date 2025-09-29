@@ -36,10 +36,14 @@ def _to_lisp_source(expr):
         ("#C(1 2)", [("complex", "#C"), ("lparen", "("), ("symbol", "1"), ("symbol", "2"), ("rparen", ")")]),
         ("#b1010 #o12 #xA", [("radix", "#b1010"), ("radix", "#o12"), ("radix", "#xA")]),
         ("#*1101", [("bitstring", "#*1101")]),
-        ("#s(point :x 1 :y 2)", [("struct", "#s"), ("lparen", "("), ("symbol", "point"),
-                                 ("symbol", ":x"), ("symbol", "1"),
-                                 ("symbol", ":y"), ("symbol", "2"),
-                                 ("rparen", ")")]),
+        ("#s(point :x 1 :y 2)",[    ('symbol', '#s'),
+                                    ('lparen', '('),
+                                    ('symbol', 'point'),
+                                    ('symbol', ':x'),
+                                    ('symbol', '1'),
+                                    ('symbol', ':y'),
+                                    ('symbol', '2'),
+                                    ('rparen', ')'),]),
     ]
 )
 def test_lexer_basic(source, expected):
@@ -59,7 +63,7 @@ def test_lexer_basic(source, expected):
         ("#C(1 2)", complex(1, 2)),
         ('"hello"', "hello"),
         ("#*1010", [1, 0, 1, 0]),
-        ("#s(point :x 1 :y 2)", {"type": Symbol("point"), "fields": {":x": 1, ":y": 2}}),
+        ("#s(point :x 1 :y 2)", [Symbol('make-point'), 1, 2]),
         ("#.(+ 1 2)", {"read-eval": [Symbol("+"), 1, 2]}),
         ("#'my-func", ["function", Symbol("my-func")]),
         ("#b1010", 10),

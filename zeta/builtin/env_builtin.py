@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import Any
+
+from zeta.types.lambda_fn import Lambda
 from zeta.types.nil import Nil
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
@@ -186,6 +188,41 @@ def join(env: Environment, expr: list[Any]) -> list[Any]:
         result.extend(item)
     return result
 
+
+def atom(args):
+    """
+    (atom x) -> returns True if x is an atom.
+    Definition of atom:
+      - Not a list
+      - Lambda forms (unevaluated) are atoms
+      - Symbols are atoms
+      - Evaluated functions (callables) are NOT atoms, as they are reducible
+      - Numbers, strings, booleans are atoms
+    """
+    if len(args) != 1:
+        raise ZetaTypeError("atom expects exactly one argument")
+
+    x = args[0]
+
+    # Lists are NOT atoms
+    if isinstance(x, list):
+        return False
+
+    # Lambda forms (unevaluated) ARE atoms
+    if isinstance(x, Lambda):
+        return True
+
+    # Symbols ARE atoms
+    if isinstance(x, Symbol):
+        return True
+
+    # Evaluated functions / callables are NOT atoms (reducible)
+    if callable(x):
+        return False
+
+    # Numbers, strings, booleans -> atoms
+    return True
+
 # -------------------------------
 # Registration
 # -------------------------------
@@ -213,7 +250,8 @@ def register(env: Environment):
         Symbol('apply'): apply,
         Symbol('nil?'): is_nil,
         Symbol('symbol?'): is_symbol,
-        Symbol('join'): join
+        Symbol('join'): join,
+        Symbol('atom'): atom
     })
     env.define(Symbol("#t"), Symbol("#t"))
     env.define(Symbol("#f"), Symbol("#f"))

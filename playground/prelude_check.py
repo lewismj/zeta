@@ -78,23 +78,30 @@ def main():
 
     # Test expressions
     tests = [
-        '(define xs (1 7 -3 4)) ;; -> Nil',
-        '(is_empty xs) ;; -> #f',
-        '(sort xs) ;; -> (-3 4 7)',
-        '(filter (lambda (x) (> x 0)) xs) ;; -> (1 7 4)',
-        '(+ (* 3 (+ (* 2 4) (+ 3 5))) (+ (- 10 7) 6))',
-        '(defun foo (x &rest xs) (sort xs))',
-        '(foo 1 7 -1 2)',
-        "(apply 'foo '(1 7 -1 2))   ;; => (-1 2 7)",
-        "(map (lambda (x) (* 2 x)) (1 2 3 4 5 6 7 8 9 10))",
-        '''
-        (defun bar (n)
-            (let ((f (lambda (y x) (+ 1 x))))
-            (f n n)))
-        ''',
-        '''
-        (bar 4)
-        '''
+        # '(define xs (1 7 -3 4)) ;; -> Nil',
+        # '(is_empty xs) ;; -> #f',
+        # '(sort xs) ;; -> (-3 4 7)',
+        # '(filter (lambda (x) (> x 0)) xs) ;; -> (1 7 4)',
+        # '(+ (* 3 (+ (* 2 4) (+ 3 5))) (+ (- 10 7) 6))',
+        # '(defun foo (x &rest xs) (sort xs))',
+        # '(foo 1 7 -1 2)',
+        # "(apply 'foo '(1 7 -1 2))   ;; => (-1 2 7)",
+        # "(map (lambda (x) (* 2 x)) (1 2 3 4 5 6 7 8 9 10))",
+        # '''
+        # (defun bar (n)
+        #     (let ((f (lambda (y x) (+ 1 x))))
+        #     (f n n)))
+        # ''',
+        # '''
+        # (bar 4)
+        # ''',
+        '''(defstruct person name age)''',
+        '''(define bungle #s(person :name "Bungle" :age 30))''', # Test #s reader macro.
+        '''(define rod (make-person \"Rod\" 40))''',
+        '''(person-name bungle)''',
+        '''(person-age bungle)''',
+        '''(person-name rod)''',
+        '''(person-age rod)'''
     ]
 
     for code in tests:

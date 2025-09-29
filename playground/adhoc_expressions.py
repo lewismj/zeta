@@ -34,9 +34,9 @@ programs = [
     ("p", {"__type__": Symbol('person'), Symbol('name'): 'Fred', Symbol('age'): 30}),
     ("(person-name p)", "Fred"),
     ("(person-age p)", 30),
-    ( '''(progn 
-          (define a 1) 
-          (define b 2) 
+    ( '''(progn
+          (define a 1)
+          (define b 2)
           (+ a b)))''', 3),
     ('(define counter 0)', Nil),
     ('''
@@ -55,7 +55,7 @@ programs = [
     ('(fib-iter 15)',610),
     (
     '''(catch 'my-tag (/ 1 0))''',
-    {Symbol('tag'): Symbol('system-error'), Symbol('exception'): Symbol('ZeroDivisionError'), Symbol('message'): 'Division by zero'} )
+    {'tag': 'system-error', 'exception': 'ZeroDivisionError', 'message': 'Division by zero'} )
 ]
 
 # These should be default macros.
