@@ -3,7 +3,7 @@ from zeta.types.nil import Nil
 from zeta.types.symbol import Symbol
 
 
-def defstruct_form(tail, env, macros, evaluate_fn):
+def defstruct_form(tail, env, macros, evaluate_fn, _):
     if not tail or not isinstance(tail[0], Symbol):
         raise ZetaArityError("defstruct requires a struct name")
     struct_name = tail[0]

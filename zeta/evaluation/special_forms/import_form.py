@@ -4,7 +4,7 @@ from zeta.types.symbol import Symbol
 
 
 
-def import_form(tail, env, macros, evaluate_fn):
+def import_form(tail, env, macros, evaluate_fn, _):
     """
     Usage:
         (import "module_name" as "alias" helpers "helper_module_name")

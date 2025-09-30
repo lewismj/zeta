@@ -28,7 +28,7 @@ class DoLoopEval:
         # Step 2: initialize loop variables
         for varspec in self.varspecs:
             var_name, init, *step_expr = varspec + [None]*(3-len(varspec))
-            local_env.set(var_name, self.evaluate_fn(init, local_env, macros))
+            local_env.set(var_name, self.evaluate_fn(init, local_env, macros, False))
             if step_expr and step_expr[0] is not None:
                 steps.append((var_name, step_expr[0]))
 
@@ -39,19 +39,19 @@ class DoLoopEval:
 
         # Step 4: loop
         while True:
-            if self.evaluate_fn(test_expr, local_env, macros):
+            if self.evaluate_fn(test_expr, local_env, macros, False):
                 result = None
                 for expr in exit_exprs:
                     if expr is not None:
                         # **Evaluate exit expressions in local_env** so loop vars exist
-                        result = self.evaluate_fn(expr, local_env, macros)
+                        result = self.evaluate_fn(expr, local_env, macros, False)
                 return result
 
             for expr in self.body:
-                self.evaluate_fn(expr, local_env, macros)
+                self.evaluate_fn(expr, local_env, macros, False)
 
             for var, step_expr in steps:
-                local_env.set(var, self.evaluate_fn(step_expr, local_env, macros))
+                local_env.set(var, self.evaluate_fn(step_expr, local_env, macros, False))
 
 
 class DoTimesLoopEval:
@@ -64,7 +64,7 @@ class DoTimesLoopEval:
         var_name, count_expr, *rest = self.varspec + [None] * (2 - len(self.varspec))
         if not isinstance(var_name, Symbol):
             raise ZetaInvalidSymbol(f"dotimes variable must be Symbol, got {var_name}")
-        count = self.evaluate_fn(count_expr, env, macros)
+        count = self.evaluate_fn(count_expr, env, macros, False)
 
         # Only loop variable is local
         local_env = Environment(outer=env)
@@ -74,7 +74,7 @@ class DoTimesLoopEval:
         for i in range(count):
             local_env.set(var_name, i)
             for expr in self.body:
-                last_value = self.evaluate_fn(expr, local_env, macros)  # evaluate in outer env
+                last_value = self.evaluate_fn(expr, local_env, macros, False)  # evaluate in outer env
 
         return last_value
 
@@ -88,7 +88,7 @@ class DoListLoopEval:
         var_name, lst_expr, *rest = self.varspec + [None] * (2 - len(self.varspec))
         if not isinstance(var_name, Symbol):
             raise ZetaInvalidSymbol(f"dolist variable must be Symbol, got {var_name}")
-        lst_val = self.evaluate_fn(lst_expr, env, macros)
+        lst_val = self.evaluate_fn(lst_expr, env, macros, False)
         if not isinstance(lst_val, list):
             raise ZetaTypeError("dolist requires a list")
 
@@ -100,15 +100,15 @@ class DoListLoopEval:
             local_env.define(var_name, item)
             for expr in self.body:
                 # <-- evaluate in local_env so loop variable is visible
-                last_value = self.evaluate_fn(expr, local_env, macros)
+                last_value = self.evaluate_fn(expr, local_env, macros, False)
 
         return last_value
 
-def do_loop_form(tail, env, macros, evaluate_fn):
+def do_loop_form(tail, env, macros, evaluate_fn, _):
     return DoLoopEval(tail[0], tail[1], tail[2:], evaluate_fn).eval(env, macros)
 
-def do_times_n_loop_form(tail, env, macros, evaluate_fn):
+def do_times_n_loop_form(tail, env, macros, evaluate_fn, _):
     return DoTimesLoopEval(tail[0], tail[1:], evaluate_fn).eval(env, macros)
 
-def do_list_loop_form(tail, env, macros, evaluate_fn):
+def do_list_loop_form(tail, env, macros, evaluate_fn, _):
     return DoListLoopEval(tail[0], tail[1:], evaluate_fn).eval(env, macros)

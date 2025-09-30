@@ -11,64 +11,76 @@ from zeta.evaluation.apply import apply
 from zeta.evaluation.special_forms.quote_forms import QQ, UQ, UQSplice
 from zeta.evaluation.special_forms import SPECIAL_FORMS
 from zeta.evaluation.py_module_util import resolve_object_path
+from zeta.types.tail_call import TailCall
 
-# ----------------- Core evaluation -----------------
-def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = None) -> SExpression:
+
+def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = None, _=False) -> SExpression:
     """
-    Core evaluation function, evaluates Lisp values.
+    Trampoline evaluator: tail-call aware evaluation.
     """
     if macros is None:
         macros = MacroEnvironment()
 
-    match expr: # Macro Expansion & Quasi-quoting.
+    result = evaluate0(expr, env, macros, True) # Start in 'tail' mode.
+    while isinstance(result, TailCall):
+        result = evaluate0(result.fn.body, result.env, result.macros, True)
+    return result
+
+
+def evaluate0(expr: SExpression, env: Environment, macros: MacroEnvironment = None, is_tail_call: bool = False) -> SExpression:
+    """
+    Core evaluator: single-step evaluation with tail-call awareness.
+    Returns either a value or a TailCall.
+    """
+    if macros is None:
+        macros = MacroEnvironment()
+
+    # --- Macro Expansion & Quasi-quote ---
+    match expr:
         case QQ(value):
-            return [Symbol("quasiquote"), evaluate(value, env, macros)]
-
+            return [Symbol("quasiquote"), evaluate0(value, env, macros)]
         case UQ(value):
-            return evaluate(value, env, macros)
-
+            return evaluate0(value, env, macros)
         case UQSplice(value):
-            result = evaluate(value, env, macros)
+            result = evaluate0(value, env, macros)
             if not isinstance(result, list):
                 raise ZetaTypeError("Unquote-splicing must produce a list")
             return result
-
         case []:
             return []
-
         case list() as xs if xs:
-            expr = macros.macro_expand_all(xs, evaluate, env)
+            expr = macros.macro_expand_all(xs, evaluate0, env)
 
-    # Note, we need to split the expression match, the macro expansion needs to occur
-    # prior to the evaluation.
-
+    # --- Expression dispatch ---
     match expr:
-        case [head, * tail]:
-            if isinstance(head, Symbol):   # Handle special forms first.
+        case [head, *tail_args]:
+            if isinstance(head, Symbol):
+                # --- Special forms handling ---
                 if head in SPECIAL_FORMS:
-                    return SPECIAL_FORMS[head](tail, env, macros, evaluate)
+                    return SPECIAL_FORMS[head](tail_args, env, macros, evaluate0, is_tail_call)  # <-- propagate tail
                 elif ':' in head.id and head.id != '/':
-                    # Deal with imported Python modules functions, objects and methods.
                     attr = resolve_object_path(env, head)
-                    args = [evaluate(arg, env, macros) for arg in tail]
+                    args = [evaluate0(arg, env, macros) for arg in tail_args]
                     if callable(attr) and getattr(attr, "_zeta_wrapped", False):
-                        return attr(env, args) # package level function.
+                        return attr(env, args)
                     else:
-                        return attr(*args) # bound object level function.
-                else: # If the head is a symbol and not a special form, lookup in env.
+                        return attr(*args)
+                else:
                     head = env.lookup(head)
 
-            # Check if we have Lambda or Callable.
+            # --- Lambda / callable application ---
             if isinstance(head, Lambda) or callable(head):
-                args = [evaluate(arg, env, macros) for arg in tail]
-                return apply(head, args, env, macros, evaluate)
+                args = [evaluate0(arg, env, macros) for arg in tail_args]
+                result = apply(head, args, env, macros, evaluate0, is_tail_call)  # <-- pass tail flag
+                return result
 
-            # Evaluate head, then tail recursively.
+            # --- Evaluate head if it is a list and re-dispatch ---
             if isinstance(head, list):
-                head_eval = evaluate(head, env, macros)
-                return evaluate([head_eval] + tail, env, macros)
+                head_eval = evaluate0(head, env, macros)
+                return evaluate0([head_eval] + tail_args, env, macros, is_tail_call)
 
         case Symbol():
-            return env.lookup(expr) # lookup symbol.
+            return env.lookup(expr)
 
-    return expr # Return atom.
+    # --- Atoms return as-is ---
+    return expr
