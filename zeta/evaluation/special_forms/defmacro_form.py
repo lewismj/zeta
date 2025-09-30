@@ -8,7 +8,7 @@ from zeta.types.macro_environment import _substitute
 
 
 
-def defmacro_form(tail, env, macros, evaluate_fn):
+def defmacro_form(tail, env, macros, evaluate_fn,  _):
         if len(tail) < 2:
             raise ZetaArityError("defmacro requires a name and parameter list")
 

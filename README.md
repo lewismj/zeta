@@ -64,13 +64,14 @@ dtype: int64, type:<class 'pandas.core.series.Series'>
 (defmacro unless (cond body) `(if (not ,cond) ,body))
 ```
 
-Have built-in functions and macros, e.g.
+Have built-in functions and macros, e.g. Let macro is:
 
-```
+`
 (let ((var1 val1) (var2 val2) ...) body...) 
     => ((lambda (var1 var2 ...) body...) val1 val2 ...)
-```
+`
 
+We can define functions, using  `defun` macro:
 ```lisp
 (defun fib-iter (n)
   (let ((a 0) (b 1) (temp 0))
@@ -80,7 +81,7 @@ Have built-in functions and macros, e.g.
       (set a temp))))
 ```
 
-Structures:
+Structures, (can also use `#s` short hand syntax):
 
 ```lisp
 (defstruct person name age)
@@ -100,8 +101,25 @@ Standard functionality, Lambda, partial function application, etc.,
 ...
 ...
 ```
+#### Tail Recursion
 
-See 'playground' examples *import_examply.py* and *prelude_check.py*
+Zeta supports basic tail call optimization. For example, the following function will not cause a stack overflow:
+
+```lisp
+(progn
+(defun fact (n acc)
+  (if (= n 0)
+      acc
+      (fact (- n 1) (* n acc))))
+;; Python version of Zeta will rely on Python numerics
+;; But this won't generate a maximum recursion depth error,
+;; as we have tail-call optimization.
+(fact 1500 1) ;; tail recursive native Python would fail with maximum recursion depth error.
+)
+```
+
+
+See 'playground/adhoc' examples *import_examply.py* and *prelude_check.py*
 Can embed the interpreter within Python code and retrieve the results into Python objects, as required.
 
 ### Use Cases,
@@ -114,7 +132,7 @@ TBD
 
 TBD
 
-### Prolog Query Engine
+#### Prolog Query Engine
 
 TBD
 
