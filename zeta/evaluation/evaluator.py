@@ -35,7 +35,7 @@ def evaluate0(expr: SExpression, env: Environment, macros: MacroEnvironment = No
     if macros is None:
         macros = MacroEnvironment()
 
-    if not expr:
+    if expr == []:
         return []
 
     # --- Head-position macro handling and guarded expansion ---
