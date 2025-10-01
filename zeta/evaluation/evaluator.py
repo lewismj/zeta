@@ -90,6 +90,9 @@ def evaluate0(
                 return evaluate0([head_eval] + tail_args, env, macros, is_tail_call)
 
         case Symbol():
+            # Treat keywords (symbols starting with ':') as self-evaluating (for named parameters in Lambda functions).
+            if isinstance(expr, Symbol) and expr.id.startswith(":"):
+                return expr
             return env.lookup(expr)
 
     # --- Atoms return as-is ---

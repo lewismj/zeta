@@ -2,7 +2,6 @@ import pytest
 
 from zeta.types.environment import Environment
 from zeta.types.macro_environment import MacroEnvironment
-from zeta.types.symbol import Symbol
 from zeta.types.errors import ZetaTypeError, ZetaArityError
 from zeta.reader.parser import lex, TokenStream
 from zeta.evaluation.evaluator import evaluate

@@ -79,46 +79,83 @@ class MacroEnvironment:
 
                 # Lambda macro transformer
                 if isinstance(transformer, Lambda):
-                    # Bind arguments to formals with &rest support
+                    # Bind arguments to formals with &rest and &key support
                     formals = list(transformer.formals)
                     supplied = list(args)
 
-                    # Validate arity (when no &rest is present)
-                    if Symbol("&rest") not in formals and len(supplied) != len(formals):
-                        raise ZetaArityError(
-                            f"Macro {head} expected {len(formals)} args, got {len(supplied)}"
-                        )
+                    if Symbol("&rest") in formals and Symbol("&key") in formals:
+                        raise ZetaArityError("Malformed parameter list: cannot mix &rest and &key")
 
                     call_env = Environment(outer=transformer.env)
                     seen_formals: list[Symbol] = []
 
-                    while formals:
-                        formal = formals.pop(0)
-                        if formal == Symbol("&rest"):
-                            if not formals:
+                    if Symbol("&rest") in formals:
+                        # Validate arity when no &rest before encountering it
+                        while formals:
+                            formal = formals.pop(0)
+                            if formal == Symbol("&rest"):
+                                if not formals:
+                                    raise ZetaArityError(
+                                        "Malformed parameter list: &rest must be followed by a name"
+                                    )
+                                rest_name = formals.pop(0)
+                                call_env.define(rest_name, supplied)
+                                seen_formals.append(rest_name)
+                                supplied = []
+                                break
+                            if supplied:
+                                call_env.define(formal, supplied.pop(0))
+                                seen_formals.append(formal)
+                            else:
+                                # Too few args without &rest
+                                missing = [formal] + formals
                                 raise ZetaArityError(
-                                    "Malformed parameter list: &rest must be followed by a name"
+                                    f"Macro {head} missing {len(missing)} arg(s): {[str(s) for s in missing]}"
                                 )
-                            rest_name = formals.pop(0)
-                            call_env.define(rest_name, supplied)
-                            seen_formals.append(rest_name)
-                            supplied = []
-                            break
                         if supplied:
-                            call_env.define(formal, supplied.pop(0))
-                            seen_formals.append(formal)
-                        else:
-                            # Too few args without &rest
-                            missing = [formal] + formals
                             raise ZetaArityError(
-                                f"Macro {head} missing {len(missing)} arg(s): {[str(s) for s in missing]}"
+                                f"Too many arguments for macro {head}: {supplied}"
                             )
-
-                    if supplied:
-                        # Too many arguments and no &rest captured them
-                        raise ZetaArityError(
-                            f"Too many arguments for macro {head}: {supplied}"
-                        )
+                    elif Symbol("&key") in formals:
+                        key_index = formals.index(Symbol("&key"))
+                        positional_formals = formals[:key_index]
+                        keyword_formals = formals[key_index + 1 :]
+                        # positional first
+                        for pf in positional_formals:
+                            if supplied:
+                                call_env.define(pf, supplied.pop(0))
+                                seen_formals.append(pf)
+                            else:
+                                missing = [pf] + positional_formals[positional_formals.index(pf)+1:]
+                                raise ZetaArityError(
+                                    f"Macro {head} missing {len(missing)} arg(s): {[str(s) for s in missing]}"
+                                )
+                        # keywords must be pairs
+                        if len(supplied) % 2 != 0:
+                            raise ZetaArityError("Keyword arguments must be in pairs")
+                        provided_keys: dict[Symbol, SExpression] = {}
+                        while supplied:
+                            key = supplied.pop(0)
+                            val = supplied.pop(0) if supplied else None
+                            if not isinstance(key, Symbol) or not key.id.startswith(":"):
+                                raise ZetaArityError("Expected keyword symbol like :name in keyword arguments")
+                            target = Symbol(key.id[1:])
+                            if target not in keyword_formals:
+                                raise ZetaArityError(f"Unknown keyword argument {key}")
+                            provided_keys[target] = val
+                        for kf in keyword_formals:
+                            call_env.define(kf, provided_keys.get(kf, None))
+                            seen_formals.append(kf)
+                    else:
+                        # simple positional
+                        if len(supplied) != len(formals):
+                            raise ZetaArityError(
+                                f"Macro {head} expected {len(formals)} args, got {len(supplied)}"
+                            )
+                        for f, v in zip(formals, supplied):
+                            call_env.define(f, v)
+                            seen_formals.append(f)
+                        supplied = []
 
                     # If the macro body is a quasiquote form, evaluate it now so that
                     # unquote/unquote-splicing run at macro expansion time. Otherwise,

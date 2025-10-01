@@ -13,35 +13,45 @@ def apply_lambda(
     macros,
     evaluate_fn: EvaluatorFn,
     is_tail_call: bool,
+    caller_env: Environment | None = None,
 ) -> LispValue | TailCall:
+    """
+    Apply a Lambda with tail-call awareness, supporting partial application for
+    simple positional lambdas. For lambdas that declare &rest or &key, delegate
+    to Lambda.extend_env (full application required).
+    """
     formals = list(fn.formals)
-    supplied = list(args)
-    remaining_formals = []
 
-    local_env = Environment(outer=fn.env)
-
-    while formals:
-        formal = formals.pop(0)
-        if formal == Symbol("&rest"):
-            name = formals.pop(0)
-            local_env.define(name, supplied)
-            supplied = []
-            break
-        if supplied:
-            local_env.define(formal, supplied.pop(0))
+    # If lambda uses &rest or &key, require full application via extend_env
+    if Symbol("&rest") in formals or Symbol("&key") in formals:
+        new_env = fn.extend_env(list(args), caller_env)
+        if is_tail_call:
+            return TailCall(fn, args, new_env, macros)
         else:
-            remaining_formals.append(formal)
+            return evaluate_fn(fn.body, new_env, macros, True)
 
-    if remaining_formals:
-        return Lambda(remaining_formals, fn.body, local_env)
+    # Simple positional parameters: support partial application
+    provided = len(args)
+    arity = len(formals)
 
-    if supplied:
-        raise ZetaArityError(f"Too many arguments: {supplied}")
+    if provided < arity:
+        # Create a closure environment that binds the provided arguments
+        new_env = Environment(outer=fn.env)
+        for i in range(provided):
+            new_env.define(formals[i], args[i])
+        remaining_formals = formals[provided:]
+        return Lambda(remaining_formals, fn.body, new_env)
 
-    if is_tail_call:
-        return TailCall(fn, args, local_env, macros)
-    else:
-        return evaluate_fn(fn.body, local_env, macros, True)
+    if provided == arity:
+        new_env = fn.extend_env(list(args), caller_env)
+        if is_tail_call:
+            return TailCall(fn, args, new_env, macros)
+        else:
+            return evaluate_fn(fn.body, new_env, macros, True)
+
+    # Too many arguments for a simple positional lambda
+    extra = list(args[arity:])
+    raise ZetaArityError(f"Too many arguments: {extra}")
 
 
 def apply(
@@ -53,7 +63,7 @@ def apply(
     tail: bool = False,
 ) -> LispValue | TailCall:
     if isinstance(head, Lambda):
-        return apply_lambda(head, args, macros, evaluate_fn, tail)
+        return apply_lambda(head, args, macros, evaluate_fn, tail, env)
     elif callable(head):
         return head(env, args)
     else:

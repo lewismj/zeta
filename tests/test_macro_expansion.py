@@ -7,31 +7,6 @@ from zeta.types.symbol import Symbol
 from zeta.types.errors import ZetaArityError
 
 
-# def dummy_eval(expr: SExpression, env: Environment) -> SExpression:
-#     """
-#     Evaluate expr in env. Handles:
-#       - Symbol lookup in the environment chain
-#       - Lists: recursively evaluate each element
-#       - Dotted lists: tuple (list_part, tail)
-#       - Literals (int, float, string): returned as is
-#     """
-#     if isinstance(expr, Symbol):
-#         # Try to resolve the symbol in the environment chain
-#         try:
-#             return env.lookup(expr)
-#         except ZetaUnboundSymbol:
-#             # If symbol is not bound, leave it as-is (e.g., '+')
-#             return expr
-#     elif isinstance(expr, list):
-#         return [dummy_eval(e, env) for e in expr]
-#     elif isinstance(expr, tuple) and len(expr) == 2:  # dotted list
-#         lst, tail = expr
-#         lst_eval = [dummy_eval(e, env) for e in lst]
-#         tail_eval = dummy_eval(tail, env)
-#         return (lst_eval, tail_eval)
-#     else:
-#         return expr  # literals unchanged
-
 def dummy_eval(expr: SExpression, env: Environment, macros=None) -> SExpression:
     """
     Minimal evaluator for macro expansion tests.

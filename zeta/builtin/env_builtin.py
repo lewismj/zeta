@@ -184,16 +184,35 @@ def list_builtin(env: Environment, expr: list[LispValue]) -> list[LispValue]:
 # -------------------------------
 # Function application
 # -------------------------------
+from zeta.evaluation.apply import apply as apply_engine
+from zeta.evaluation.evaluator import evaluate0
+from zeta.types.tail_call import TailCall
+from zeta.types.macro_environment import MacroEnvironment
+
+
 def apply(env: Environment, expr: list[LispValue]) -> LispValue:
-    if len(expr) < 2:
+    # Builtin apply used in some tests; delegate to central engine semantics.
+    # Expects exactly two arguments: function and list of args.
+    if len(expr) != 2:
         raise ZetaArityError(
-            "apply requires at least 2 arguments: func and list of args"
+            "apply requires exactly 2 arguments: function and list of args"
         )
     func = expr[0]
     args = expr[1]
-    if not hasattr(args, "__iter__"):
-        raise ZetaTypeError("Second argument to apply must be iterable")
-    return func(env, list(args))
+    if not isinstance(args, list):
+        raise ZetaTypeError("Second argument to apply must be a list")
+
+    # Use a lightweight MacroEnvironment; in normal evaluation the special form
+    # is used and carries the real macro env. Tests invoking the builtin directly
+    # typically target builtin callables and simple lambdas.
+    macros = MacroEnvironment()
+
+    # Delegate; trampoline if a TailCall is produced
+    result = apply_engine(func, list(args), env, macros, evaluate0, False)
+    while isinstance(result, TailCall):
+        # Step the trampoline manually using evaluate0
+        result = evaluate0(result.fn.body, result.env, result.macros, True)
+    return result
 
 
 def join(env: Environment, expr: list[LispValue]) -> list[LispValue]:

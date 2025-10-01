@@ -234,3 +234,20 @@ def test_defstruct_with_defaults(env, macros):
     rect_height_fn = env.lookup(Symbol("rect-height"))
     assert rect_width_fn(env, [rect2]) == 7
     assert rect_height_fn(env, [rect2]) == 1
+
+
+def test_lambda_multiple_body_forms(env):
+    # (lambda (x) (expr1) (expr2)) should behave like implicit progn
+    expr = [Symbol("lambda"), [Symbol("x")], [Symbol("+"), 1, 2], [Symbol("+"), 10, 5]]
+    lam = evaluate(expr, env)
+    result = evaluate([lam, 0], env)
+    assert result == 15
+
+
+def test_lambda_empty_body_returns_nil(env):
+    # A lambda with no body should return nil when invoked
+    expr = [Symbol("lambda"), [Symbol("x")]]
+    lam = evaluate(expr, env)
+    result = evaluate([lam, 42], env)
+    from zeta.types.nil import Nil
+    assert result is Nil

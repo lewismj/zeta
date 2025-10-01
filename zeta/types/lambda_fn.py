@@ -6,6 +6,7 @@ from zeta import SExpression, LispValue
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 from zeta.types.errors import ZetaArityError
+from zeta.types.nil import Nil
 
 
 class Lambda:
@@ -49,28 +50,89 @@ class Lambda:
         supplied = list(args)
         local_env = Environment(outer=self.env)
 
+        # Analyze formals for &rest or &key
+        if Symbol("&rest") in formals and Symbol("&key") in formals:
+            raise ZetaArityError("Malformed parameter list: cannot mix &rest and &key")
+
+        if Symbol("&rest") in formals:
+            # Existing &rest behavior
+            while formals:
+                formal = formals.pop(0)
+                if formal == Symbol("&rest"):
+                    if not formals:
+                        raise ZetaArityError(
+                            "Malformed parameter list: &rest must be followed by a name"
+                        )
+                    rest_name = formals.pop(0)
+                    local_env.define(rest_name, supplied)
+                    supplied = []
+                    break
+                if supplied:
+                    local_env.define(formal, supplied.pop(0))
+                else:
+                    # Too few arguments and no &rest to capture them
+                    missing = [formal] + formals
+                    raise ZetaArityError(
+                        f"Too few arguments; missing {len(missing)} parameter(s): {[str(s) for s in missing]}"
+                    )
+
+            if supplied:
+                # Too many arguments with no &rest parameter
+                raise ZetaArityError(f"Too many arguments: {supplied}")
+
+            return local_env
+
+        # &key handling
+        if Symbol("&key") in formals:
+            # split formals: positionals before &key, then list of keyword names
+            key_index = formals.index(Symbol("&key"))
+            positional_formals = formals[:key_index]
+            keyword_formals = formals[key_index + 1 :]
+
+            # Bind positional first
+            for pf in positional_formals:
+                if supplied:
+                    local_env.define(pf, supplied.pop(0))
+                else:
+                    missing = [pf] + positional_formals[positional_formals.index(pf)+1:]
+                    raise ZetaArityError(
+                        f"Too few arguments; missing {len(missing)} parameter(s): {[str(s) for s in missing]}"
+                    )
+
+            # Remaining supplied must be keyword/value pairs
+            if len(supplied) % 2 != 0:
+                raise ZetaArityError("Keyword arguments must be in pairs")
+
+            provided_keys: dict[Symbol, LispValue] = {}
+            while supplied:
+                key = supplied.pop(0)
+                val = supplied.pop(0) if supplied else None
+                if not isinstance(key, Symbol) or not key.id.startswith(":"):
+                    raise ZetaArityError("Expected keyword symbol like :name in keyword arguments")
+                # map :name -> name symbol
+                name = key.id[1:]
+                target = Symbol(name)
+                if target not in keyword_formals:
+                    raise ZetaArityError(f"Unknown keyword argument {key}")
+                provided_keys[target] = val
+
+            # Define all keyword formals, defaulting to Nil
+            for kf in keyword_formals:
+                val = provided_keys.get(kf, Nil)
+                local_env.define(kf, val)
+
+            return local_env
+
+        # No &rest or &key: simple positional arity
         while formals:
             formal = formals.pop(0)
-            if formal == Symbol("&rest"):
-                if not formals:
-                    raise ZetaArityError(
-                        "Malformed parameter list: &rest must be followed by a name"
-                    )
-                rest_name = formals.pop(0)
-                local_env.define(rest_name, supplied)
-                supplied = []
-                break
             if supplied:
                 local_env.define(formal, supplied.pop(0))
             else:
-                # Too few arguments and no &rest to capture them
                 missing = [formal] + formals
                 raise ZetaArityError(
                     f"Too few arguments; missing {len(missing)} parameter(s): {[str(s) for s in missing]}"
                 )
-
         if supplied:
-            # Too many arguments with no &rest parameter
             raise ZetaArityError(f"Too many arguments: {supplied}")
-
         return local_env
