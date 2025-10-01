@@ -288,3 +288,56 @@ def test_macro_expand_all_recursive(macro_env, base_env):
     expanded = macro_env.macro_expand_all(expr, dummy_eval, base_env)
     assert expanded == [[Symbol("+"), 1, 1], [Symbol("*"), 3, 2]]
 
+
+def test_macro_quasiquote_unquote_expansion(macro_env, base_env):
+    """
+    Macro with a quasiquoted body should evaluate unquote at expansion time.
+    (defmacro wrap (x) `(1 ,x 3)) → expands to [1, <arg>, 3]
+    """
+    from zeta.evaluation.evaluator import evaluate
+
+    macro_env.define_macro(
+        Symbol("wrap"),
+        Lambda([Symbol("x")], [Symbol("quasiquote"), [1, [Symbol("unquote"), Symbol("x")], 3]])
+    )
+
+    expr = [Symbol("wrap"), 42]
+    expanded = macro_env.macro_expand_head(expr, evaluate, base_env)
+    assert expanded == [1, 42, 3]
+
+
+def test_macro_unquote_splicing_with_rest_args(macro_env, base_env):
+    """
+    Macro with &rest parameters using ,@ should splice arguments during expansion.
+    (defmacro m (&rest xs) `(1 ,@xs 99))
+    m 2 3  → [1, 2, 3, 99]
+    """
+    from zeta.evaluation.evaluator import evaluate
+
+    macro_env.define_macro(
+        Symbol("m"),
+        Lambda([Symbol("&rest"), Symbol("xs")], [Symbol("quasiquote"), [1, [Symbol("unquote-splicing"), Symbol("xs")], 99]])
+    )
+
+    expr = [Symbol("m"), 2, 3]
+    expanded = macro_env.macro_expand_head(expr, evaluate, base_env)
+    assert expanded == [1, 2, 3, 99]
+
+
+def test_macro_unquote_splicing_type_error(macro_env, base_env):
+    """
+    Using ,@ on a non-list inside a macro quasiquote should raise a type error at expansion time.
+    """
+    import pytest
+    from zeta.evaluation.evaluator import evaluate
+    from zeta.types.errors import ZetaTypeError
+
+    # `(,@42) is invalid because 42 is not a list
+    macro_env.define_macro(
+        Symbol("bad-splice"),
+        Lambda([], [Symbol("quasiquote"), [[Symbol("unquote-splicing"), 42]]])
+    )
+
+    with pytest.raises(ZetaTypeError):
+        macro_env.macro_expand_head([Symbol("bad-splice")], evaluate, base_env)
+
