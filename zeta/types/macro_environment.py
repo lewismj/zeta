@@ -3,7 +3,7 @@ from __future__ import annotations
 from itertools import count
 from typing import Callable
 
-from zeta import SExpression, TransformerFunction
+from zeta import SExpression
 from zeta.types.environment import Environment
 from zeta.types.errors import ZetaArityError
 from zeta.types.lambda_fn import Lambda
@@ -48,11 +48,11 @@ class MacroEnvironment:
     """
 
     def __init__(self):
-        self.macros: dict[Symbol, Lambda | TransformerFunction] = {}
+        self.macros: dict[Symbol, Lambda] = {}
         self._gensym_counter = count(1)
 
     # ----------------- Macro Registration -----------------
-    def define_macro(self, name: Symbol, transformer: Lambda | TransformerFunction):
+    def define_macro(self, name: Symbol, transformer: Lambda):
         self.macros[name] = transformer
 
     def is_macro(self, sym: Symbol) -> bool:

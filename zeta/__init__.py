@@ -5,5 +5,5 @@ from typing import Any, Callable
 
 
 SExpression = Any
-TransformerFunction = Callable[[list[SExpression], 'Environment'], SExpression]
+
 
