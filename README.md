@@ -96,6 +96,8 @@ print(interp.eval('(progn (define inc (lambda (x) (+ x 1))) (inc 41))'))
 Or evaluate a block with Python interop:
 
 ```python
+from zeta.interpreter import Interpreter
+
 code = """
 (progn
   (import "numpy" as "np")
@@ -152,6 +154,40 @@ Partial application for simple positional lambdas:
 
 (fact 5 1)  ;; => 120
 ```
+
+#### Continuations (call/cc)
+
+Zeta includes Scheme-style escape continuations via the special form `call/cc` (call-with-current-continuation).
+The continuation captured by `call/cc` is single-shot and delimited to the dynamic extent of the call. Invoking
+it performs a non-local exit that returns its value as the value of the `call/cc` expression.
+
+```lisp
+;; Early exit
+(call/cc (lambda (k)
+  (k 42)   ;; escape immediately, returning 42 from call/cc
+  99))     ;; never reached
+;; => 42
+
+;; Embedded in an expression: the value escapes back to the call site
+(+ 1 (call/cc (lambda (k) (k 10))))  ;; => 11
+
+;; Break out of nested calls
+(progn
+  (define out
+    (call/cc (lambda (escape)
+      ((lambda ()
+         ((lambda ()
+            (escape "stopped-from-deep-inside"))  ;; non-local exit
+          ))
+       )
+      "unreached"))))
+  out)
+;; => "stopped-from-deep-inside"
+```
+
+Notes:
+- The provided continuation is represented as a function you can call with zero or one argument; zero defaults to `Nil`.
+- Invoking the continuation outside the dynamic extent of the original `call/cc` is not supported (single-shot semantics).
 
 #### Python interop in detail
 

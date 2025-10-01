@@ -20,6 +20,7 @@ from zeta.evaluation.special_forms.do_loop_forms import do_loop_form, do_list_lo
 from zeta.evaluation.special_forms.condition_case_form import condition_case_form
 from zeta.evaluation.special_forms.throw_catch_form import throw_form, catch_form
 from zeta.evaluation.special_forms.apply_form import apply_form
+from zeta.evaluation.special_forms.call_cc_form import call_cc_form
 
 SPECIAL_FORMS = {
     Symbol("set"): set_form,
@@ -44,4 +45,5 @@ SPECIAL_FORMS = {
     Symbol("throw"): throw_form,
     Symbol("catch"): catch_form,
     Symbol("apply"): apply_form,
+    Symbol("call/cc"): call_cc_form,
 }

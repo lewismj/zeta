@@ -51,7 +51,7 @@ def catch_form(
     (catch 'tag body [fallback])
     - Catches (throw 'tag value)
     - 'any' tag catches all Python exceptions
-    - fallback is evaluated if throw tag doesn't match or if Python exception occurs
+    - fallback is evaluated if the throw tag doesn't match or if a Python exception occurs
     """
     tag_expr = tail[0]
     body_expr = tail[1]
