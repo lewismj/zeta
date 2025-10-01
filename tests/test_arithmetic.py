@@ -1,8 +1,7 @@
 import pytest
-from zeta.parser import TokenStream, lex
+from zeta.reader.parser import TokenStream, lex
 from zeta.types.environment import Environment
 from zeta.evaluation.evaluator import evaluate
-from zeta.evaluation.special_forms.throw_catch_form import ThrowException
 from zeta.builtin.env_builtin import register
 
 @pytest.fixture

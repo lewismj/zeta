@@ -5,10 +5,10 @@ import numpy as np
 from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
-from zeta.parser import lex
+from zeta.reader.parser import lex
 from zeta.evaluation.evaluator import evaluate
 from zeta.builtin.env_builtin import register
-from zeta.parser import TokenStream
+from zeta.reader.parser import TokenStream
 
 
 def import_module1(

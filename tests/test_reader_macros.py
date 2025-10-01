@@ -1,5 +1,5 @@
 import pytest
-from zeta.parser import lex
+from zeta.reader.parser import lex
 
 
 # ----------------------------------------

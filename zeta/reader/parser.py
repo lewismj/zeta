@@ -23,12 +23,12 @@
 """
 
 import re
-from typing import Iterator, Callable, Optional
+from typing import Iterator, Optional
 from zeta.types.errors import ZetaSyntaxError
 from zeta import SExpression
 from zeta.types.nil import Nil
 from zeta.types.symbol import Symbol
-from zeta.reader_macros import reader_macros, QUOTE_FORMS
+from zeta.reader.reader_macros import reader_macros, QUOTE_FORMS
 
 
 
