@@ -4,6 +4,7 @@ from zeta.reader.parser import lex, TokenStream
 from zeta.types.symbol import Symbol
 from zeta.types.nil import Nil
 from zeta.types.macro_environment import MacroEnvironment
+from zeta.builtin.macro_builtin import register as register_macros
 from zeta.types.environment import Environment
 from zeta.types.errors import ZetaArityError
 
@@ -58,46 +59,12 @@ programs = [
     {'tag': 'system-error', 'exception': 'ZeroDivisionError', 'message': 'Division by zero'} )
 ]
 
-# These should be default macros.
-# Slight inconsistency, def_macro transformer is fn (args, env), builtins are fn (env, args)...
-
-def let_macro(args, env):
-    """
-    (let ((var1 val1) (var2 val2) ...) body...)
-    => ((lambda (var1 var2 ...) body...) val1 val2 ...)
-    """
-    if len(args) < 2:
-        raise ZetaArityError("let requires bindings and at least one body form")
-
-    bindings = args[0]
-    body = args[1:]
-
-    vars_ = [var for var, *_ in bindings]
-    vals_ = [val for _, val, *rest in bindings]
-
-    return [[Symbol('lambda'), vars_] + body] + vals_
-
-
-def defun_macro(args, env):
-    if len(args) < 3:
-        raise ZetaArityError("defun requires at least 3 arguments: (defun name (params) body...)")
-
-    name = args[0]       # function name (symbol)
-    params = args[1]     # parameter list
-    body = args[2:]      # body expressions
-
-    # Expand (defun name (params) body...)
-    # into (define name (lambda (params) body...))
-    return [ Symbol('define'), name, [Symbol('lambda'), params] + body]
-
 
 def main():
     env = Environment()
 
-    # We need global macros table with some standard built-in macros.
     macros = MacroEnvironment()
-    macros.define_macro(Symbol("defun"), defun_macro)
-    macros.define_macro(Symbol("let"), let_macro)
+    register_macros(macros)
 
     register(env)
 

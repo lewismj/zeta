@@ -262,6 +262,8 @@ def register(env: Environment):
         Symbol('cons'): cons,
         Symbol('car'): car,
         Symbol('cdr'): cdr,
+        Symbol('head'): car,  # alias for car
+        Symbol('tail'): cdr,  # alias for cdr,
         Symbol('list'): list_builtin,
         Symbol('apply'): apply,
         Symbol('nil?'): is_nil,

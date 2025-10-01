@@ -35,7 +35,7 @@ def evaluate0(expr: SExpression, env: Environment, macros: MacroEnvironment = No
     if macros is None:
         macros = MacroEnvironment()
 
-    # --- Macro Expansion & Quasi-quote ---
+    # --- Lists, quotes: handle only quote-classes and empty list here ---
     match expr:
         case QQ(value):
             return [Symbol("quasiquote"), evaluate0(value, env, macros)]
@@ -48,8 +48,21 @@ def evaluate0(expr: SExpression, env: Environment, macros: MacroEnvironment = No
             return result
         case []:
             return []
-        case list() as xs if xs:
-            expr = macros.macro_expand_all(xs, evaluate0, env)
+
+    # --- Head-position macro handling and guarded expansion ---
+    if isinstance(expr, list) and expr:
+        h = expr[0]
+        if isinstance(h, Symbol):
+            # Expand head-position macro first
+            if macros.is_macro(h):
+                expanded = macros.expand_1(expr, evaluate0, env)
+                return evaluate0(expanded, env, macros, is_tail_call)
+            # Do not pre-expand inside special forms (e.g., quasiquote)
+            if h not in SPECIAL_FORMS:
+                expr = macros.macro_expand_all(expr, evaluate0, env)
+        else:
+            # Non-symbol head: safe to expand recursively
+            expr = macros.macro_expand_all(expr, evaluate0, env)
 
     # --- Expression dispatch ---
     match expr:

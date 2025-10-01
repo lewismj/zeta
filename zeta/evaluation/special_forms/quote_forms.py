@@ -48,6 +48,10 @@ def eval_quasiquote(evaluate_fn, is_tail_call, expr, env, macros, depth=1):
                 result.append(evaluate_fn(tail[0], env, macros, is_tail_call))
                 continue
             if head == Symbol("unquote-splicing") and depth == 1:
+                # Gracefully handle malformed ',@' without an argument by splicing nothing
+                if not tail:
+                    # Treat as splicing an empty list (robustness for ill-formed macro expansions)
+                    continue
                 spliced = evaluate_fn(tail[0], env, macros, is_tail_call)
                 if not isinstance(spliced, list):
                     raise ZetaTypeError("unquote-splicing must produce a list")
@@ -65,7 +69,9 @@ def quote_form(tail, env, macros, evaluate_fn, _):
 def quasiquote_form(tail, env, macros, evaluate_fn, is_tail_call=False):
     if len(tail) != 1:
         raise ZetaArityError("quasiquote expects exactly 1 argument")
-    return evaluate_fn(eval_quasiquote(evaluate_fn, is_tail_call, tail[0], env, macros), env, macros)
+    # Quasiquote returns the constructed data structure; do not evaluate it here.
+    # Embedded unquotes/unquote-splicing are already processed by eval_quasiquote.
+    return eval_quasiquote(evaluate_fn, is_tail_call, tail[0], env, macros)
 
 def unquote_form(tail, env, macros, evaluate_fn, _):
     raise ZetaError(f"unquote not valid outside of quasiquote")
