@@ -1,11 +1,7 @@
 from zeta.types.errors import ZetaInvalidSymbol, ZetaArityError, ZetaTypeError
 from zeta.types.symbol import Symbol
 from zeta.types.lambda_fn import Lambda
-from zeta.types.environment import Environment
 from zeta.types.nil import Nil
-from zeta import SExpression
-from zeta.types.macro_environment import _substitute
-
 
 
 def defmacro_form(tail, env, macros, evaluate_fn,  _):
