@@ -14,6 +14,11 @@ def defstruct_form(tail, env, macros, evaluate_fn, _):
             raise ZetaArityError(f"{struct_name} constructor expects {len(fields)} args")
         return {"__type__": struct_name, **dict(zip(fields, args))}
 
+    # Mapping with reader macro #s:
+    # The reader expands literals of the form #s(<name> <field1> v1 <field2> v2 ...)
+    # into a constructor call (make-<name> v1 v2 ...). Therefore, make-<name>
+    # must accept positional arguments in the same order as fields were declared
+    # in this defstruct form.
     constructor_name = Symbol(f"make-{struct_name}")
     env.define(constructor_name, make_struct)
 

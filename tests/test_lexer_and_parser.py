@@ -3,7 +3,7 @@ from hypothesis import given, strategies as st
 
 from zeta.types.nil import Nil
 from zeta.types.symbol import Symbol
-from zeta.parser import lex, TokenStream
+from zeta.reader.parser import lex, TokenStream
 
 # Convert nested list to Lisp source string
 def _to_lisp_source(expr):

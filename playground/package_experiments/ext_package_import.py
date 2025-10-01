@@ -4,7 +4,7 @@ from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.environment import Environment
 from zeta.evaluation.evaluator import evaluate
 from zeta.builtin.env_builtin import register
-from zeta.parser import lex, TokenStream
+from zeta.reader.parser import lex, TokenStream
 from zeta.packages import import_module
 
 def main():
