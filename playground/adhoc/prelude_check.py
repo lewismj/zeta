@@ -44,10 +44,6 @@ def main():
                 ))
                 
             
-            (defun apply (f xs)
-                (foldl (lambda (acc x) (f x)) Nil xs)
-            )
-            
             (defun filter (f xs)
                 (if (== xs Nil)
                     Nil

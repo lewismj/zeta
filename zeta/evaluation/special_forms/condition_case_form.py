@@ -2,6 +2,7 @@
 
 Provides a simple error-catching construct similar to Emacs Lisp's condition-case.
 """
+
 from zeta import SExpression
 from zeta.types.environment import Environment
 from zeta.types.macro_environment import MacroEnvironment
