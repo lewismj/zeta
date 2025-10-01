@@ -1,3 +1,10 @@
+"""Runtime environment for Zeta.
+
+The Environment stores bindings of Symbols to evaluated Lisp values and supports
+nested scopes via an `outer` link. It also implements a lightweight package
+system with namespace aliases to allow qualified symbol lookups like pkg:sym.
+"""
+
 from __future__ import annotations
 
 from io import StringIO
@@ -9,6 +16,8 @@ from zeta.types.symbol import Symbol
 
 
 class Environment:
+    """Hierarchical mapping from Symbols to Lisp values with package support."""
+
     def __init__(self, outer: Optional[Environment] = None):
         # Runtime environment stores evaluated LispValue(s)
         self.vars: dict[Symbol, LispValue] = {}
@@ -17,11 +26,16 @@ class Environment:
         self.package_aliases: dict[str, str] = {}
 
     def define(self, name: Symbol, value: LispValue) -> None:
+        """Bind `name` to `value` in the current frame.
+
+        Raises ZetaInvalidSymbol if `name` is not a Symbol.
+        """
         if not isinstance(name, Symbol):
             raise ZetaInvalidSymbol(f"Cannot define {name} as a symbol")
         self.vars[name] = value
 
     def find(self, symbol: Symbol) -> Optional[Environment]:
+        """Find the nearest environment in the chain that contains `symbol`."""
         env: Optional[Environment] = self
         while env is not None:
             if symbol in env.vars:
@@ -30,12 +44,22 @@ class Environment:
         return None
 
     def set(self, name: Symbol, value: LispValue) -> None:
+        """Update an existing binding for `name` in the environment chain.
+
+        Raises ZetaUnboundSymbol if the symbol is not found.
+        """
         env = self.find(name)
         if env is None:
             raise ZetaUnboundSymbol(f"Cannot set unbound symbol {name}")
         env.vars[name] = value
 
     def lookup(self, name: Symbol) -> LispValue:
+        """Look up the value bound to `name`.
+
+        Supports qualified lookups `pkg:symbol` by resolving package aliases and
+        searching the root environment's package table first. Falls back to the
+        lexical chain. Raises ZetaUnboundSymbol if not found.
+        """
         s = str(name)
         if ":" in s:
             pkg, sym = s.split(":", 1)
@@ -50,6 +74,7 @@ class Environment:
         return env.vars[name]
 
     def define_package(self, pkg_name: str) -> Environment:
+        """Create or return a top-level package environment by name."""
         env = self
         while env.outer is not None:
             env = env.outer
@@ -59,6 +84,7 @@ class Environment:
         return env.packages[pkg_name]
 
     def get_package_symbol(self, pkg_name: str, sym: Symbol) -> LispValue:
+        """Look up `sym` inside the named package at the root environment."""
         env = self
         while env.outer is not None:
             env = env.outer
@@ -68,18 +94,21 @@ class Environment:
         return pkg_env.lookup(sym)
 
     def register_package_alias(self, alias: str, pkg_name: str) -> None:
+        """Register a short alias for a package name at the root environment."""
         env = self
         while env.outer is not None:
             env = env.outer
         env.package_aliases[alias] = pkg_name
 
     def update(self, mapping: dict[Symbol, LispValue]) -> None:
+        """Bulk-define a mapping of Symbol -> value in the current frame."""
         for k, v in mapping.items():
             if not isinstance(k, Symbol):
                 raise ZetaInvalidSymbol(f"Cannot define {k} as a symbol")
             self.vars[k] = v
 
     def _write_vars(self, buffer: StringIO) -> None:
+        """Write this frame's variables into the buffer in a compact form."""
         buffer.write("{")
         first = True
         for k, v in self.vars.items():
@@ -90,6 +119,7 @@ class Environment:
         buffer.write("}")
 
     def __str__(self) -> str:
+        """Human-readable single-frame view with an indicator for parent."""
         with StringIO() as buffer:
             self._write_vars(buffer)
             if self.outer is not None:
@@ -97,6 +127,7 @@ class Environment:
             return buffer.getvalue()
 
     def __repr__(self) -> str:
+        """Detailed chain representation for debugging purposes."""
         with StringIO() as buffer:
             buffer.write("<Environment chain: ")
             env = self

@@ -1,3 +1,7 @@
+"""Special form: defmacro.
+
+Defines a macro transformer in the macro environment using a lambda-like body.
+"""
 from __future__ import annotations
 
 from zeta import EvaluatorFn, SExpression, LispValue
@@ -10,6 +14,7 @@ from zeta.types.macro_environment import MacroEnvironment
 
 
 def defmacro_form(tail: list[SExpression], env: Environment, macros: MacroEnvironment, evaluate_fn: EvaluatorFn,  _: bool) -> LispValue:
+        """Register a macro named by the first argument with params/body in tail."""
         if len(tail) < 2:
             raise ZetaArityError("defmacro requires a name and parameter list")
 

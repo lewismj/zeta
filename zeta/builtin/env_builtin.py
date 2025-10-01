@@ -1,3 +1,8 @@
+"""Built-in functions for the Zeta runtime environment.
+
+This module defines core arithmetic, comparison, list processing, predicates,
+application helpers, and registration utilities exposed to Lisp code.
+"""
 from __future__ import annotations
 from typing import Any
 
@@ -14,6 +19,7 @@ from zeta.types.errors import ZetaTypeError, ZetaArityError
 
 
 def equals(env: Environment, expr: list[LispValue]) -> Symbol:
+    """Return #t if all arguments are equal (or zero/one arg), else #f."""
     if len(expr) <= 1:
         return Symbol("#t")
     first = expr[0]

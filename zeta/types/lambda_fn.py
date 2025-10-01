@@ -1,3 +1,5 @@
+"""Lambda function representation and argument binding utilities for Zeta."""
+
 from __future__ import annotations
 
 from io import StringIO
@@ -10,6 +12,8 @@ from zeta.types.nil import Nil
 
 
 class Lambda:
+    """A first-class lambda with formal parameters, body, and closure env."""
+
     def __init__(
         self, formals: list[Symbol], body: SExpression, env: Environment = Environment()
     ):
@@ -41,6 +45,7 @@ class Lambda:
         Semantics (aligned with apply.apply_lambda for full applications):
         - Positional binding of parameters.
         - Supports &rest to capture remaining arguments as a list.
+        - Supports &key for named parameters provided like :name value.
         - Raises ZetaArityError if too few or too many args are supplied when
           no &rest parameter is present.
         - Partial application is not handled here; callers should ensure full
@@ -55,7 +60,8 @@ class Lambda:
             raise ZetaArityError("Malformed parameter list: cannot mix &rest and &key")
 
         if Symbol("&rest") in formals:
-            # Existing &rest behavior
+            # &rest collects the remaining arguments into a list bound to the
+            # following formal symbol.
             while formals:
                 formal = formals.pop(0)
                 if formal == Symbol("&rest"):
@@ -82,7 +88,7 @@ class Lambda:
 
             return local_env
 
-        # &key handling
+        # &key handling (Common Lisp-style named parameters)
         if Symbol("&key") in formals:
             # split formals: positionals before &key, then list of keyword names
             key_index = formals.index(Symbol("&key"))

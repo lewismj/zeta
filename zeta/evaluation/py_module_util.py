@@ -1,12 +1,19 @@
+"""Utilities for resolving Python module/object paths from Zeta symbols.
+
+This module provides helpers that let Zeta forms refer to Python objects using
+package-qualified or dotted notation (e.g., np:array, os:path.join).
+"""
 from typing import Any
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 
 
 def resolve_object_path(env: Environment, path: Symbol) -> Any:
-    """
-    Resolve a path like 'np:array', 'df:head', or 'df/head'.
-    Handles both module-level functions and object-level methods.
+    """Resolve a qualified symbol to a Python object or Zeta binding.
+
+    Supports package aliases (pkg:sym) and dotted traversal. If an intermediate
+    object is a Zeta Environment, lookups switch to symbolic lookup; otherwise
+    Python attribute access is used.
     """
     parts = path.id.replace(":", ".").split(".")
     first, *rest = parts

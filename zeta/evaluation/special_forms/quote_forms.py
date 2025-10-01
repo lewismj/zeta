@@ -1,6 +1,12 @@
+"""Quote-related special forms: quote, quasiquote, unquote, unquote-splicing.
+
+Implements Lisp-style construction of data with support for nested quasiquotes,
+unquote evaluation at the correct depth, and unquote-splicing in list contexts.
+"""
+
 from zeta import SExpression, LispValue, EvaluatorFn
 from zeta.types.errors import ZetaArityError, ZetaTypeError, ZetaError
-
+from zeta.types.symbol import Symbol
 
 def eval_quasiquote(
     evaluate_fn: EvaluatorFn,
@@ -10,7 +16,12 @@ def eval_quasiquote(
     macros,
     depth: int = 1,
 ) -> SExpression:
-    from zeta.types.symbol import Symbol
+    """Recursively process a quasiquote form and construct the resulting data.
+
+    Handles nested quasiquotes by increasing `depth`, evaluates unquotes only
+    at depth==1, and splices lists for unquote-splicing. Supports dotted lists
+    (pairs) by separately processing the list part and the tail.
+    """
 
     def _process_list_part(seq):
         result_list = []
@@ -91,6 +102,7 @@ def eval_quasiquote(
 def quote_form(
     tail: list[SExpression], env, macros, evaluate_fn: EvaluatorFn, _: bool
 ) -> LispValue:
+    """Special form (quote x): return the argument unevaluated."""
     if len(tail) != 1:
         raise ZetaArityError("Quote expects exactly 1 argument")
     return tail[0]
@@ -103,6 +115,7 @@ def quasiquote_form(
     evaluate_fn: EvaluatorFn,
     is_tail_call: bool = False,
 ) -> LispValue:
+    """Special form (quasiquote x): build data with nested unquotes handled."""
     if len(tail) != 1:
         raise ZetaArityError("Quasiquote expects exactly 1 argument")
     # Quasiquote returns the constructed data structure; do not evaluate it here.
@@ -113,10 +126,12 @@ def quasiquote_form(
 def unquote_form(
     tail: list[SExpression], env, macros, evaluate_fn: EvaluatorFn, _: bool
 ) -> LispValue:
+    """Unquote outside quasiquote is an error."""
     raise ZetaError(f"Unquote not valid outside of quasiquote")
 
 
 def unquote_splice_form(
     tail: list[SExpression], env, macros, evaluate_fn: EvaluatorFn, _: bool
 ) -> LispValue:
+    """Unquote-splicing outside quasiquote is an error."""
     raise ZetaError(f"Unquote-splicing not valid outside of quasiquote")

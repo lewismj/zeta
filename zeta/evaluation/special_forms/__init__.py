@@ -1,3 +1,10 @@
+"""Registry of special forms for the Zeta evaluator.
+
+Maps Symbols to handler functions that implement non-standard evaluation rules.
+The evaluator consults this table to dispatch special forms before ordinary
+function application.
+"""
+
 from zeta.types.symbol import Symbol
 from zeta.evaluation.special_forms.set_form import set_form
 from zeta.evaluation.special_forms.progn_form import progn_form

@@ -1,3 +1,7 @@
+"""Condition handling special form: condition-case.
+
+Provides a simple error-catching construct similar to Emacs Lisp's condition-case.
+"""
 from zeta import SExpression
 from zeta.types.environment import Environment
 from zeta.types.macro_environment import MacroEnvironment
@@ -12,6 +16,7 @@ def eval_condition_case(
     macros: MacroEnvironment,
     is_tail_call=False,
 ) -> SExpression:
+    """Evaluate a condition-case block with optional tail-call awareness."""
     if not tail_exprs:
         raise ZetaArityError("condition-case requires at least a body expression")
 

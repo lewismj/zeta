@@ -1,5 +1,10 @@
-from __future__ import annotations
+"""Looping special forms for Zeta: do, dotimes, dolist.
 
+Each loop is implemented as a small evaluator object that closes over the loop
+spec and reuses the main evaluator to execute bodies in the appropriate scope.
+"""
+
+from __future__ import annotations
 from zeta import SExpression, LispValue, EvaluatorFn
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
@@ -8,6 +13,13 @@ from zeta.types.macro_environment import MacroEnvironment
 
 
 class DoLoopEval:
+    """Implements the (do ...) loop.
+
+    varspecs: [(var init step?) ...]
+    end_clause: [test expr*]
+    body: repeated forms executed each iteration
+    """
+
     def __init__(
         self,
         varspecs: list[list[SExpression]],
@@ -21,13 +33,14 @@ class DoLoopEval:
         self.evaluate_fn: EvaluatorFn = evaluate_fn
 
     def eval(self, env: Environment, macros: MacroEnvironment) -> LispValue:
+        """Evaluate the do loop by stepping until the end test is true."""
         if not self.end_clause:
             raise ZetaError("Do requires an end clause")
 
         local_env = Environment(outer=env)
         steps = []
 
-        # Step 1: define all loop variables first
+        # 1: define all loop variables first
         for varspec in self.varspecs:
             var_name, *_ = varspec
             if not isinstance(var_name, Symbol):
@@ -36,19 +49,19 @@ class DoLoopEval:
                 )
             local_env.define(var_name, None)
 
-        # Step 2: initialize loop variables
+        # 2: initialize loop variables
         for varspec in self.varspecs:
             var_name, init, *step_expr = varspec + [None] * (3 - len(varspec))
             local_env.set(var_name, self.evaluate_fn(init, local_env, macros, False))
             if step_expr and step_expr[0] is not None:
                 steps.append((var_name, step_expr[0]))
 
-        # Step 3: unpack end clause
+        # 3: unpack the end clause.
         test_expr, *exit_exprs = self.end_clause
         if not exit_exprs:
             exit_exprs = [None]
 
-        # Step 4: loop
+        # 4: loop
         while True:
             if self.evaluate_fn(test_expr, local_env, macros, False):
                 result = None
@@ -68,6 +81,8 @@ class DoLoopEval:
 
 
 class DoTimesLoopEval:
+    """Implements the (dotimes (var count) body...) loop."""
+
     def __init__(
         self,
         varspec: list[SExpression],
@@ -79,6 +94,7 @@ class DoTimesLoopEval:
         self.evaluate_fn: EvaluatorFn = evaluate_fn
 
     def eval(self, env: Environment, macros: MacroEnvironment) -> LispValue:
+        """Execute body `count` times with `var` bound from 0..count-1."""
         var_name, count_expr, *rest = self.varspec + [None] * (2 - len(self.varspec))
         if not isinstance(var_name, Symbol):
             raise ZetaInvalidSymbol(f"Dotimes variable must be Symbol, got {var_name}")
@@ -100,6 +116,8 @@ class DoTimesLoopEval:
 
 
 class DoListLoopEval:
+    """Implements the (dolist (var list) body...) loop."""
+
     def __init__(
         self,
         varspec: list[SExpression],
@@ -111,6 +129,7 @@ class DoListLoopEval:
         self.evaluate_fn: EvaluatorFn = evaluate_fn
 
     def eval(self, env: Environment, macros: MacroEnvironment) -> LispValue:
+        """Iterate over the list, binding `var` to each element in turn."""
         var_name, lst_expr, *rest = self.varspec + [None] * (2 - len(self.varspec))
         if not isinstance(var_name, Symbol):
             raise ZetaInvalidSymbol(f"Dolist variable must be Symbol, got {var_name}")
@@ -138,6 +157,7 @@ def do_loop_form(
     evaluate_fn: EvaluatorFn,
     _: bool,
 ) -> LispValue:
+    """Special form (do ...): evaluate a general iteration construct."""
     return DoLoopEval(tail[0], tail[1], tail[2:], evaluate_fn).eval(env, macros)
 
 
@@ -148,6 +168,7 @@ def do_times_n_loop_form(
     evaluate_fn: EvaluatorFn,
     _: bool,
 ) -> LispValue:
+    """Special form (dotimes (var n) ...): run body `n` times."""
     return DoTimesLoopEval(tail[0], tail[1:], evaluate_fn).eval(env, macros)
 
 
@@ -158,4 +179,5 @@ def do_list_loop_form(
     evaluate_fn: EvaluatorFn,
     _: bool,
 ) -> LispValue:
+    """Special form (dolist (var list) ...): iterate over a list."""
     return DoListLoopEval(tail[0], tail[1:], evaluate_fn).eval(env, macros)

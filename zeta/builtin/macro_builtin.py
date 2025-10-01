@@ -1,3 +1,9 @@
+"""Builtin macro transformers for Zeta (implemented in Python).
+
+Provides common macros like `let` and `defun` that expand into core special
+forms and lambdas.
+"""
+
 from typing import Any
 from zeta import SExpression
 from zeta.types.errors import ZetaArityError, ZetaTypeError
@@ -34,6 +40,10 @@ def let_macro(args: list[SExpression], env: Any) -> SExpression:
 
 
 def defun_macro(args: list[SExpression], env: Any) -> SExpression:
+    """(defun name (params) body...) -> define a function named `name`.
+
+    Expands into (define name (lambda (params) body...)).
+    """
     if len(args) < 3:
         raise ZetaArityError(
             "defun requires at least 3 arguments: (defun name (params) body...)"
@@ -49,5 +59,6 @@ def defun_macro(args: list[SExpression], env: Any) -> SExpression:
 
 
 def register(macro_env: MacroEnvironment) -> None:
+    """Register builtin macros in the provided MacroEnvironment."""
     macro_env.define_macro(Symbol("defun"), defun_macro)
     macro_env.define_macro(Symbol("let"), let_macro)

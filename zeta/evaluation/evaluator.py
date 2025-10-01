@@ -1,3 +1,9 @@
+"""Core evaluator and trampoline for the Zeta interpreter.
+
+Implements macro expansion, special-form dispatch, and tail-call aware
+application via a simple trampoline using TailCall objects.
+"""
+
 from __future__ import annotations
 
 from zeta import SExpression, LispValue
@@ -42,7 +48,7 @@ def evaluate0(
     if expr == []:
         return []
 
-    # --- Head-position macro handling and guarded expansion ---
+    # Head-position macro handling and guarded expansion.
     if isinstance(expr, list) and expr:
         h = expr[0]
         if isinstance(h, Symbol):
@@ -76,7 +82,7 @@ def evaluate0(
                 else:
                     head = env.lookup(head)
 
-            # --- Lambda / callable application ---
+            # Lambda / callable application.
             if isinstance(head, Lambda) or callable(head):
                 args = [evaluate0(arg, env, macros) for arg in tail_args]
                 result = apply(
@@ -84,7 +90,7 @@ def evaluate0(
                 )  # <-- pass tail flag
                 return result
 
-            # --- Evaluate head if it is a list and re-dispatch ---
+            # Evaluate head if it is a list and re-dispatch.
             if isinstance(head, list):
                 head_eval = evaluate0(head, env, macros)
                 return evaluate0([head_eval] + tail_args, env, macros, is_tail_call)

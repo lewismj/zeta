@@ -1,3 +1,10 @@
+"""Special form: apply.
+
+This thin adapter evaluates its operands and delegates function application to
+zeta.evaluation.apply.apply, while enforcing that `(apply ...)` requires full
+application (no partials) for simple positional lambdas.
+"""
+
 from zeta import EvaluatorFn
 from zeta import SExpression, LispValue
 from zeta.types.errors import ZetaTypeError, ZetaArityError
@@ -32,15 +39,15 @@ def apply_form(
 
     fn_expr, args_expr = tail
 
-    # Evaluate function and argument list
+    # Evaluate function and argument list.
     fn_val = evaluate_fn(fn_expr, env, macros)
     args_val = evaluate_fn(args_expr, env, macros)
 
-    # Validate arguments evaluate to a list
+    # Validate arguments evaluate to a list.
     if not isinstance(args_val, list):
         raise ZetaTypeError("Apply arguments must evaluate to a list")
 
-    # Enforce full application for simple positional lambdas
+    # Enforce full application for simple positional lambdas.
     if isinstance(fn_val, Lambda):
         formals = list(fn_val.formals)
         if Symbol("&rest") not in formals and Symbol("&key") not in formals:
