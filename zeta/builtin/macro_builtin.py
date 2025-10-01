@@ -11,22 +11,22 @@ def let_macro(args: list[SExpression], env: Any) -> SExpression:
     => ((lambda (var1 var2 ...) body...) val1 val2 ...)
     """
     if len(args) < 2:
-        raise ZetaArityError("let requires bindings and at least one body form")
+        raise ZetaArityError("Let requires bindings and at least one body form")
 
     bindings = args[0]
     body = list(args[1:])
 
     if not isinstance(bindings, list):
-        raise ZetaTypeError("let bindings must be a list")
+        raise ZetaTypeError("Let bindings must be a list")
 
     vars_ = []
     vals_ = []
     for b in bindings:
         if not isinstance(b, list) or len(b) != 2:
-            raise ZetaTypeError(f"let binding must be a list of two elements, got {b}")
+            raise ZetaTypeError(f"Let binding must be a list of two elements, got {b}")
         var, val = b
         if not isinstance(var, Symbol):
-            raise ZetaTypeError(f"let binding name must be a Symbol, got {var}")
+            raise ZetaTypeError(f"Let binding name must be a Symbol, got {var}")
         vars_.append(var)
         vals_.append(val)
 

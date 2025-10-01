@@ -21,7 +21,7 @@ def apply_form(
     """
     if len(tail) != 2:
         raise ZetaTypeError(
-            "apply form expects exactly two arguments: function and argument list"
+            "Apply form expects exactly two arguments: function and argument list"
         )
 
     fn_expr, args_expr = tail
@@ -35,7 +35,7 @@ def apply_form(
     # Evaluate arguments (must produce a list)
     args = evaluate_fn(args_expr, env, macros)
     if not isinstance(args, list):
-        raise ZetaTypeError("apply arguments must evaluate to a list")
+        raise ZetaTypeError("Apply arguments must evaluate to a list")
 
     # --- Tail-call aware application ---
     if isinstance(fn, Lambda):

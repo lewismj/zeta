@@ -266,7 +266,7 @@ class TokenStream:
             while True:
                 tok_type, _ = self.peek()
                 if tok_type is None:
-                    raise ZetaSyntaxError("Unexpected EOF while reading vector.")
+                    raise ZetaSyntaxError("Unexpected EOF while reading vector")
                 if tok_type == "rparen":
                     self.advance()
                     break

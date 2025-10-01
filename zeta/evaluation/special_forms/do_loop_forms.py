@@ -22,7 +22,7 @@ class DoLoopEval:
 
     def eval(self, env: Environment, macros: MacroEnvironment) -> LispValue:
         if not self.end_clause:
-            raise ZetaError("do requires an end clause")
+            raise ZetaError("Do requires an end clause")
 
         local_env = Environment(outer=env)
         steps = []
@@ -32,7 +32,7 @@ class DoLoopEval:
             var_name, *_ = varspec
             if not isinstance(var_name, Symbol):
                 raise ZetaInvalidSymbol(
-                    f"do loop variable must be Symbol, got {var_name}"
+                    f"Do loop variable must be Symbol, got {var_name}"
                 )
             local_env.define(var_name, None)
 
@@ -81,7 +81,7 @@ class DoTimesLoopEval:
     def eval(self, env: Environment, macros: MacroEnvironment) -> LispValue:
         var_name, count_expr, *rest = self.varspec + [None] * (2 - len(self.varspec))
         if not isinstance(var_name, Symbol):
-            raise ZetaInvalidSymbol(f"dotimes variable must be Symbol, got {var_name}")
+            raise ZetaInvalidSymbol(f"Dotimes variable must be Symbol, got {var_name}")
         count = self.evaluate_fn(count_expr, env, macros, False)
 
         # Only loop variable is local
@@ -113,7 +113,7 @@ class DoListLoopEval:
     def eval(self, env: Environment, macros: MacroEnvironment) -> LispValue:
         var_name, lst_expr, *rest = self.varspec + [None] * (2 - len(self.varspec))
         if not isinstance(var_name, Symbol):
-            raise ZetaInvalidSymbol(f"dolist variable must be Symbol, got {var_name}")
+            raise ZetaInvalidSymbol(f"Dolist variable must be Symbol, got {var_name}")
         lst_val = self.evaluate_fn(lst_expr, env, macros, False)
         if not isinstance(lst_val, list):
             raise ZetaTypeError("dolist requires a list")

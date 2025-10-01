@@ -2,19 +2,13 @@
 class ZetaError(Exception):
     """Base class for all Zeta errors"""
 
-    pass
-
 
 class ZetaInvalidSymbol(ZetaError):
     """Raised when an invalid symbol is used"""
 
-    pass
-
 
 class ZetaUnboundSymbol(ZetaError):
     """Raised when a symbol is used before it is bound"""
-
-    pass
 
 
 class ZetaNameError(ZetaError):

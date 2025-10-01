@@ -140,7 +140,7 @@ def logical_or(env: Environment, expr: list[LispValue]) -> Symbol:
 
 def logical_not(env: Environment, expr: list[LispValue]) -> Symbol:
     if len(expr) != 1:
-        raise ZetaArityError("not requires exactly 1 argument")
+        raise ZetaArityError("Not requires exactly 1 argument")
     val = expr[0]
     return Symbol("#f") if val not in (Nil, Symbol("#f")) else Symbol("#t")
 
@@ -150,7 +150,7 @@ def logical_not(env: Environment, expr: list[LispValue]) -> Symbol:
 # -------------------------------
 def cons(env: Environment, expr: list[LispValue]) -> list[LispValue]:
     if len(expr) != 2:
-        raise ZetaArityError("cons requires exactly 2 arguments")
+        raise ZetaArityError("Cons requires exactly 2 arguments")
     head, tail = expr
     if tail is Nil:
         return [head]
@@ -161,7 +161,7 @@ def cons(env: Environment, expr: list[LispValue]) -> list[LispValue]:
 
 def car(env: Environment, expr: list[LispValue]) -> LispValue:
     if len(expr) != 1:
-        raise ZetaArityError("car requires exactly 1 argument")
+        raise ZetaArityError("Car requires exactly 1 argument")
     xs = expr[0]
     if xs is Nil or not xs:
         return Nil
@@ -170,7 +170,7 @@ def car(env: Environment, expr: list[LispValue]) -> LispValue:
 
 def cdr(env: Environment, expr: list[LispValue]) -> LispValue:
     if len(expr) != 1:
-        raise ZetaArityError("cdr requires exactly 1 argument")
+        raise ZetaArityError("Cdr requires exactly 1 argument")
     xs = expr[0]
     if xs is Nil or not xs:
         return Nil

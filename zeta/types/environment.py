@@ -18,7 +18,7 @@ class Environment:
 
     def define(self, name: Symbol, value: LispValue) -> None:
         if not isinstance(name, Symbol):
-            raise ZetaInvalidSymbol(f"Cannot define {name} as a symbol.")
+            raise ZetaInvalidSymbol(f"Cannot define {name} as a symbol")
         self.vars[name] = value
 
     def find(self, symbol: Symbol) -> Optional[Environment]:
@@ -32,7 +32,7 @@ class Environment:
     def set(self, name: Symbol, value: LispValue) -> None:
         env = self.find(name)
         if env is None:
-            raise ZetaUnboundSymbol(f"Cannot set unbound symbol {name}.")
+            raise ZetaUnboundSymbol(f"Cannot set unbound symbol {name}")
         env.vars[name] = value
 
     def lookup(self, name: Symbol) -> LispValue:
@@ -46,7 +46,7 @@ class Environment:
                 return pkg_env.lookup(Symbol(sym))
         env = self.find(name)
         if env is None:
-            raise ZetaUnboundSymbol(f"Cannot lookup unbound symbol {name}.")
+            raise ZetaUnboundSymbol(f"Cannot lookup unbound symbol {name}")
         return env.vars[name]
 
     def define_package(self, pkg_name: str) -> Environment:
@@ -76,7 +76,7 @@ class Environment:
     def update(self, mapping: dict[Symbol, LispValue]) -> None:
         for k, v in mapping.items():
             if not isinstance(k, Symbol):
-                raise ZetaInvalidSymbol(f"Cannot define {k} as a symbol.")
+                raise ZetaInvalidSymbol(f"Cannot define {k} as a symbol")
             self.vars[k] = v
 
     def _write_vars(self, buffer: StringIO) -> None:
