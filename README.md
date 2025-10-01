@@ -1,7 +1,4 @@
-<p align="left">
-  <img src="docs/resources/greek_lc_zeta.svg.png" alt="Zeta logo" height="42" style="vertical-align: middle; margin-right: 10px;">
-  <span style="font-size: 42px; font-weight: 700; vertical-align: middle;">Zeta</span>
-</p>
+## Zeta
 
 ### Summary
 
@@ -204,11 +201,3 @@ Define simple structures with constructors and accessors:
   - Unified implementation for lambda/callable application, partials, and `&key`/`&rest`
 - Reader/parser
   - Tokenizer and parser support Common Lisp-inspired literals, vectors, dotted lists, and reader macros
-
-### Contributing
-
-Issues and PRs are welcome. Documentation strings and comments are being added across the codebase in preparation for Sphinx-based docs. If you’d like to help, contributions to examples, tests, and doc coverage are appreciated.
-
-### License
-
-MIT (see `LICENSE`).
