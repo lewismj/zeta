@@ -84,7 +84,14 @@ def evaluate0(
 
             # Lambda / callable application.
             if isinstance(head, Lambda) or callable(head):
-                args = [evaluate0(arg, env, macros) for arg in tail_args]
+                # Evaluate arguments (resolve any TailCalls eagerly so builtins
+                # never receive TailCall objects as values).
+                args = []
+                for arg in tail_args:
+                    val = evaluate0(arg, env, macros)
+                    while isinstance(val, TailCall):
+                        val = evaluate0(val.fn.body, val.env, val.macros, True)
+                    args.append(val)
                 result = apply(
                     head, args, env, macros, evaluate0, is_tail_call
                 )  # <-- pass tail flag

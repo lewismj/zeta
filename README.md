@@ -111,7 +111,7 @@ print(Interpreter().eval(code))
 
 ```lisp
 (defmacro unless (cond body)
-  (quasiquote (if (unquote cond) nil (unquote body))))
+  (` (if (, cond) nil (, body))))
 
 (unless (= 1 2) 42)   ;; => 42
 ```
