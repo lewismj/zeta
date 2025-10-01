@@ -48,11 +48,11 @@ class MacroEnvironment:
     """
 
     def __init__(self):
-        self.macros: dict[Symbol, TransformerFunction] = {}
+        self.macros: dict[Symbol, Lambda | TransformerFunction] = {}
         self._gensym_counter = count(1)
 
     # ----------------- Macro Registration -----------------
-    def define_macro(self, name: Symbol, transformer: TransformerFunction):
+    def define_macro(self, name: Symbol, transformer: Lambda | TransformerFunction):
         self.macros[name] = transformer
 
     def is_macro(self, sym: Symbol) -> bool:
