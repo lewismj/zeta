@@ -78,18 +78,56 @@ class MacroEnvironment:
 
                 # Lambda macro transformer
                 if isinstance(transformer, Lambda):
-                    if len(args) != len(transformer.formals):
+                    # Bind arguments to formals with &rest support
+                    formals = list(transformer.formals)
+                    supplied = list(args)
+
+                    # Validate arity (when no &rest is present)
+                    if Symbol("&rest") not in formals and len(supplied) != len(formals):
                         raise ZetaArityError(
-                            f"Macro {head} expected {len(transformer.formals)} args, got {len(args)}"
+                            f"Macro {head} expected {len(formals)} args, got {len(supplied)}"
                         )
 
-                    # Create call environment for parameter substitution
                     call_env = Environment(outer=transformer.env)
-                    for param, arg in zip(transformer.formals, args):
-                        call_env.define(param, arg)
+                    seen_formals: list[Symbol] = []
 
-                    # Perform syntactic substitution instead of evaluating
-                    return _substitute(transformer.body, call_env, set(transformer.formals))
+                    while formals:
+                        formal = formals.pop(0)
+                        if formal == Symbol("&rest"):
+                            if not formals:
+                                raise ZetaArityError("Malformed parameter list: &rest must be followed by a name")
+                            rest_name = formals.pop(0)
+                            call_env.define(rest_name, supplied)
+                            seen_formals.append(rest_name)
+                            supplied = []
+                            break
+                        if supplied:
+                            call_env.define(formal, supplied.pop(0))
+                            seen_formals.append(formal)
+                        else:
+                            # Too few args without &rest
+                            missing = [formal] + formals
+                            raise ZetaArityError(
+                                f"Macro {head} missing {len(missing)} arg(s): {[str(s) for s in missing]}"
+                            )
+
+                    if supplied:
+                        # Too many arguments and no &rest captured them
+                        raise ZetaArityError(f"Too many arguments for macro {head}: {supplied}")
+
+                    # If the macro body is a quasiquote form, evaluate it now so that
+                    # unquote/unquote-splicing run at macro expansion time. Otherwise,
+                    # perform hygienic-ish syntactic substitution only (do not execute).
+                    body = transformer.body
+                    if isinstance(body, list) and body and body[0] == Symbol("quasiquote"):
+                        return evaluator(body, call_env, self)
+                    else:
+                        # Perform capture-avoiding substitution, but if the resulting form
+                        # is a quasiquote, evaluate it so ', and ,@ are processed now.
+                        substituted = _substitute(body, call_env, set(seen_formals))
+                        if isinstance(substituted, list) and substituted and substituted[0] == Symbol("quasiquote"):
+                            return evaluator(substituted, call_env, self)
+                        return substituted
 
                 # Python callable transformer
                 return transformer(args, env)
