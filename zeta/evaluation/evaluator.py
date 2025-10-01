@@ -8,7 +8,7 @@ from zeta.types.symbol import Symbol
 from zeta.types.errors import ZetaTypeError
 from zeta.evaluation.apply import apply
 
-from zeta.evaluation.special_forms.quote_forms import QQ, UQ, UQSplice
+# Removed dead class-based QQ/UQ/UQSplice imports
 from zeta.evaluation.special_forms import SPECIAL_FORMS
 from zeta.evaluation.py_module_util import resolve_object_path
 from zeta.types.tail_call import TailCall
@@ -35,36 +35,21 @@ def evaluate0(expr: SExpression, env: Environment, macros: MacroEnvironment = No
     if macros is None:
         macros = MacroEnvironment()
 
-    # --- Lists, quotes: handle only quote-classes and empty list here ---
-    match expr:
-        case QQ(value):
-            return [Symbol("quasiquote"), evaluate0(value, env, macros)]
-        case UQ(value):
-            return evaluate0(value, env, macros)
-        case UQSplice(value):
-            result = evaluate0(value, env, macros)
-            if not isinstance(result, list):
-                raise ZetaTypeError("Unquote-splicing must produce a list")
-            return result
-        case []:
-            return []
+    if not expr:
+        return []
 
     # --- Head-position macro handling and guarded expansion ---
     if isinstance(expr, list) and expr:
         h = expr[0]
         if isinstance(h, Symbol):
-            # Expand head-position macro first
-            if macros.is_macro(h):
+            if macros.is_macro(h): # Expand head-position macro first
                 expanded = macros.expand_1(expr, evaluate0, env)
                 return evaluate0(expanded, env, macros, is_tail_call)
-            # Do not pre-expand inside special forms (e.g., quasiquote)
-            if h not in SPECIAL_FORMS:
+            if h not in SPECIAL_FORMS: # Do not pre-expand inside special forms (e.g., quasiquote)
                 expr = macros.macro_expand_all(expr, evaluate0, env)
         else:
-            # Non-symbol head: safe to expand recursively
-            expr = macros.macro_expand_all(expr, evaluate0, env)
+            expr = macros.macro_expand_all(expr, evaluate0, env)  # Non-symbol head: safe to expand recursively
 
-    # --- Expression dispatch ---
     match expr:
         case [head, *tail_args]:
             if isinstance(head, Symbol):

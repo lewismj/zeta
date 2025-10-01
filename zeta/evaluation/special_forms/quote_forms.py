@@ -1,37 +1,10 @@
 from zeta.types.errors import ZetaArityError, ZetaTypeError, ZetaError
 
-class QQ:
-    def __init__(self, value):
-        self.value = value
-
-class UQ:
-    def __init__(self, value):
-        self.value = value
-
-class UQSplice:
-    def __init__(self, value):
-        self.value = value
-
 
 def eval_quasiquote(evaluate_fn, is_tail_call, expr, env, macros, depth=1):
     from zeta.types.symbol import Symbol
 
-    if isinstance(expr, QQ):
-        return [Symbol("quasiquote"), eval_quasiquote(evaluate_fn, is_tail_call, expr.value, env, macros, depth)]
-    if isinstance(expr, UQ):
-        if depth == 1:
-            return evaluate_fn(expr.value, env, macros, is_tail_call)
-        else:
-            return UQ(eval_quasiquote(evaluate_fn, is_tail_call, expr.value, env, macros, depth - 1))
-    if isinstance(expr, UQSplice):
-        if depth == 1:
-            result = evaluate_fn(expr.value, env, macros)
-            if not isinstance(result, list):
-                raise ZetaTypeError("unquote-splicing must produce a list")
-            return result
-        else:
-            return UQSplice(eval_quasiquote(evaluate_fn, is_tail_call, expr.value, env, macros, depth - 1))
-
+    # Non-list atoms returned as-is
     if not isinstance(expr, list):
         return expr
     if not expr:

@@ -3,6 +3,69 @@
 
 from zeta.interpreter import Interpreter
 from zeta.types.symbol import Symbol
+from zeta.types.nil import Nil
+from zeta.types.errors import ZetaArityError, ZetaTypeError
+
+
+def _mini_display(env, args):
+    for a in args:
+        try:
+            print(a, end="")
+        except Exception:
+            print(str(a), end="")
+    return Symbol("#t")
+
+
+def _mini_string_ref(env, args):
+    if len(args) != 2:
+        raise ZetaArityError("string-ref expects exactly 2 arguments")
+    s, i = args
+    if not isinstance(s, str):
+        raise ZetaTypeError("First argument to string-ref must be a string")
+    if not isinstance(i, int):
+        raise ZetaTypeError("Second argument to string-ref must be an integer index")
+    try:
+        return s[i]
+    except Exception as e:
+        raise ZetaTypeError(f"string-ref index out of range: {i}") from e
+
+
+def _mini_char_eq(env, args):
+    if not args:
+        return Symbol("#t")
+    norm = []
+    for a in args:
+        if isinstance(a, str) and len(a) == 1:
+            norm.append(a)
+        elif isinstance(a, str):
+            norm.append(a)
+        else:
+            return Symbol("#f")
+    first = norm[0]
+    for x in norm[1:]:
+        if x != first:
+            return Symbol("#f")
+    return Symbol("#t")
+
+
+def _mini_consp(env, args):
+    if len(args) != 1:
+        raise ZetaArityError("consp expects exactly 1 argument")
+    x = args[0]
+    if x is Nil:
+        return Symbol("#f")
+    if isinstance(x, list) and len(x) > 0:
+        return Symbol("#t")
+    return Symbol("#f")
+
+
+def register_miniprolog(env):
+    env.update({
+        Symbol('display'): _mini_display,
+        Symbol('string-ref'): _mini_string_ref,
+        Symbol('char=?'): _mini_char_eq,
+        Symbol('consp'): _mini_consp,
+    })
 
 prolog = '''
 ;;;; ---------------------------
@@ -10,6 +73,21 @@ prolog = '''
 ;;;; ---------------------------
 ;; Core primitives assumed to exist in Zeta Lisp:
 ;; defun, cons, car, cdr, null?, eq?, cond, recursion
+
+;;;; ---------------------------
+;;;; Mini-Prolog specific helpers (Lisp level)
+;;;; ---------------------------
+
+;; append (two-arg) using join
+(defun append (a b)
+  (join a b))
+
+;; filter implemented in Lisp using join/list
+(defun filter (f xs)
+  (if (null? xs)
+      '()
+      (join (if (f (car xs)) (list (car xs)) '())
+            (filter f (cdr xs)))))
 
 ;;;; ---------------------------
 ;;;; Prelude: helper functions
@@ -107,11 +185,9 @@ prolog = '''
 (defun query (goal)
   (let ((solutions (prove (list goal))))
     (if (null? solutions)
-        (display "No solutions.\n")
         (for-each (lambda (s)
                     (for-each (lambda (x)
                                 (display (cons (car x) (subst-apply (cdr x) s)))
-                                (display "\n"))
                               s))
                   solutions)))
 
@@ -143,8 +219,14 @@ test = '''
 
 
 def main():
+    # Initialize interpreter without prelude so we can register mini-prolog builtins first
+    interp = Interpreter(prelude=None)
 
-    interp = Interpreter(prelude=prolog)
+    # Register mini-prolog specific builtins needed by the prelude
+    register_miniprolog(interp.env)
+
+    # Now evaluate the Prolog prelude and tests
+    interp.eval_prelude(prolog)
     interp.eval(test)
 
 if __name__ == "__main__":
