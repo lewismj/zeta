@@ -1,4 +1,4 @@
-<img src="docs/resources/greek_lc_zeta.svg.png" width="77" style="vertical-align: middle;">
+<img src="docs/resources/greek_lc_zeta.svg.png" width="35" style="vertical-align: middle;">
 <span style="font-size: 22px; font-weight: bold; vertical-align: middle;">Zeta</span>
 
 ### Summary
