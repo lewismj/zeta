@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from zeta import SExpression, LispValue, EvaluatorFn
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 from zeta.types.errors import ZetaError, ZetaTypeError, ZetaInvalidSymbol
@@ -5,13 +8,19 @@ from zeta.types.macro_environment import MacroEnvironment
 
 
 class DoLoopEval:
-    def __init__(self, varspecs, end_clause, body, evaluate_fn):
-        self.varspecs = varspecs
-        self.end_clause = end_clause
-        self.body = body
-        self.evaluate_fn = evaluate_fn
+    def __init__(
+        self,
+        varspecs: list[list[SExpression]],
+        end_clause: list[SExpression],
+        body: list[SExpression],
+        evaluate_fn: EvaluatorFn,
+    ):
+        self.varspecs: list[list[SExpression]] = varspecs
+        self.end_clause: list[SExpression] = end_clause
+        self.body: list[SExpression] = body
+        self.evaluate_fn: EvaluatorFn = evaluate_fn
 
-    def eval(self, env: Environment, macros: MacroEnvironment):
+    def eval(self, env: Environment, macros: MacroEnvironment) -> LispValue:
         if not self.end_clause:
             raise ZetaError("do requires an end clause")
 
@@ -22,12 +31,14 @@ class DoLoopEval:
         for varspec in self.varspecs:
             var_name, *_ = varspec
             if not isinstance(var_name, Symbol):
-                raise ZetaInvalidSymbol(f"do loop variable must be Symbol, got {var_name}")
+                raise ZetaInvalidSymbol(
+                    f"do loop variable must be Symbol, got {var_name}"
+                )
             local_env.define(var_name, None)
 
         # Step 2: initialize loop variables
         for varspec in self.varspecs:
-            var_name, init, *step_expr = varspec + [None]*(3-len(varspec))
+            var_name, init, *step_expr = varspec + [None] * (3 - len(varspec))
             local_env.set(var_name, self.evaluate_fn(init, local_env, macros, False))
             if step_expr and step_expr[0] is not None:
                 steps.append((var_name, step_expr[0]))
@@ -51,16 +62,23 @@ class DoLoopEval:
                 self.evaluate_fn(expr, local_env, macros, False)
 
             for var, step_expr in steps:
-                local_env.set(var, self.evaluate_fn(step_expr, local_env, macros, False))
+                local_env.set(
+                    var, self.evaluate_fn(step_expr, local_env, macros, False)
+                )
 
 
 class DoTimesLoopEval:
-    def __init__(self, varspec, body, evaluate_fn):
-        self.varspec = varspec
-        self.body = body
-        self.evaluate_fn = evaluate_fn
+    def __init__(
+        self,
+        varspec: list[SExpression],
+        body: list[SExpression],
+        evaluate_fn: EvaluatorFn,
+    ):
+        self.varspec: list[SExpression] = varspec
+        self.body: list[SExpression] = body
+        self.evaluate_fn: EvaluatorFn = evaluate_fn
 
-    def eval(self, env: Environment, macros: MacroEnvironment):
+    def eval(self, env: Environment, macros: MacroEnvironment) -> LispValue:
         var_name, count_expr, *rest = self.varspec + [None] * (2 - len(self.varspec))
         if not isinstance(var_name, Symbol):
             raise ZetaInvalidSymbol(f"dotimes variable must be Symbol, got {var_name}")
@@ -74,17 +92,25 @@ class DoTimesLoopEval:
         for i in range(count):
             local_env.set(var_name, i)
             for expr in self.body:
-                last_value = self.evaluate_fn(expr, local_env, macros, False)  # evaluate in outer env
+                last_value = self.evaluate_fn(
+                    expr, local_env, macros, False
+                )  # evaluate in outer env
 
         return last_value
 
-class DoListLoopEval:
-    def __init__(self, varspec, body, evaluate_fn):
-        self.varspec = varspec
-        self.body = body
-        self.evaluate_fn = evaluate_fn
 
-    def eval(self, env: Environment, macros: MacroEnvironment):
+class DoListLoopEval:
+    def __init__(
+        self,
+        varspec: list[SExpression],
+        body: list[SExpression],
+        evaluate_fn: EvaluatorFn,
+    ):
+        self.varspec: list[SExpression] = varspec
+        self.body: list[SExpression] = body
+        self.evaluate_fn: EvaluatorFn = evaluate_fn
+
+    def eval(self, env: Environment, macros: MacroEnvironment) -> LispValue:
         var_name, lst_expr, *rest = self.varspec + [None] * (2 - len(self.varspec))
         if not isinstance(var_name, Symbol):
             raise ZetaInvalidSymbol(f"dolist variable must be Symbol, got {var_name}")
@@ -104,11 +130,32 @@ class DoListLoopEval:
 
         return last_value
 
-def do_loop_form(tail, env, macros, evaluate_fn, _):
+
+def do_loop_form(
+    tail: list[SExpression],
+    env: Environment,
+    macros: MacroEnvironment,
+    evaluate_fn: EvaluatorFn,
+    _: bool,
+) -> LispValue:
     return DoLoopEval(tail[0], tail[1], tail[2:], evaluate_fn).eval(env, macros)
 
-def do_times_n_loop_form(tail, env, macros, evaluate_fn, _):
+
+def do_times_n_loop_form(
+    tail: list[SExpression],
+    env: Environment,
+    macros: MacroEnvironment,
+    evaluate_fn: EvaluatorFn,
+    _: bool,
+) -> LispValue:
     return DoTimesLoopEval(tail[0], tail[1:], evaluate_fn).eval(env, macros)
 
-def do_list_loop_form(tail, env, macros, evaluate_fn, _):
+
+def do_list_loop_form(
+    tail: list[SExpression],
+    env: Environment,
+    macros: MacroEnvironment,
+    evaluate_fn: EvaluatorFn,
+    _: bool,
+) -> LispValue:
     return DoListLoopEval(tail[0], tail[1:], evaluate_fn).eval(env, macros)

@@ -1,8 +1,9 @@
+from __future__ import annotations
+
 from zeta import SExpression
 from zeta.types.symbol import Symbol
 from zeta.types.errors import ZetaSyntaxError
 from zeta.types.lambda_fn import Lambda
-
 
 
 def _subst(expr: SExpression, bindings: dict[Symbol, SExpression]) -> SExpression:
@@ -25,6 +26,7 @@ class ReaderMacros:
     Maps special characters or sequences (like ', `, #') to
     Lambda bodies that consume the next parsed expression(s) syntactically.
     """
+
     def __init__(self):
         self.macros: dict[str, Lambda] = {}
 
@@ -35,7 +37,7 @@ class ReaderMacros:
     def is_macro(self, char: str) -> bool:
         return char in self.macros
 
-    def dispatch(self, char: str, stream: 'TokenStream') -> SExpression:
+    def dispatch(self, char: str, stream: "TokenStream") -> SExpression:
         """Invoke the reader macro on the TokenStream using Lambda substitution."""
         # Special-case built-in structural macro #s that must control parsing
         if char == "#s":
@@ -58,7 +60,9 @@ class ReaderMacros:
             # Parse struct type name
             struct_name_expr = stream.parse_expr()
             if not isinstance(struct_name_expr, Symbol):
-                raise ZetaSyntaxError(f"Struct name must be a Symbol, got {struct_name_expr}")
+                raise ZetaSyntaxError(
+                    f"Struct name must be a Symbol, got {struct_name_expr}"
+                )
             struct_name = struct_name_expr.id
 
             # Parse fields: field-value pairs (field symbols are not evaluated here)
@@ -66,7 +70,9 @@ class ReaderMacros:
             while stream.peek()[0] != "rparen":
                 key_expr = stream.parse_expr()
                 if not isinstance(key_expr, Symbol):
-                    raise ZetaSyntaxError(f"Struct field name must be a Symbol, got {key_expr}")
+                    raise ZetaSyntaxError(
+                        f"Struct field name must be a Symbol, got {key_expr}"
+                    )
                 value_expr = stream.parse_expr()
                 fields.append((key_expr.id, value_expr))
 
@@ -92,13 +98,13 @@ class ReaderMacros:
 # -------------------------
 # Single global instance
 # -------------------------
-reader_macros = ReaderMacros()
+reader_macros: ReaderMacros = ReaderMacros()
 
-QUOTE_FORMS = {
+QUOTE_FORMS: dict[str, Symbol] = {
     "'": Symbol("quote"),
     "`": Symbol("quasiquote"),
     ",": Symbol("unquote"),
-    ",@": Symbol("unquote-splicing")
+    ",@": Symbol("unquote-splicing"),
 }
 
 # Quote forms: ', `, , ,@

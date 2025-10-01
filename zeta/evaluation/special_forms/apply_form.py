@@ -1,9 +1,18 @@
+from zeta import EvaluatorFn
+from zeta import SExpression, LispValue
 from zeta.types.symbol import Symbol
 from zeta.types.lambda_fn import Lambda
 from zeta.types.errors import ZetaTypeError
 from zeta.types.tail_call import TailCall
 
-def apply_form(tail, env, macros, evaluate_fn, is_tail_call=False):
+
+def apply_form(
+    tail: list[SExpression],
+    env,
+    macros,
+    evaluate_fn: EvaluatorFn,
+    is_tail_call: bool = False,
+) -> LispValue | TailCall:
     """
     Tail-call aware apply form:
       (apply fn args)
@@ -11,7 +20,9 @@ def apply_form(tail, env, macros, evaluate_fn, is_tail_call=False):
     - args_expr: evaluated list of arguments
     """
     if len(tail) != 2:
-        raise ZetaTypeError("apply form expects exactly two arguments: function and argument list")
+        raise ZetaTypeError(
+            "apply form expects exactly two arguments: function and argument list"
+        )
 
     fn_expr, args_expr = tail
 

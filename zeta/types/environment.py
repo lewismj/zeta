@@ -3,21 +3,22 @@ from __future__ import annotations
 from io import StringIO
 from typing import Optional
 
-from zeta import SExpression
+from zeta import LispValue
 from zeta.types.errors import ZetaInvalidSymbol, ZetaUnboundSymbol, ZetaNameError
 from zeta.types.symbol import Symbol
 
 
 class Environment:
     def __init__(self, outer: Optional[Environment] = None):
-        self.vars: dict[Symbol, SExpression] = {}
+        # Runtime environment stores evaluated LispValue(s)
+        self.vars: dict[Symbol, LispValue] = {}
         self.outer: Environment | None = outer
         self.packages: dict[str, Environment] = {}
         self.package_aliases: dict[str, str] = {}
 
-    def define(self, name: Symbol, value: SExpression) -> None:
+    def define(self, name: Symbol, value: LispValue) -> None:
         if not isinstance(name, Symbol):
-            raise ZetaInvalidSymbol(f'Cannot define {name} as a symbol.')
+            raise ZetaInvalidSymbol(f"Cannot define {name} as a symbol.")
         self.vars[name] = value
 
     def find(self, symbol: Symbol) -> Optional[Environment]:
@@ -28,13 +29,13 @@ class Environment:
             env = env.outer
         return None
 
-    def set(self, name: Symbol, value: SExpression) -> None:
+    def set(self, name: Symbol, value: LispValue) -> None:
         env = self.find(name)
         if env is None:
-            raise ZetaUnboundSymbol(f'Cannot set unbound symbol {name}.')
+            raise ZetaUnboundSymbol(f"Cannot set unbound symbol {name}.")
         env.vars[name] = value
 
-    def lookup(self, name: Symbol):
+    def lookup(self, name: Symbol) -> LispValue:
         s = str(name)
         if ":" in s:
             pkg, sym = s.split(":", 1)
@@ -45,7 +46,7 @@ class Environment:
                 return pkg_env.lookup(Symbol(sym))
         env = self.find(name)
         if env is None:
-            raise ZetaUnboundSymbol(f'Cannot lookup unbound symbol {name}.')
+            raise ZetaUnboundSymbol(f"Cannot lookup unbound symbol {name}.")
         return env.vars[name]
 
     def define_package(self, pkg_name: str) -> Environment:
@@ -57,7 +58,7 @@ class Environment:
             env.packages[pkg_name] = Environment()
         return env.packages[pkg_name]
 
-    def get_package_symbol(self, pkg_name: str, sym: Symbol) -> SExpression:
+    def get_package_symbol(self, pkg_name: str, sym: Symbol) -> LispValue:
         env = self
         while env.outer is not None:
             env = env.outer
@@ -72,7 +73,7 @@ class Environment:
             env = env.outer
         env.package_aliases[alias] = pkg_name
 
-    def update(self, mapping: dict[Symbol, SExpression]) -> None:
+    def update(self, mapping: dict[Symbol, LispValue]) -> None:
         for k, v in mapping.items():
             if not isinstance(k, Symbol):
                 raise ZetaInvalidSymbol(f"Cannot define {k} as a symbol.")

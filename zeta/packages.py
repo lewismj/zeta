@@ -1,15 +1,18 @@
+from __future__ import annotations
 import importlib
 import sys
 import pathlib
+from typing import Callable, Any
+import types
+from zeta import LispValue
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 
-CWD = pathlib.Path.cwd()
-ZETA_PACKAGE_PATH = [
-    CWD / "ext"  # external helpers
-]
+CWD: pathlib.Path = pathlib.Path.cwd()
+ZETA_PACKAGE_PATH: list[pathlib.Path] = [CWD / "ext"]  # external helpers
 
-def import_helpers_module(module_name: str):
+
+def import_helpers_module(module_name: str) -> types.ModuleType:
     """Try to import a helper module from ZETA_PACKAGE_PATH."""
     for path in ZETA_PACKAGE_PATH:
         sys.path.insert(0, str(path))
@@ -19,14 +22,17 @@ def import_helpers_module(module_name: str):
             return module
         except ModuleNotFoundError:
             sys.path.pop(0)
-    raise ModuleNotFoundError(f"Helper module {module_name} not found in ZETA_PACKAGE_PATH")
+    raise ModuleNotFoundError(
+        f"Helper module {module_name} not found in ZETA_PACKAGE_PATH"
+    )
+
 
 def import_module(
     env: Environment,
     module_name: str,
     alias: str | None = None,
     register_functions_module: str | None = None,
-):
+) -> None:
     """
     Import a Python module as a Zeta package.
 
@@ -39,13 +45,15 @@ def import_module(
     pkg_env = env.define_package(module_name)
 
     # Helper to wrap functions for Zeta
-    def wrap_func(f):
-        def zeta_fn(env_inner, args):
+    def wrap_func(
+        f: Callable[..., Any],
+    ) -> Callable[[Environment, list[LispValue]], LispValue]:
+        def zeta_fn(env_inner: Environment, args: list[LispValue]) -> LispValue:
             if len(args) == 1:
                 return f(args[0])
             return f(*args)
 
-        zeta_fn._zeta_wrapped = True
+        zeta_fn._zeta_wrapped = True  # type: ignore[attr-defined]
         return zeta_fn
 
     # Register all callable attributes from the main module

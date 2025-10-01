@@ -31,23 +31,31 @@ DEFAULT_OPTIONS = {
     "color_unquote_splicing": True,
     "color_macro_lambda": True,
     "color_macro_py": True,
-    "color_expanded_macro": True
+    "color_expanded_macro": True,
 }
 
 SPECIAL_FORMS = {"define", "lambda", "if", "let", "defmacro", "quote"}
 
+
 # ----------------- Colorize utility -----------------
-def colorize(obj, macro_env: Optional[MacroEnvironment] = None,
-             expanded: bool = False, in_quasiquote=False,
-             in_unquote=False, in_unquote_splicing=False,
-             options: dict = DEFAULT_OPTIONS):
+def colorize(
+    obj,
+    macro_env: Optional[MacroEnvironment] = None,
+    expanded: bool = False,
+    in_quasiquote=False,
+    in_unquote=False,
+    in_unquote_splicing=False,
+    options: dict = DEFAULT_OPTIONS,
+):
     if isinstance(obj, Symbol):
         name = str(obj)
         if expanded and options.get("color_expanded_macro", True):
             return f"{COLOR_EXPANDED_MACRO}{name}{RESET}"
         if macro_env and obj in macro_env.macros:
             transformer = macro_env.macros[obj]
-            if isinstance(transformer, Lambda) and options.get("color_macro_lambda", True):
+            if isinstance(transformer, Lambda) and options.get(
+                "color_macro_lambda", True
+            ):
                 return f"{COLOR_MACRO_LAMBDA}{name}{RESET}"
             elif callable(transformer) and options.get("color_macro_py", True):
                 return f"{COLOR_MACRO_PY}{name}{RESET}"
@@ -68,14 +76,19 @@ def colorize(obj, macro_env: Optional[MacroEnvironment] = None,
         return f"{COLOR_PY_CALLABLE}<callable {obj.__name__}>{RESET}"
     return str(obj)
 
+
 # ----------------- Pretty printer -----------------
-def pprint_expr(expr, indent: int = 0,
-                macro_env: Optional[MacroEnvironment] = None,
-                expanded_symbols: Optional[set[Symbol]] = None,
-                options: dict = DEFAULT_OPTIONS,
-                _current_depth: int = 0,
-                in_quasiquote=False, in_unquote=False,
-                in_unquote_splicing=False) -> str:
+def pprint_expr(
+    expr,
+    indent: int = 0,
+    macro_env: Optional[MacroEnvironment] = None,
+    expanded_symbols: Optional[set[Symbol]] = None,
+    options: dict = DEFAULT_OPTIONS,
+    _current_depth: int = 0,
+    in_quasiquote=False,
+    in_unquote=False,
+    in_unquote_splicing=False,
+) -> str:
     if expanded_symbols is None:
         expanded_symbols = set()
 
@@ -104,17 +117,43 @@ def pprint_expr(expr, indent: int = 0,
         is_expanded = True
 
     if isinstance(expr, Symbol) or isinstance(expr, Lambda) or callable(expr):
-        return legend_str + colorize(expr, macro_env, is_expanded,
-                                     in_quasiquote, in_unquote, in_unquote_splicing, options)
+        return legend_str + colorize(
+            expr,
+            macro_env,
+            is_expanded,
+            in_quasiquote,
+            in_unquote,
+            in_unquote_splicing,
+            options,
+        )
 
     if isinstance(expr, tuple) and len(expr) == 2:
         lst, tail = expr
-        lst_strs = [pprint_expr(x, indent + 1, macro_env, expanded_symbols,
-                                options, _current_depth + 1,
-                                in_quasiquote, in_unquote, in_unquote_splicing) for x in lst]
-        tail_str = pprint_expr(tail, indent + 1, macro_env, expanded_symbols,
-                               options, _current_depth + 1,
-                               in_quasiquote, in_unquote, in_unquote_splicing)
+        lst_strs = [
+            pprint_expr(
+                x,
+                indent + 1,
+                macro_env,
+                expanded_symbols,
+                options,
+                _current_depth + 1,
+                in_quasiquote,
+                in_unquote,
+                in_unquote_splicing,
+            )
+            for x in lst
+        ]
+        tail_str = pprint_expr(
+            tail,
+            indent + 1,
+            macro_env,
+            expanded_symbols,
+            options,
+            _current_depth + 1,
+            in_quasiquote,
+            in_unquote,
+            in_unquote_splicing,
+        )
         inner = "\n".join("  " * (indent + 1) + s for s in lst_strs + [tail_str])
         return legend_str + f"(\n{inner}\n{pad})"
 
@@ -135,9 +174,20 @@ def pprint_expr(expr, indent: int = 0,
             elif head.id == "unquote-splicing":
                 uqs_flag = True
 
-        parts = [pprint_expr(e, indent + 1, macro_env, expanded_symbols,
-                             options, _current_depth + 1,
-                             qq_flag, uq_flag, uqs_flag) for e in expr]
+        parts = [
+            pprint_expr(
+                e,
+                indent + 1,
+                macro_env,
+                expanded_symbols,
+                options,
+                _current_depth + 1,
+                qq_flag,
+                uq_flag,
+                uqs_flag,
+            )
+            for e in expr
+        ]
 
         single_line = "(" + " ".join(parts) + ")"
         if len(single_line) + indent * 2 <= options.get("max_line_length", 80):
@@ -151,6 +201,7 @@ def pprint_expr(expr, indent: int = 0,
 
     return legend_str + str(expr)
 
+
 # ----------------- Load JSON config -----------------
 def load_options_from_json(json_str: str) -> dict:
     try:
@@ -160,21 +211,38 @@ def load_options_from_json(json_str: str) -> dict:
     except Exception:
         return DEFAULT_OPTIONS
 
+
 # ----------------- Example usage -----------------
 if __name__ == "__main__":
     macro_env = MacroEnvironment()
     macro_env.define_macro(Symbol("let-bindings"), lambda args, env: args)
-    macro_env.define_macro(Symbol("inc"), Lambda([Symbol("x")], [Symbol("+"), Symbol("x"), 1]))
+    macro_env.define_macro(
+        Symbol("inc"), Lambda([Symbol("x")], [Symbol("+"), Symbol("x"), 1])
+    )
 
     # Example JSON configuration string
-    json_config = '{"max_line_length": 50, "display_legend": false, "color_symbols": false}'
+    json_config = (
+        '{"max_line_length": 50, "display_legend": false, "color_symbols": false}'
+    )
     options = load_options_from_json(json_config)
 
-    xs = [Symbol('let-bindings'), [Symbol('&rest'), Symbol('bindings')],
-          [Symbol('quasiquote'), [Symbol('let'),
-                                   [Symbol('unquote-splicing'), Symbol('bindings')],
-                                   [Symbol('list'),
-                                    [Symbol('unquote-splicing'),
-                                     [Symbol('map'), Symbol('car'), Symbol('bindings')]]]]]]
+    xs = [
+        Symbol("let-bindings"),
+        [Symbol("&rest"), Symbol("bindings")],
+        [
+            Symbol("quasiquote"),
+            [
+                Symbol("let"),
+                [Symbol("unquote-splicing"), Symbol("bindings")],
+                [
+                    Symbol("list"),
+                    [
+                        Symbol("unquote-splicing"),
+                        [Symbol("map"), Symbol("car"), Symbol("bindings")],
+                    ],
+                ],
+            ],
+        ],
+    ]
 
     print(pprint_expr(xs, macro_env=macro_env, options=options))

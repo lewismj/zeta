@@ -1,3 +1,4 @@
+from typing import Iterator, Iterable, Any
 from zeta.reader.parser import lex, TokenStream
 from zeta.evaluation.evaluator import evaluate
 from zeta.types.nil import Nil
@@ -5,6 +6,7 @@ from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.environment import Environment
 from zeta.builtin.env_builtin import register
 from zeta.builtin.macro_builtin import register as register_macros
+from zeta import LispValue
 
 
 class Interpreter:
@@ -12,20 +14,21 @@ class Interpreter:
     A streaming interpreter for Zeta Lisp expressions.
     Allows feeding code incrementally, maintains env/macros.
     """
+
     def __init__(self, prelude: str | None = None):
-        self.env = Environment()
+        self.env: Environment = Environment()
         register(self.env)
 
-        self.macros = MacroEnvironment()
+        self.macros: MacroEnvironment = MacroEnvironment()
         register_macros(self.macros)
 
-        self.buffer: list = []  # buffer of tokens for partial input
-        self.token_iter = iter([])
+        self.buffer: list[Any] = []  # buffer of tokens for partial input
+        self.token_iter: Iterator[tuple[str, str]] = iter(())
 
         if prelude:
             self.eval_prelude(prelude)
 
-    def eval_prelude(self, code: str):
+    def eval_prelude(self, code: str) -> None:
         """Evaluate a string of Lisp code as prelude."""
         tokens = lex(code)
         stream = TokenStream(iter(tokens))
@@ -35,13 +38,13 @@ class Interpreter:
                 break
             evaluate(expr, self.env, self.macros)
 
-    def eval(self, code: str):
+    def eval(self, code: str) -> LispValue:
         """Feed code to the interpreter and evaluate expressions incrementally."""
         tokens = lex(code)
         self.token_iter = iter(tokens)  # Reset token iterator
         stream = TokenStream(self.token_iter)
 
-        results = []
+        results: list[LispValue] = []
         while True:
             try:
                 expr = stream.parse_expr()
@@ -56,6 +59,7 @@ class Interpreter:
         if len(results) == 1:
             return results[0]
         return results
+
 
 #  Example use-age:
 if __name__ == "__main__":
@@ -108,8 +112,8 @@ if __name__ == "__main__":
         '((false "yes" "no"))                 ;; -> "no"',
         '((eval (andC true false)) "yes" "no")  ;; -> no (Church boolean)',
         '((eval (orC true false))  "yes" "no")  ;; -> yes (Church boolean)',
-        '(define xs (1 2 3 4)) ;; -> Nil',
-        '(empty xs) ;; -> #f'
+        "(define xs (1 2 3 4)) ;; -> Nil",
+        "(empty xs) ;; -> #f",
     ]
 
     for code in tests:

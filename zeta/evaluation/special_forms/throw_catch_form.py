@@ -9,23 +9,42 @@
 #   ; => {'exception': 'ZeroDivisionError', 'message': 'Division by zero'}
 
 
+from typing import Any
+from zeta import EvaluatorFn
+from zeta import SExpression, LispValue
+from zeta.types.environment import Environment
+from zeta.types.macro_environment import MacroEnvironment
+
+
 class ThrowException(Exception):
     """Custom exception for Lisp-style throw/catch non-local exit."""
-    def __init__(self, tag, value):
+
+    def __init__(self, tag: Any, value: Any):
         super().__init__(f"ThrowException(tag={tag}, value={value})")
-        self.tag = tag
-        self.value = value
+        self.tag: Any = tag
+        self.value: Any = value
 
 
-def throw_form(tail, env, macros, evaluate_fn, is_tail_call=False):
+def throw_form(
+    tail: list[SExpression],
+    env: Environment,
+    macros: MacroEnvironment,
+    evaluate_fn: EvaluatorFn,
+    is_tail_call: bool = False,
+) -> LispValue:
     tag_expr, val_expr = tail[0], tail[1]
     tag = evaluate_fn(tag_expr, env, macros, False)
     val = evaluate_fn(val_expr, env, macros, is_tail_call)
     raise ThrowException(tag, val)
 
 
-
-def catch_form(tail, env, macros, evaluate_fn, is_tail_call=False):
+def catch_form(
+    tail: list[SExpression],
+    env: Environment,
+    macros: MacroEnvironment,
+    evaluate_fn: EvaluatorFn,
+    is_tail_call: bool = False,
+) -> LispValue:
     """
     Lisp-style catch with fallback and Python exception embedding.
 
@@ -45,7 +64,7 @@ def catch_form(tail, env, macros, evaluate_fn, is_tail_call=False):
 
     except ThrowException as ex:
         # Matches tag or 'any'
-        if ex.tag == tag or tag == 'any':
+        if ex.tag == tag or tag == "any":
             return ex.value
         # Fallback for non-matching throw
         if fallback_expr is not None:
@@ -61,5 +80,5 @@ def catch_form(tail, env, macros, evaluate_fn, is_tail_call=False):
         return {
             "tag": "system-error",
             "exception": type(py_ex).__name__,
-            "message": str(py_ex)
+            "message": str(py_ex),
         }

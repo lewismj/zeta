@@ -1,10 +1,15 @@
+from __future__ import annotations
+
+from zeta import EvaluatorFn, SExpression, LispValue
 from zeta.types.errors import ZetaInvalidSymbol, ZetaArityError, ZetaTypeError
 from zeta.types.symbol import Symbol
 from zeta.types.lambda_fn import Lambda
 from zeta.types.nil import Nil
+from zeta.types.environment import Environment
+from zeta.types.macro_environment import MacroEnvironment
 
 
-def defmacro_form(tail, env, macros, evaluate_fn,  _):
+def defmacro_form(tail: list[SExpression], env: Environment, macros: MacroEnvironment, evaluate_fn: EvaluatorFn,  _: bool) -> LispValue:
         if len(tail) < 2:
             raise ZetaArityError("defmacro requires a name and parameter list")
 

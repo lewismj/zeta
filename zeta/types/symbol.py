@@ -1,6 +1,7 @@
 from __future__ import annotations
 import sys
 
+
 class Symbol:
     def __init__(self, name: str):
         self.id = sys.intern(name)
@@ -16,5 +17,3 @@ class Symbol:
 
     def __str__(self):
         return self.id
-
-

@@ -1,8 +1,9 @@
+from typing import Any
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 
 
-def resolve_object_path(env, path: Symbol):
+def resolve_object_path(env: Environment, path: Symbol) -> Any:
     """
     Resolve a path like 'np:array', 'df:head', or 'df/head'.
     Handles both module-level functions and object-level methods.
@@ -16,7 +17,7 @@ def resolve_object_path(env, path: Symbol):
         package_env = env.packages[package_name]
 
         # If package_env is an Environment, lookup in its vars
-        obj = package_env.lookup(Symbol(rest.pop(0)))
+        obj: Any = package_env.lookup(Symbol(rest.pop(0)))
 
     else:
         # Not a package: normal environment lookup
@@ -32,4 +33,3 @@ def resolve_object_path(env, path: Symbol):
             obj = obj.lookup(Symbol(attr))
 
     return obj
-

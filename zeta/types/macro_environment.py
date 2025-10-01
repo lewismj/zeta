@@ -1,7 +1,7 @@
 from __future__ import annotations
-
-from itertools import count
 from typing import Callable
+from itertools import count
+from zeta import EvaluatorFn
 
 from zeta import SExpression
 from zeta.types.environment import Environment
@@ -10,7 +10,9 @@ from zeta.types.lambda_fn import Lambda
 from zeta.types.symbol import Symbol
 
 
-def _substitute(expr: SExpression, call_env: Environment, formals: set[Symbol]) -> SExpression:
+def _substitute(
+    expr: SExpression, call_env: Environment, formals: set[Symbol]
+) -> SExpression:
     """
     Substitute macro formals with arguments.
     Also resolve symbols from closure environment if present.
@@ -28,8 +30,10 @@ def _substitute(expr: SExpression, call_env: Environment, formals: set[Symbol]) 
 
     if isinstance(expr, tuple) and len(expr) == 2:  # dotted list
         lst, tail = expr
-        return ([_substitute(x, call_env, formals) for x in lst],
-                _substitute(tail, call_env, formals))
+        return (
+            [_substitute(x, call_env, formals) for x in lst],
+            _substitute(tail, call_env, formals),
+        )
 
     return expr
 
@@ -64,10 +68,7 @@ class MacroEnvironment:
 
     # ----------------- Single-step head expansion -----------------
     def expand_1(
-        self,
-        form: SExpression,
-        evaluator: Callable,
-        env: Environment
+        self, form: SExpression, evaluator: EvaluatorFn, env: Environment
     ) -> SExpression:
         """Expand only the head-position macro if present."""
         if isinstance(form, list) and form:
@@ -95,7 +96,9 @@ class MacroEnvironment:
                         formal = formals.pop(0)
                         if formal == Symbol("&rest"):
                             if not formals:
-                                raise ZetaArityError("Malformed parameter list: &rest must be followed by a name")
+                                raise ZetaArityError(
+                                    "Malformed parameter list: &rest must be followed by a name"
+                                )
                             rest_name = formals.pop(0)
                             call_env.define(rest_name, supplied)
                             seen_formals.append(rest_name)
@@ -113,19 +116,29 @@ class MacroEnvironment:
 
                     if supplied:
                         # Too many arguments and no &rest captured them
-                        raise ZetaArityError(f"Too many arguments for macro {head}: {supplied}")
+                        raise ZetaArityError(
+                            f"Too many arguments for macro {head}: {supplied}"
+                        )
 
                     # If the macro body is a quasiquote form, evaluate it now so that
                     # unquote/unquote-splicing run at macro expansion time. Otherwise,
                     # perform hygienic-ish syntactic substitution only (do not execute).
                     body = transformer.body
-                    if isinstance(body, list) and body and body[0] == Symbol("quasiquote"):
+                    if (
+                        isinstance(body, list)
+                        and body
+                        and body[0] == Symbol("quasiquote")
+                    ):
                         return evaluator(body, call_env, self)
                     else:
                         # Perform capture-avoiding substitution, but if the resulting form
                         # is a quasiquote, evaluate it so ', and ,@ are processed now.
                         substituted = _substitute(body, call_env, set(seen_formals))
-                        if isinstance(substituted, list) and substituted and substituted[0] == Symbol("quasiquote"):
+                        if (
+                            isinstance(substituted, list)
+                            and substituted
+                            and substituted[0] == Symbol("quasiquote")
+                        ):
                             return evaluator(substituted, call_env, self)
                         return substituted
 
@@ -136,10 +149,7 @@ class MacroEnvironment:
 
     # ----------------- Fixed-point head expansion -----------------
     def macro_expand_head(
-        self,
-        form: SExpression,
-        evaluator: Callable,
-        env: Environment
+        self, form: SExpression, evaluator: Callable, env: Environment
     ) -> SExpression:
         cur = form
         while True:
@@ -150,10 +160,7 @@ class MacroEnvironment:
 
     # ----------------- Recursive full expansion -----------------
     def macro_expand_all(
-        self,
-        form: SExpression,
-        evaluator: Callable,
-        env: Environment
+        self, form: SExpression, evaluator: Callable, env: Environment
     ) -> SExpression:
         expanded = self.macro_expand_head(form, evaluator, env)
 

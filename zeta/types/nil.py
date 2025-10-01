@@ -2,8 +2,11 @@ from __future__ import annotations
 
 
 class NilType:
-    def __repr__(self): return "nil"
-    def __bool__(self): return False
+    def __repr__(self):
+        return "nil"
+
+    def __bool__(self):
+        return False
 
     # Comparisons: Nil is always less than numbers, and equal only to Nil
     def __eq__(self, other):

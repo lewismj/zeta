@@ -1,16 +1,36 @@
+from zeta import SExpression, LispValue, EvaluatorFn
 from zeta.types.errors import ZetaArityError, ZetaTypeError, ZetaError
 
 
-def eval_quasiquote(evaluate_fn, is_tail_call, expr, env, macros, depth=1):
+def eval_quasiquote(
+    evaluate_fn: EvaluatorFn,
+    is_tail_call: bool,
+    expr: SExpression,
+    env,
+    macros,
+    depth: int = 1,
+) -> SExpression:
     from zeta.types.symbol import Symbol
 
     def _process_list_part(seq):
         result_list = []
-        for item in (seq or []):
+        for item in seq or []:
             if isinstance(item, list) and item:
                 head, *itail = item
                 if head == Symbol("quasiquote"):
-                    result_list.append([Symbol("quasiquote"), eval_quasiquote(evaluate_fn, is_tail_call, itail[0], env, macros, depth + 1)])
+                    result_list.append(
+                        [
+                            Symbol("quasiquote"),
+                            eval_quasiquote(
+                                evaluate_fn,
+                                is_tail_call,
+                                itail[0],
+                                env,
+                                macros,
+                                depth + 1,
+                            ),
+                        ]
+                    )
                     continue
                 if head == Symbol("unquote") and depth == 1:
                     result_list.append(evaluate_fn(itail[0], env, macros, is_tail_call))
@@ -24,7 +44,9 @@ def eval_quasiquote(evaluate_fn, is_tail_call, expr, env, macros, depth=1):
                         raise ZetaTypeError("unquote-splicing must produce a list")
                     result_list.extend(spliced_val)
                     continue
-            result_list.append(eval_quasiquote(evaluate_fn, is_tail_call, item, env, macros, depth))
+            result_list.append(
+                eval_quasiquote(evaluate_fn, is_tail_call, item, env, macros, depth)
+            )
         return result_list
 
     # Dotted list (tuple) support: (list_part, tail)
@@ -37,13 +59,22 @@ def eval_quasiquote(evaluate_fn, is_tail_call, expr, env, macros, depth=1):
         if isinstance(tail, list) and tail:
             thead, *ttail = tail
             if thead == Symbol("quasiquote"):
-                new_tail = [Symbol("quasiquote"), eval_quasiquote(evaluate_fn, is_tail_call, ttail[0], env, macros, depth + 1)]
+                new_tail = [
+                    Symbol("quasiquote"),
+                    eval_quasiquote(
+                        evaluate_fn, is_tail_call, ttail[0], env, macros, depth + 1
+                    ),
+                ]
             elif thead == Symbol("unquote") and depth == 1:
                 new_tail = evaluate_fn(ttail[0], env, macros, is_tail_call)
             else:
-                new_tail = eval_quasiquote(evaluate_fn, is_tail_call, tail, env, macros, depth)
+                new_tail = eval_quasiquote(
+                    evaluate_fn, is_tail_call, tail, env, macros, depth
+                )
         else:
-            new_tail = eval_quasiquote(evaluate_fn, is_tail_call, tail, env, macros, depth)
+            new_tail = eval_quasiquote(
+                evaluate_fn, is_tail_call, tail, env, macros, depth
+            )
 
         return new_list, new_tail
 
@@ -57,20 +88,35 @@ def eval_quasiquote(evaluate_fn, is_tail_call, expr, env, macros, depth=1):
     return result
 
 
-def quote_form(tail, env, macros, evaluate_fn, _):
+def quote_form(
+    tail: list[SExpression], env, macros, evaluate_fn: EvaluatorFn, _: bool
+) -> LispValue:
     if len(tail) != 1:
         raise ZetaArityError("quote expects exactly 1 argument")
     return tail[0]
 
-def quasiquote_form(tail, env, macros, evaluate_fn, is_tail_call=False):
+
+def quasiquote_form(
+    tail: list[SExpression],
+    env,
+    macros,
+    evaluate_fn: EvaluatorFn,
+    is_tail_call: bool = False,
+) -> LispValue:
     if len(tail) != 1:
         raise ZetaArityError("quasiquote expects exactly 1 argument")
     # Quasiquote returns the constructed data structure; do not evaluate it here.
     # Embedded unquotes/unquote-splicing are already processed by eval_quasiquote.
     return eval_quasiquote(evaluate_fn, is_tail_call, tail[0], env, macros)
 
-def unquote_form(tail, env, macros, evaluate_fn, _):
+
+def unquote_form(
+    tail: list[SExpression], env, macros, evaluate_fn: EvaluatorFn, _: bool
+) -> LispValue:
     raise ZetaError(f"unquote not valid outside of quasiquote")
 
-def unquote_splice_form(tail, env, macros, evaluate_fn, _):
+
+def unquote_splice_form(
+    tail: list[SExpression], env, macros, evaluate_fn: EvaluatorFn, _: bool
+) -> LispValue:
     raise ZetaError(f"unquote-splicing not valid outside of quasiquote")

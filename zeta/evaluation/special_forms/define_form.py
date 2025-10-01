@@ -1,8 +1,18 @@
+from zeta import EvaluatorFn
+from zeta import SExpression, LispValue
 from zeta.types.errors import ZetaArityError
 from zeta.types.nil import Nil
+from zeta.types.environment import Environment
+from zeta.types.macro_environment import MacroEnvironment
 
 
-def define_form(tail, env, macros, evaluate_fn, _):
+def define_form(
+    tail: list[SExpression],
+    env: Environment,
+    macros: MacroEnvironment,
+    evaluate_fn: EvaluatorFn,
+    _: bool,
+) -> LispValue:
     """
     (define name value)
     Tail-call awareness is irrelevant here, since define does not produce a value to be tail-called.

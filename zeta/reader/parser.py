@@ -22,8 +22,10 @@
     - read-time eval -> {"read-eval": expr}
 """
 
+from __future__ import annotations
+
 import re
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Iterable
 from zeta.types.errors import ZetaSyntaxError
 from zeta import SExpression
 from zeta.types.nil import Nil
@@ -31,41 +33,41 @@ from zeta.types.symbol import Symbol
 from zeta.reader.reader_macros import reader_macros, QUOTE_FORMS
 
 
-
 TOKEN_RE = re.compile(
-    r'\s*('
-    r'(?P<comment>;[^\n]*)'                     # single-line comment
-    r'|(?P<ml_start>#\|)'                       # multi-line comment start
-    r'|(?P<quote>[\'`])'                        # ' and `
-    r'|(?P<unquote>,@|,)'                       # , and ,@
-    r'|(?P<lparen>\()'                          # (
-    r'|(?P<rparen>\))'                          # )
-    r'|(?P<lbrace>\{)'                          # {
-    r'|(?P<rbrace>\})'                          # }
-    r'|(?P<string>"(?:\\.|[^\\"])*?")'          # double-quoted strings
-    r'|(?P<shared_def>#\d+=)'                   # shared structure definition
-    r'|(?P<shared_ref>#\d+#)'                   # shared structure reference
-    r'|(?P<char>#\\(?:newline|space|tab|return|.))'  # character literals, named or single-char
-    r'|(?P<vector>#\()'                         # vector reader macro
-    r'|(?P<set_macro>#\{)'                      # set reader macro
-    r'|(?P<bitstring>#\*[01]+)'                 # bitstring
-    r'|(?P<func_shorthand>#\')'                 # function shorthand #'
-    r'|(?P<read_eval>#\.)'                      # read-eval macro
-    r'|(?P<complex>#C)'                         # complex number
-    r'|(?P<radix>#b[01]+|#o[0-7]+|#x[0-9A-Fa-f]+)'  # binary, octal, hex
-    r'|(?P<symbol>[^\s(){}\'",;]+)'             # fallback: symbols
-    r')',
-    re.DOTALL
+    r"\s*("
+    r"(?P<comment>;[^\n]*)"  # single-line comment
+    r"|(?P<ml_start>#\|)"  # multi-line comment start
+    r"|(?P<quote>[\'`])"  # ' and `
+    r"|(?P<unquote>,@|,)"  # , and ,@
+    r"|(?P<lparen>\()"  # (
+    r"|(?P<rparen>\))"  # )
+    r"|(?P<lbrace>\{)"  # {
+    r"|(?P<rbrace>\})"  # }
+    r'|(?P<string>"(?:\\.|[^\\"])*?")'  # double-quoted strings
+    r"|(?P<shared_def>#\d+=)"  # shared structure definition
+    r"|(?P<shared_ref>#\d+#)"  # shared structure reference
+    r"|(?P<char>#\\(?:newline|space|tab|return|.))"  # character literals, named or single-char
+    r"|(?P<vector>#\()"  # vector reader macro
+    r"|(?P<set_macro>#\{)"  # set reader macro
+    r"|(?P<bitstring>#\*[01]+)"  # bitstring
+    r"|(?P<func_shorthand>#\')"  # function shorthand #'
+    r"|(?P<read_eval>#\.)"  # read-eval macro
+    r"|(?P<complex>#C)"  # complex number
+    r"|(?P<radix>#b[01]+|#o[0-7]+|#x[0-9A-Fa-f]+)"  # binary, octal, hex
+    r'|(?P<symbol>[^\s(){}\'",;]+)'  # fallback: symbols
+    r")",
+    re.DOTALL,
 )
 
-NAMED_CHARS = {
+NAMED_CHARS: dict[str, str] = {
     "space": " ",
     "newline": "\n",
     "tab": "\t",
-    "return": "\r"
+    "return": "\r",
 }
 
-def lex(source):
+
+def lex(source: str) -> Iterator[tuple[str, str]]:
     """Token generator: yields (token_type, token_value) tuples."""
     pos = 0
     n = len(source)
@@ -108,30 +110,30 @@ def lex(source):
         # ----------------------
         # Handle backtick / quote
         # ----------------------
-        if current_char == '`':
-            yield 'quote', '`'
+        if current_char == "`":
+            yield "quote", "`"
             pos += 1
             # suppress a quote token if immediately followed by unquote
             if pos < n and source[pos] == "'":
-                if pos + 1 < n and source[pos + 1] in ',@':
+                if pos + 1 < n and source[pos + 1] in ",@":
                     # skip the quote token, let unquote handle it
                     pos += 1
             continue
 
         if current_char == "'":
-            yield 'quote', "'"
+            yield "quote", "'"
             pos += 1
             continue
 
         # ----------------------
         # Handle unquote / unquote-splicing
         # ----------------------
-        if current_char == ',':
-            if pos + 1 < n and source[pos + 1] == '@':
-                yield 'unquote', ',@'
+        if current_char == ",":
+            if pos + 1 < n and source[pos + 1] == "@":
+                yield "unquote", ",@"
                 pos += 2
             else:
-                yield 'unquote', ','
+                yield "unquote", ","
                 pos += 1
             continue
 
@@ -146,6 +148,7 @@ def lex(source):
                 yield nm, m.group(nm)
                 pos = m.end()
                 break
+
 
 class TokenStream:
     def __init__(self, token_iter: Iterator[tuple[str, str]]):

@@ -3,9 +3,15 @@ from zeta.types.environment import Environment
 from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.symbol import Symbol
 from zeta.types.errors import ZetaArityError
-from zeta.types.tail_call import TailCall  # <-- TCO support
 
-def eval_condition_case(evaluate_fn, tail_exprs: list[SExpression], env: Environment, macros: MacroEnvironment, is_tail_call=False) -> SExpression:
+
+def eval_condition_case(
+    evaluate_fn,
+    tail_exprs: list[SExpression],
+    env: Environment,
+    macros: MacroEnvironment,
+    is_tail_call=False,
+) -> SExpression:
     if not tail_exprs:
         raise ZetaArityError("condition-case requires at least a body expression")
 
@@ -36,11 +42,16 @@ def eval_condition_case(evaluate_fn, tail_exprs: list[SExpression], env: Environ
                 result = None
                 # --- Tail-call aware evaluation of handler body ---
                 for i, expr in enumerate(handler_body):
-                    is_last = (i == len(handler_body) - 1)
-                    result = evaluate_fn(expr, local_env, macros, is_tail_call=is_tail_call and is_last)
+                    is_last = i == len(handler_body) - 1
+                    result = evaluate_fn(
+                        expr, local_env, macros, is_tail_call=is_tail_call and is_last
+                    )
                 return result
 
         raise ex
 
+
 def condition_case_form(tail, env, macros, evaluate_fn, is_tail_call=False):
-    return eval_condition_case(evaluate_fn, tail, env, macros, is_tail_call=is_tail_call)
+    return eval_condition_case(
+        evaluate_fn, tail, env, macros, is_tail_call=is_tail_call
+    )

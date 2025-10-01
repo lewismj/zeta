@@ -1,9 +1,19 @@
+from zeta import EvaluatorFn
+from zeta import SExpression, LispValue
 from zeta.types.errors import ZetaArityError
 from zeta.types.nil import Nil
 from zeta.types.symbol import Symbol
+from zeta.types.environment import Environment
+from zeta.types.macro_environment import MacroEnvironment
 
 
-def if_form(tail, env, macros, evaluate_fn, is_tail_call = False):
+def if_form(
+    tail: list[SExpression],
+    env: Environment,
+    macros: MacroEnvironment,
+    evaluate_fn: EvaluatorFn,
+    is_tail_call: bool = False,
+) -> LispValue:
     if len(tail) < 2:
         raise ZetaArityError("if requires a condition and a then-expression")
 

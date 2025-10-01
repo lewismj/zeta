@@ -1,11 +1,19 @@
+from zeta import LispValue, EvaluatorFn
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 from zeta.types.lambda_fn import Lambda
 from zeta.types.errors import ZetaArityError, ZetaTypeError
 from zeta.types.tail_call import TailCall
+from typing import Callable
 
 
-def apply_lambda(fn, args, macros, evaluate_fn, is_tail_call: bool):
+def apply_lambda(
+    fn: Lambda,
+    args: list[LispValue],
+    macros,
+    evaluate_fn: EvaluatorFn,
+    is_tail_call: bool,
+) -> LispValue | TailCall:
     formals = list(fn.formals)
     supplied = list(args)
     remaining_formals = []
@@ -36,7 +44,14 @@ def apply_lambda(fn, args, macros, evaluate_fn, is_tail_call: bool):
         return evaluate_fn(fn.body, local_env, macros, True)
 
 
-def apply(head, args, env, macros, evaluate_fn, tail: bool = False):
+def apply(
+    head: Lambda | Callable[[Environment, list[LispValue]], LispValue] | object,
+    args: list[LispValue],
+    env: Environment,
+    macros,
+    evaluate_fn: EvaluatorFn,
+    tail: bool = False,
+) -> LispValue | TailCall:
     if isinstance(head, Lambda):
         return apply_lambda(head, args, macros, evaluate_fn, tail)
     elif callable(head):

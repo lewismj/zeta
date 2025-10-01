@@ -1,10 +1,14 @@
+from __future__ import annotations
+
+from zeta import SExpression, LispValue, EvaluatorFn
+from zeta.types.environment import Environment
+from zeta.types.macro_environment import MacroEnvironment
 from zeta.packages import import_module
 from zeta.types.nil import Nil
 from zeta.types.symbol import Symbol
 
 
-
-def import_form(tail, env, macros, evaluate_fn, _):
+def import_form(tail: list[SExpression], env: Environment, macros: MacroEnvironment, evaluate_fn: EvaluatorFn, _: bool) -> LispValue:
     """
     Usage:
         (import "module_name" as "alias" helpers "helper_module_name")

@@ -1,33 +1,37 @@
 from __future__ import annotations
 
-from zeta import SExpression
+from zeta import SExpression, LispValue
 from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.lambda_fn import Lambda
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
-from zeta.types.errors import ZetaTypeError
 from zeta.evaluation.apply import apply
-
-# Removed dead class-based QQ/UQ/UQSplice imports
 from zeta.evaluation.special_forms import SPECIAL_FORMS
 from zeta.evaluation.py_module_util import resolve_object_path
 from zeta.types.tail_call import TailCall
 
 
-def evaluate(expr: SExpression, env: Environment, macros: MacroEnvironment = None, _=False) -> SExpression:
+def evaluate(
+    expr: SExpression, env: Environment, macros: MacroEnvironment | None = None, _=False
+) -> LispValue:
     """
     Trampoline evaluator: tail-call aware evaluation.
     """
     if macros is None:
         macros = MacroEnvironment()
 
-    result = evaluate0(expr, env, macros, True) # Start in 'tail' mode.
+    result = evaluate0(expr, env, macros, True)  # Start in 'tail' mode.
     while isinstance(result, TailCall):
         result = evaluate0(result.fn.body, result.env, result.macros, True)
     return result
 
 
-def evaluate0(expr: SExpression, env: Environment, macros: MacroEnvironment = None, is_tail_call: bool = False) -> SExpression:
+def evaluate0(
+    expr: SExpression,
+    env: Environment,
+    macros: MacroEnvironment | None = None,
+    is_tail_call: bool = False,
+) -> LispValue:
     """
     Core evaluator: single-step evaluation with tail-call awareness.
     Returns either a value or a TailCall.
@@ -42,21 +46,27 @@ def evaluate0(expr: SExpression, env: Environment, macros: MacroEnvironment = No
     if isinstance(expr, list) and expr:
         h = expr[0]
         if isinstance(h, Symbol):
-            if macros.is_macro(h): # Expand head-position macro first
+            if macros.is_macro(h):  # Expand head-position macro first
                 expanded = macros.expand_1(expr, evaluate0, env)
                 return evaluate0(expanded, env, macros, is_tail_call)
-            if h not in SPECIAL_FORMS: # Do not pre-expand inside special forms (e.g., quasiquote)
+            if (
+                h not in SPECIAL_FORMS
+            ):  # Do not pre-expand inside special forms (e.g., quasiquote)
                 expr = macros.macro_expand_all(expr, evaluate0, env)
         else:
-            expr = macros.macro_expand_all(expr, evaluate0, env)  # Non-symbol head: safe to expand recursively
+            expr = macros.macro_expand_all(
+                expr, evaluate0, env
+            )  # Non-symbol head: safe to expand recursively
 
     match expr:
         case [head, *tail_args]:
             if isinstance(head, Symbol):
                 # --- Special forms handling ---
                 if head in SPECIAL_FORMS:
-                    return SPECIAL_FORMS[head](tail_args, env, macros, evaluate0, is_tail_call)  # <-- propagate tail
-                elif ':' in head.id and head.id != '/':
+                    return SPECIAL_FORMS[head](
+                        tail_args, env, macros, evaluate0, is_tail_call
+                    )  # <-- propagate tail
+                elif ":" in head.id and head.id != "/":
                     attr = resolve_object_path(env, head)
                     args = [evaluate0(arg, env, macros) for arg in tail_args]
                     if callable(attr) and getattr(attr, "_zeta_wrapped", False):
@@ -69,7 +79,9 @@ def evaluate0(expr: SExpression, env: Environment, macros: MacroEnvironment = No
             # --- Lambda / callable application ---
             if isinstance(head, Lambda) or callable(head):
                 args = [evaluate0(arg, env, macros) for arg in tail_args]
-                result = apply(head, args, env, macros, evaluate0, is_tail_call)  # <-- pass tail flag
+                result = apply(
+                    head, args, env, macros, evaluate0, is_tail_call
+                )  # <-- pass tail flag
                 return result
 
             # --- Evaluate head if it is a list and re-dispatch ---

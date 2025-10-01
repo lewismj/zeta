@@ -1,7 +1,18 @@
+from zeta import EvaluatorFn
+from zeta import SExpression, LispValue
 from zeta.types.errors import ZetaInvalidSymbol, ZetaArityError
 from zeta.types.symbol import Symbol
+from zeta.types.environment import Environment
+from zeta.types.macro_environment import MacroEnvironment
 
-def set_form(tail, env, macros, evaluate_fn, is_tail_call=False):
+
+def set_form(
+    tail: list[SExpression],
+    env: Environment,
+    macros: MacroEnvironment,
+    evaluate_fn: EvaluatorFn,
+    is_tail_call: bool = False,
+) -> LispValue:
     if len(tail) != 2:
         raise ZetaArityError("set requires exactly 2 arguments: (set var value)")
     var_sym, val_expr = tail
@@ -11,5 +22,3 @@ def set_form(tail, env, macros, evaluate_fn, is_tail_call=False):
     env.set(var_sym, value)
 
     return value
-
-
