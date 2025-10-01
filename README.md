@@ -1,230 +1,214 @@
-<img src="docs/resources/greek_lc_zeta.svg.png" width="35" style="vertical-align: middle;">
-<span style="font-size: 22px; font-weight: bold; vertical-align: middle;">Zeta</span>
+<p align="left">
+  <img src="docs/resources/greek_lc_zeta.svg.png" alt="Zeta logo" height="42" style="vertical-align: middle; margin-right: 10px;">
+  <span style="font-size: 42px; font-weight: 700; vertical-align: middle;">Zeta</span>
+</p>
 
 ### Summary
 
-**Zeta** is a Lisp interpreter written in Python. 
+Zeta is a small, pragmatic Lisp interpreter implemented in Python, designed for metaprogramming and seamless Python interoperability.
 
-Primarily, it enables Python modules within a Lisp environment. Or, embedding Lisp within Python code.  
+- Import and call Python directly from Lisp using the `import` special form and qualified symbols like `np:dot` and `df:sum`.
+- Write macros with quasiquote/unquote, define first-class lambdas with positional, `&rest`, and Common Lisp-style `&key` named parameters.
+- Tail-call optimization (TCO) via a trampoline evaluator, partial application for simple lambdas, and a growing set of special forms and builtins.
 
-Why? Use of Lisp (particularly **_metaprogramming_**) techniques whilst leveraging the Python ecosystem of Numpy, DoWhy, etc.
+### Notes
+- This is a work in progress, alpha version. Test cases for language features included, but not exhaustive.
 
-The interpreter can import modules into first-class Lisp values. Rather than have some external 'exec' mechanism that passes a string containing Python code to an externally running interpreter.
+### Immediate TODO:
 
-Example, calling numpy module level functions:
+- [ ] Provide a Prelude.
+- [ ] Provide a REPL, and LSP support for integration with editors.
+- [ ] Experiment with Python module interop (very basic at the moment).
+- [ ] Add Sphinx-based docs
+- [ ] Add more macros
+- [ ] Add more language features
 
+### Use Cases & Future Work
+
+- Metaprogramming, implementation of Do-Calculus is particularly interesting.
+- Optimization.
+  - Currently experimenting with Rust implementation, allows implementation of
+  full Nan-Boxed, own paged heap memory management and garbage collection.
+
+#### Python interop at a glance
 ```lisp
-             (progn
-                (import "numpy" as "np" helpers "np_helpers")
-                (np:to_list (np:dot (np:array (1 2)) (np:array (3 4)))))
-
-[np.int64(11)], type:<class 'list'>
+(progn
+  (import "numpy" as "np" helpers "np_helpers")
+  (np:to_list (np:dot (np:array (1 2)) (np:array (3 4)))))
+;; => [np.int64(11)]
 ```
-
-Importing Pandas, and invoking data frame functions:
-
-```lisp
-        ;; CSV file is:
-        ;; col_a,col_b,col_c
-        ;; 1,2,3
-        ;; 4,5,6
-
-        (progn
-          ;; Import Pandas
-          (import "pandas" as "pd")
-
-          ;; Try reading CSV, fallback to empty DataFrame on error
-          (define df
-            (catch 'any ;; ensure we have an exception handler.
-              (pd:read_csv "C://tmp//data.csv")
-              (pd:DataFrame ())));; optional fallback value on exception.
-
-          ;; Sum columns
-          (define col-sum (df:sum))
-
-          ;; Return the sum
-          col-sum
-        )
-
-
- col_a     5
- col_b    7
- col_c    9
-dtype: int64, type:<class 'pandas.core.series.Series'>
-
- 0    4
- 1    6
-dtype: int64, type:<class 'pandas.core.series.Series'>            
-```
-
-- Core functionality implemented lambda functions, partial application, quoting, quasi-quoting, macro expansion, structures etc.
-
-```lisp
-(defmacro inc (x) `(+ ,x 1))
-(defmacro unless (cond body) `(if (not ,cond) ,body))
-```
-
-Have built-in functions and macros, e.g. Let macro is:
-
-`
-(let ((var1 val1) (var2 val2) ...) body...) 
-    => ((lambda (var1 var2 ...) body...) val1 val2 ...)
-`
-
-We can define functions, using  `defun` macro:
-```lisp
-(defun fib-iter (n)
-  (let ((a 0) (b 1) (temp 0))
-    (dotimes (i n a)
-      (set temp b)
-      (set b (+ a b))
-      (set a temp))))
-```
-
-Structures, (can also use `#s` short hand syntax):
-
-```lisp
-(defstruct person name age)
-(define p (make-person "Fred" 30))
-(person-name p)
-(person-age p)
-```
-
-Standard functionality, Lambda, partial function application, etc.,
-
-```lisp
-(define my_add (lambda (a b) (+ a b)))
-(define my_add_5 (my_add 5)) ;; partially apply my_add
-(defun bar (n) ;; Lambda in a macro defn.
-    (let ((f (lambda (y x) (+ 1 x))))
-    (f n n)))
-...
-...
-```
-#### Tail Recursion
-
-Zeta supports basic tail call optimization. For example, the following function will not cause a stack overflow:
 
 ```lisp
 (progn
-(defun fact (n acc)
-  (if (= n 0)
-      acc
-      (fact (- n 1) (* n acc))))
-;; Python version of Zeta will rely on Python numerics
-;; But this won't generate a maximum recursion depth error,
-;; as we have tail-call optimization.
-(fact 1500 1) ;; tail recursive native Python would fail with maximum recursion depth error.
-)
+  (import "pandas" as "pd")
+  (define df
+    (catch 'any
+      (pd:read_csv "C://tmp//data.csv")
+      (pd:DataFrame ())))          ;; fallback on error
+  (df:sum))                        ;; call a Python method through a qualified symbol
 ```
 
+### Features
 
-See 'playground/adhoc' examples *import_examply.py* and *prelude_check.py*
-Can embed the interpreter within Python code and retrieve the results into Python objects, as required.
+- Macro system
+  - `defmacro` with lambda-like parameters
+  - Quasiquote with `unquote` and `unquote-splicing`
+  - Recursive, head-position macro expansion with hygienic-leaning substitution and gensym
+- Lambdas and application
+  - First-class `lambda` with positional parameters, `&rest`, and `&key` (named parameters like `:y 42`)
+  - Multiple body forms implicitly wrapped in `progn`; empty body returns `nil`
+  - Partial application for simple positional lambdas; `(apply ...)` enforces full application
+- Tail-call optimization (TCO)
+  - Trampoline-based evaluator returns `TailCall` in tail position to avoid Python recursion limits
+- Python interoperability
+  - `(import "module" as "alias" [helpers "helper_mod"])` binds modules into Zeta
+  - Qualified symbol resolution like `np:array`, `os:path.join`, or package aliases
+  - Calls into Python functions/methods and receives Python objects or native values
+- Reader and parser capabilities
+  - Symbols, strings, integers, floats, radix numbers (`#b`, `#o`, `#x`), complex (`#C`), bitstrings (`#*`)
+  - Lists and dotted lists, vectors `#(...)`, character literals `#\space`, read-time eval `#.`
+  - Function shorthand `#'sym` → `("function" sym)`
+- Core special forms and builtins
+  - `define`, `set`, `if`, `progn`, `quote`, `quasiquote`, `unquote`, `unquote-splicing`
+  - Loops: `do`, `dotimes`, `dolist`
+  - Error handling: `condition-case`, `catch`, `throw`
+  - Structures: `defstruct` generates constructors and accessors
+  - Lists and predicates: `cons`, `car`, `cdr`, `list`, `nil?`, `symbol?`, `atom`, `join`, etc.
+- Environments and packages
+  - Nested lexical environments
+  - Package tables and aliases enable `pkg:symbol` lookups
 
-### Use Cases,
+### Why Zeta?
 
-#### Term ReWriting,
+- Leverage Python’s rich ecosystem (NumPy, Pandas, SciPy, ML/AI libraries) while writing expressive Lisp code and macros.
+- Keep a compact, understandable interpreter for experimentation and language design.
+- Mix metaprogramming and data work without bridging through ad-hoc `exec` strings.
 
-TBD
+### Quick start
 
-#### Neural Networks & Causal Factor Analysis,
+- Add Zeta to your Python project (as a package or module path) and spin up the interpreter:
 
-TBD
+```python
+from zeta.interpreter import Interpreter
 
-#### Prolog Query Engine
-
-TBD
-
-### Next Steps
-
-- #### Functional
-  
-  - Formalize a Lisp _prelude_, see *prelude_check.py* as a simple example, primarily adding in list processing functions. 
-    For example, we can define as part of a prelude:
-    
-    ```lisp
-    (defun fold (f z xs)
-        (if (== xs Nil)
-            z
-            (foldl f (f z (head xs)) (tail xs))
-        ))
-    
-    (defun map (f xs)
-        (if (== xs Nil)
-            Nil
-            (join (list (f (head xs))) (map f (tail xs)))
-        ))
-    ```
-  
-  - Mathematical functions can be put in the prelude, though importing Python modules allows us to expose standard math functions.
-
-- Provide example extensions for **SciPy**, **PyTorch**, **DoWhy**, and other libraries.
-
-- Implement use cases (as above).
-
-- #### Technical
-  
-  - Provide **LSP plugin**, for integration with VSCode.
-  - Provide a **_native_** interpreter, use a language such as Rust.
-  - Longer term, consider a different evaluator back-end. The current system
-    does not implement its own Lisp cell representation, Heap, GC, etc. It relies
-    upon the Python interpreter.  Python allows easy integration of modules, such as numpy, so applications can be prototyped.
-  
-  However, the underlying interpreter could be re-written, provided we can
-  easily interact with ```PyObject```.
-  
-  A full implementation could have its own Heap, GC, etc.
-
-```rust
-pub enum Tag {
-    Int32 = 0,
-    Bool = 1, // Will drop as we will use Nil and #t.
-    String = 2,
-    Symbol = 3,   
-    HeapObject = 4,
-    PyObject = 5,
-    Nan = 6,
-    Nil = 7,  
-}
-
-pub struct NaNBoxed {
-    /// The underlying 64-bit representation (tag + payload).
-    pub bits: u64,
-}
-
-pub trait Encode {
-    fn encode(&self) -> NaNBoxed;
-}
-
-pub trait Decode: Sized {
-    fn decode(nb: NaNBoxed) -> Option<Self>;
-}
-
-
-pub enum HeapObject {
-    Int64(i64),
-    UInt64(u64),
-    Builtin(BuiltinFn),
-    Cons(Cons)
-}
+interp = Interpreter()
+print(interp.eval('(progn (define inc (lambda (x) (+ x 1))) (inc 41))'))
+# => 42
 ```
 
-We can write native Lisp objects into a managed Heap:
+Or evaluate a block with Python interop:
 
-```rust
-pub struct Cons {
-    pub car: LispVal,
-    pub cdr: LispVal,
-}
-
-impl Cons {
-    pub fn new(car: LispVal, cdr: LispVal) -> Result<LispVal, EtaError> {
-        let cons = Cons { car, cdr };
-        let mut heap = GLOBAL_HEAP.lock().unwrap();
-        let payload = heap.insert(HeapObject::Cons(cons))?;
-        Ok(LispVal::new(Tag::HeapObject, payload))
-    }
+```python
+code = """
+(progn
+  (import "numpy" as "np")
+  (np:to_list (np:array (1 2 3))))
+"""
+print(Interpreter().eval(code))
+# => [np.int64(1), np.int64(2), np.int64(3)]
 ```
 
- Integration and support of `PyObject` would be necessary to allow the import of Python modules, which is a primary goal.
+### Language tour
+
+#### Macros
+
+```lisp
+(defmacro unless (cond body)
+  (quasiquote (if (unquote cond) nil (unquote body))))
+
+(unless (= 1 2) 42)   ;; => 42
+```
+
+#### Lambdas: positional, `&rest`, and `&key`
+
+```lisp
+(define f (lambda (x &key y) (list x y)))
+(f 10 :y 7)          ;; => (10 7)
+
+(define g (lambda (a &rest rest) rest))
+(g 1 2 3 4)          ;; => (2 3 4)
+```
+
+Partial application for simple positional lambdas:
+
+```lisp
+(define add2 (lambda (a b) (+ a b)))
+(define inc (add2 1))   ;; returns a new lambda awaiting b
+(inc 41)                ;; => 42
+```
+
+`apply` enforces full application and accepts a list of arguments:
+
+```lisp
+(define add2 (lambda (a b) (+ a b)))
+(apply add2 (list 10 20))   ;; => 30
+```
+
+#### Tail-call optimization
+
+```lisp
+(define fact
+  (lambda (n acc)
+    (if (= n 0)
+        acc
+        (fact (- n 1) (* acc n)))))   ;; proper tail recursion via trampoline
+
+(fact 5 1)  ;; => 120
+```
+
+#### Python interop in detail
+
+- Import module and call functions or methods via qualified symbols:
+
+```lisp
+(import "numpy" as "np")
+(np:sum (np:array (1 2 3)))
+```
+
+- Use package aliases to traverse attributes: `os:path.join` or `pd:DataFrame`.
+- Work with returned Python objects naturally; call methods the same way: `df:sum`.
+
+### Error handling
+
+- `condition-case` to catch and handle errors:
+
+```lisp
+(condition-case
+  (+ 1 "a")
+  (error 99))     ;; => 99
+```
+
+- `catch`/`throw` for non-local exits:
+
+```lisp
+(catch 'any (throw 'any 42))   ;; => 42
+```
+
+### Structs
+
+Define simple structures with constructors and accessors:
+
+```lisp
+(defstruct point x y)
+(define p (make-point 10 20))
+(point-x p)  ;; => 10
+(point-y p)  ;; => 20
+```
+
+### Implementation notes
+
+- Evaluator
+  - Macro expansion before ordinary application, with guarded expansion inside special forms
+  - Tail-position produces `TailCall` consumed by a trampoline loop
+- Application engine
+  - Unified implementation for lambda/callable application, partials, and `&key`/`&rest`
+- Reader/parser
+  - Tokenizer and parser support Common Lisp-inspired literals, vectors, dotted lists, and reader macros
+
+### Contributing
+
+Issues and PRs are welcome. Documentation strings and comments are being added across the codebase in preparation for Sphinx-based docs. If you’d like to help, contributions to examples, tests, and doc coverage are appreciated.
+
+### License
+
+MIT (see `LICENSE`).
