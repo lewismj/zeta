@@ -112,7 +112,6 @@ Differentiation and simplification are implemented as Lisp functions that operat
 ### 1) Quadratic: $\frac{d}{dx}\big(x^2 + 3\big)$
 
 - Input S-expr: `'(+ (* x x) 3)` → $x^2 + 3$
-- Raw derivative (before simplify):
 
 ```lisp
 (diff '(+ (* x x) 3) 'x)
@@ -139,13 +138,11 @@ $$
 ### 2) Product: $\frac{d}{dx}\big(x(x+3)\big)$
 
 - Input S-expr: `'( * x (+ x 3) )` → $x(x + 3)$
-- Derivative and simplification in Zeta:
 
 ```lisp
 (simplify* (diff '(* x (+ x 3)) 'x))
 ;; => (+ (+ x 3) x)
 ```
-
 
 $$
 \frac{d}{dx}\big(x(x+3)\big) = (x+3) + x = 2x + 3
@@ -158,7 +155,6 @@ Note: the simplifier keeps `(+ (+ x 3) x)` due to binary `*` and no flattening/a
 ### 3) Chain Rule: $\frac{d}{dx}\big(\sin(x^2)\big)$
 
 - Input S-expr: `'(sin (* x x))` → $\sin(x^2)$
-- Raw derivative (before simplify):
 
 ```lisp
 (diff '(sin (* x x)) 'x)
@@ -181,14 +177,11 @@ $$
 ### 4) Power Rule with Inner Sum: $\frac{d}{dx}\big((x+1)^3\big)$
 
 - Input S-expr: `'( ^ (+ x 1) 3 )` → $(x+1)^3$
-- Raw derivative (before simplify):
 
 ```lisp
 (diff '(^ (+ x 1) 3) 'x)
 ;; => (* 3 (* (^ (+ x 1) 2) (+ 1 0)))
 ```
-
-- Simplified:
 
 ```lisp
 (simplify* (diff '(^ (+ x 1) 3) 'x))
