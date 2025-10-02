@@ -18,6 +18,7 @@ from zeta.evaluation.special_forms.define_form import define_form
 from zeta.evaluation.special_forms.if_form import if_form
 from zeta.evaluation.special_forms.do_loop_forms import do_loop_form, do_list_loop_form, do_times_n_loop_form
 from zeta.evaluation.special_forms.condition_case_form import condition_case_form
+from zeta.evaluation.special_forms.condition_case_form import cond_form
 from zeta.evaluation.special_forms.throw_catch_form import throw_form, catch_form
 from zeta.evaluation.special_forms.apply_form import apply_form
 from zeta.evaluation.special_forms.call_cc_form import call_cc_form
@@ -44,7 +45,7 @@ SPECIAL_FORMS = {
     Symbol("dotimes"): do_times_n_loop_form,
     Symbol("dolist"): do_list_loop_form,
     Symbol("condition-case"): condition_case_form,
-    Symbol("cond"): condition_case_form,
+    Symbol("cond"): cond_form,
     Symbol("throw"): throw_form,
     Symbol("catch"): catch_form,
     Symbol("apply"): apply_form,

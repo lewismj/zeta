@@ -1,6 +1,7 @@
-"""Condition handling special form: condition-case.
+"""Special forms: condition-case and cond.
 
-Provides a simple error-catching construct similar to Emacs Lisp's condition-case.
+- condition-case: error handling construct similar to Emacs Lisp's condition-case.
+- cond: multi-branch conditional form.
 """
 
 from zeta import SExpression
@@ -8,6 +9,7 @@ from zeta.types.environment import Environment
 from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.symbol import Symbol
 from zeta.types.errors import ZetaArityError
+from zeta.types.nil import Nil
 
 
 def eval_condition_case(
@@ -61,3 +63,46 @@ def condition_case_form(tail, env, macros, evaluate_fn, is_tail_call=False):
     return eval_condition_case(
         evaluate_fn, tail, env, macros, is_tail_call=is_tail_call
     )
+
+
+def cond_form(tail: list[SExpression], env: Environment, macros: MacroEnvironment, evaluate_fn, is_tail_call: bool=False):
+    """Evaluate a (cond (test expr...) ...).
+
+    For each clause in order:
+    - Evaluate test; if truthy (not Nil and not #f), evaluate the clause body
+      sequentially and return the last value. If the clause has only the test,
+      return the test's value.
+    - If the test is the symbol 'else or #t, treat it as truthy without evaluating it.
+    If no clause matches, return Nil.
+    """
+    result = Nil
+    for idx, clause in enumerate(tail):
+        if not isinstance(clause, list) or len(clause) == 0:
+            continue
+        test = clause[0]
+        body = clause[1:]
+
+        # Handle else/#t as immediate truth
+        is_else = isinstance(test, Symbol) and (test == Symbol("else") or test == Symbol("#t"))
+        if is_else:
+            # evaluate body and return
+            if not body:
+                return Symbol("#t")
+            for i, expr in enumerate(body):
+                last = i == len(body) - 1
+                result = evaluate_fn(expr, env, macros, is_tail_call=is_tail_call and last)
+            return result
+
+        # Otherwise, evaluate the test
+        test_val = evaluate_fn(test, env, macros, is_tail_call=False)
+        truthy = not (test_val is Nil or (isinstance(test_val, Symbol) and test_val == Symbol("#f")))
+        if truthy:
+            if not body:
+                return test_val
+            for i, expr in enumerate(body):
+                last = i == len(body) - 1
+                result = evaluate_fn(expr, env, macros, is_tail_call=is_tail_call and last)
+            return result
+
+    # No clause matched
+    return Nil
