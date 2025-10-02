@@ -1,9 +1,11 @@
 # Lambda‑Calculus Beta‑Reduction in Zeta Lisp (Capture‑Avoiding)
 
-This page documents a tiny lambda‑calculus reducer implemented purely in Zeta Lisp. It mirrors the example found in tests/test_lambda_calculus_beta_reduction.py and demonstrates capture‑avoiding substitution using `gensym`.
+This page documents a tiny lambda‑calculus reducer.  
 
-We encode lambda terms as quoted S‑expressions and implement normal‑order beta‑reduction (leftmost outermost redex) with alpha‑renaming to avoid variable capture.
+- See [source](tests/test_lambda_calculus_beta_reduction.py).
 
+We encode lambda terms as quoted S‑expressions and implement normal‑order beta‑reduction (leftmost outermost redex) with alpha‑renaming to avoid variable capture 
+_(demonstrates capture‑avoiding substitution using `gensym`)._
 ---
 
 ## Encoding
@@ -34,7 +36,7 @@ We will implement:
 
 ---
 
-## Zeta Lisp implementation
+## Implementation
 
 ```lisp
 ;; constructors/predicates for terms
@@ -135,7 +137,3 @@ Notes:
 ```
 
 ---
-
-## Testing
-
-See `tests/test_lambda_calculus_beta_reduction.py` for the exact usage under the interpreter’s test harness. The code above can be loaded into a fresh `Interpreter()` via `eval_prelude` and exercised interactively.

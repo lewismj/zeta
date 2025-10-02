@@ -1,10 +1,10 @@
 # Boolean Algebra Rewriting in Zeta Lisp
 
-This page documents a small, self‑contained Boolean algebra simplifier implemented entirely in Zeta Lisp. It mirrors the example found in tests/test_boolean_rewrite.py and uses LaTeX to present the rewrite rules.
+This page documents a small, self‑contained Boolean algebra simplifier implemented entirely in Zeta Lisp. 
 
 The simplifier operates over quoted S‑expressions using heads `and`, `or`, and `not`. The goal is to apply algebraic identities until a fixed point is reached, producing a normalized form.
 
-GitHub renders LaTeX enclosed in `$...$` for inline math and `$$...$$` for display equations.
+- See [source](tests/test_boolean_rewrite.py).
 
 ---
 

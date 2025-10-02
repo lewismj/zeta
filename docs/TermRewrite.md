@@ -1,12 +1,12 @@
 # Term Rewriting in Zeta Lisp: A Mini Symbolic Differentiator
 
-This page demonstrates term rewriting in Zeta Lisp using only Zeta code (no interpreter changes). It mirrors and expands the examples from `tests/test_term_rewriting.py` and shows the corresponding mathematical notation using LaTeX.
+This page demonstrates term rewriting in Zeta. 
+
+- See [source](tests/test_term_rewriting.py).
 
 The examples implement:
 - A tiny simplifier for algebraic expressions over quoted S-expressions
 - A symbolic differentiator `diff` supporting +, *, power with numeric exponents, and common unary functions (sin, cos, exp, log)
-
-GitHub renders LaTeX enclosed in `$...$` for inline math and `$$...$$` for display equations.
 
 ---
 
@@ -20,7 +20,7 @@ Differentiation and simplification are implemented as Lisp functions that operat
 
 ---
 
-## Zeta Lisp Setup (helpers, simplifier, differentiator)
+## Implementation (helpers, simplifier, differentiator)
 
 ```lisp
 ;; Basic predicates and accessors over expressions
