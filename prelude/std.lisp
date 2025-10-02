@@ -161,3 +161,7 @@
 ;; defalias: (defalias new old)
 (defmacro defalias (new old)
   `(define ,new ,old))
+
+ ;; Helpers
+(defun evenp (n) (= (mod n 2) 0))
+(defmacro when (test &body body) `(if ,test (progn ,@body)))

@@ -115,6 +115,16 @@ def div(env: Environment, expr: list[LispValue]) -> LispValue:
     except ZeroDivisionError:
         raise ZeroDivisionError("Division by zero")
 
+def mod(env: Environment, expr: list[LispValue]) -> LispValue:
+    """(mod n d) => n % d. Exactly 2 integer arguments."""
+    if len(expr) != 2:
+        raise ZetaArityError("mod requires exactly 2 arguments")
+    n, d = expr
+    if not isinstance(n, int) or not isinstance(d, int):
+        raise ZetaTypeError("All arguments to mod must be integers")
+    if d == 0:
+        raise ZeroDivisionError("Modulo by zero")
+    return n % d
 
 def lt(env: Environment, expr: list[LispValue]) -> Symbol:
     """Chainable less-than: returns #t if a0 < a1 < a2 ... holds for all pairs."""
@@ -340,6 +350,7 @@ def register(env: Environment) -> None:
             Symbol("-"): sub,
             Symbol("*"): mul,
             Symbol("/"): div,
+            Symbol("mod"): mod,
             Symbol("="): equals,
             Symbol("=="): equals,
             Symbol("eq"): equals,

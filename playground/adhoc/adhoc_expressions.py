@@ -6,7 +6,7 @@ from zeta.types.nil import Nil
 from zeta.types.macro_environment import MacroEnvironment
 from zeta.builtin.macro_builtin import register as register_macros
 from zeta.types.environment import Environment
-from zeta.types.errors import ZetaArityError
+
 
 programs = [
     ("(define add2 (lambda (a b) (+ a b)))", Nil),
@@ -56,12 +56,20 @@ programs = [
     ('(fib-iter 15)',610),
     (
     '''(catch 'my-tag (/ 1 0))''',
-    {'tag': 'system-error', 'exception': 'ZeroDivisionError', 'message': 'Division by zero'} )
+    {'tag': 'system-error', 'exception': 'ZeroDivisionError', 'message': 'Division by zero'} ),
+    ('''(defun evenp (n)
+  (= (mod n 2) 0))''', Nil),
+    ('''(evenp 10)''', Symbol('#t')),
+    ('''(evenp 11)''', Symbol('#f')),
+    # (''''(when (> 5 3)
+    #     (print "5 is greater than 3"))''',Nil)
+
 ]
 
 
 def main():
     env = Environment()
+    register(env)
 
     macros = MacroEnvironment()
     register_macros(macros)
