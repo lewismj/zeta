@@ -80,7 +80,7 @@ def test_symbolic_differentiation_and_simplification():
           ((== (op e) '^) (let ((u (a1 e))
                                   (n (a2 e)))
                              (if (number? n)
-                                 (list '* n (list '^ u (- n 1)) (diff u v))
+                                 (list '* n (list '* (list '^ u (- n 1)) (diff u v)))
                                  0)))
           ;; chain rule: sin(u)
           ((== (op e) 'sin) (let ((u (a1 e))) (list '* (list 'cos u) (diff u v))))

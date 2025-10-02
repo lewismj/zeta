@@ -23,6 +23,7 @@ from zeta.evaluation.special_forms.throw_catch_form import throw_form, catch_for
 from zeta.evaluation.special_forms.apply_form import apply_form
 from zeta.evaluation.special_forms.call_cc_form import call_cc_form
 from zeta.evaluation.special_forms.gensym_form import gensym_form
+from zeta.evaluation.special_forms.logic_forms import and_form, or_form
 
 
 SPECIAL_FORMS = {
@@ -51,4 +52,6 @@ SPECIAL_FORMS = {
     Symbol("apply"): apply_form,
     Symbol("call/cc"): call_cc_form,
     Symbol("gensym"): gensym_form,
+    Symbol("and"): and_form,
+    Symbol("or"): or_form,
 }

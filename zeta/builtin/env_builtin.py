@@ -145,23 +145,6 @@ def gte(env: Environment, expr: list[LispValue]) -> Symbol:
     """Chainable greater-or-equal: returns #t if a0 >= a1 >= a2 ... holds for all pairs."""
     return Symbol("#t") if all(a >= b for a, b in zip(expr, expr[1:])) else Symbol("#f")
 
-
-def logical_and(env: Environment, expr: list[LispValue]) -> Symbol:
-    """Logical AND over truthy values; Nil and #f are falsey."""
-    for e in expr:
-        if e in (Nil, Symbol("#f")):
-            return Symbol("#f")
-    return Symbol("#t")
-
-
-def logical_or(env: Environment, expr: list[LispValue]) -> Symbol:
-    """Logical OR over truthy values; returns #t if any is truthy."""
-    for e in expr:
-        if e not in (Nil, Symbol("#f")):
-            return Symbol("#t")
-    return Symbol("#f")
-
-
 def logical_not(env: Environment, expr: list[LispValue]) -> Symbol:
     """Logical NOT for a single value; only Nil and #f are considered falsey."""
     if len(expr) != 1:
@@ -359,8 +342,6 @@ def register(env: Environment) -> None:
             Symbol("<="): lte,
             Symbol(">"): gt,
             Symbol(">="): gte,
-            Symbol("and"): logical_and,
-            Symbol("or"): logical_or,
             Symbol("not"): logical_not,
             Symbol("cons"): cons,
             Symbol("car"): car,
