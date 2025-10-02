@@ -6,6 +6,7 @@ This page documents a tiny lambda‑calculus reducer.
 
 We encode lambda terms as quoted S‑expressions and implement normal‑order beta‑reduction (leftmost outermost redex) with alpha‑renaming to avoid variable capture 
 _(demonstrates capture‑avoiding substitution using `gensym`)._
+
 ---
 
 ## Encoding

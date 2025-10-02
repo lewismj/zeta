@@ -113,7 +113,3 @@ Mathematically:
 - $\lnot(a \land b) = (\lnot a) \lor (\lnot b)$
 
 ---
-
-## Testing
-
-See `tests/test_boolean_rewrite.py` for the exact usage under the interpreter’s test harness. The implementation here is copy‑paste compatible with a fresh `Interpreter()` session via `eval_prelude`.
