@@ -1,7 +1,7 @@
 """Registry of special forms for the Zeta evaluator.
 
 Maps Symbols to handler functions that implement non-standard evaluation rules.
-The evaluator consults this table to dispatch special forms before ordinary
+The evaluator consults this table to dispatch special forms before the ordinary
 function application.
 """
 
@@ -21,9 +21,11 @@ from zeta.evaluation.special_forms.condition_case_form import condition_case_for
 from zeta.evaluation.special_forms.throw_catch_form import throw_form, catch_form
 from zeta.evaluation.special_forms.apply_form import apply_form
 from zeta.evaluation.special_forms.call_cc_form import call_cc_form
+from zeta.evaluation.special_forms.set_form import set_form
 
 SPECIAL_FORMS = {
     Symbol("set"): set_form,
+    Symbol("set!"): set_form,
     Symbol("progn"): progn_form,
     Symbol("begin"): progn_form,
     Symbol("eval"): eval_form,

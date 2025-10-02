@@ -72,7 +72,9 @@
 ;; -----------------------
 ;; join is provided by builtins; define append as a variadic alias
 (defun append (&rest xss)
-  (apply join xss))
+  (if (== xss Nil)
+      Nil
+      (apply join xss)))
 
 ;; -----------------------
 ;; Numeric helpers

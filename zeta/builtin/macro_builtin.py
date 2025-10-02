@@ -43,6 +43,12 @@ def defun_macro(args: list[SExpression], env: Any) -> SExpression:
     """(defun name (params) body...) -> define a function named `name`.
 
     Expands into (define name (lambda (params) body...)).
+
+    N.B.
+        This illustrates how you can 'short-circuit' macro expansion in
+    the evaluation for specific cases. Here we're simply providing the
+    syntax directly. We therefore don't need to quasi-quote - we're
+    doing the expansion that defmacro would normally do.
     """
     if len(args) < 3:
         raise ZetaArityError(
