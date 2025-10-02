@@ -15,7 +15,7 @@ def _substitute(
 ) -> SExpression:
     """
     Substitute macro formals with arguments.
-    Also resolve symbols from closure environment if present.
+    Also, resolve symbols from the closure environment if present.
     """
     if isinstance(expr, Symbol):
         if expr in formals:
@@ -160,18 +160,16 @@ class MacroEnvironment:
         self.macros: dict[Symbol, Lambda | Callable] = {}
         self._gensym_counter = count(1)
 
-    # ----------------- Macro Registration -----------------
     def define_macro(self, name: Symbol, transformer: Lambda):
         self.macros[name] = transformer
 
     def is_macro(self, sym: Symbol) -> bool:
         return sym in self.macros
 
-    # ----------------- Gen-sym Utility -----------------
     def gen_sym(self, prefix: str = "G") -> Symbol:
         return Symbol(f"{prefix}{next(self._gensym_counter)}")
 
-    # ----------------- Single-step head expansion -----------------
+    # Single-step head expansion
     def expand_1(
         self, form: SExpression, evaluator: EvaluatorFn, env: Environment
     ) -> SExpression:
@@ -184,13 +182,13 @@ class MacroEnvironment:
 
                 # We can have builtin transformers that are resolved to Python Callable
                 # functions. These are invoked directly with (args, env).
-                # These can be removed, useful for testing/running without a prelude.
+                # These could be removed/replaced, useful for testing/running without a prelude.
                 return _expand_lambda(head, args, self, evaluator, transformer) \
                     if isinstance(transformer, Lambda) else transformer(args, env)
 
         return form  # Not a macro call, unchanged
 
-    # ----------------- Fixed-point head expansion -----------------
+    # Fixed-point head expansion
     def macro_expand_head(
         self, form: SExpression, evaluator: Callable, env: Environment
     ) -> SExpression:
@@ -201,7 +199,7 @@ class MacroEnvironment:
                 return cur
             cur = nxt
 
-    # ----------------- Recursive full expansion -----------------
+    # Full expansion
     def macro_expand_all(
         self, form: SExpression, evaluator: Callable, env: Environment
     ) -> SExpression:
