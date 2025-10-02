@@ -2,7 +2,7 @@
 
 This page demonstrates term rewriting in Zeta. 
 
-- See [source](tests/test_term_rewriting.py).
+- See [source](../tests/test_term_rewriting.py).
 
 The examples implement:
 - A tiny simplifier for algebraic expressions over quoted S-expressions

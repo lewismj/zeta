@@ -2,7 +2,7 @@
 
 This page documents a tiny lambda‑calculus reducer.  
 
-- See [source](tests/test_lambda_calculus_beta_reduction.py).
+- See [source](../tests/test_lambda_calculus_beta_reduction.py).
 
 We encode lambda terms as quoted S‑expressions and implement normal‑order beta‑reduction (leftmost outermost redex) with alpha‑renaming to avoid variable capture 
 _(demonstrates capture‑avoiding substitution using `gensym`)._

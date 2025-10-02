@@ -4,7 +4,7 @@ This page documents a small, self‑contained Boolean algebra simplifier impleme
 
 The simplifier operates over quoted S‑expressions using heads `and`, `or`, and `not`. The goal is to apply algebraic identities until a fixed point is reached, producing a normalized form.
 
-- See [source](tests/test_boolean_rewrite.py).
+- See [source](../tests/test_boolean_rewrite.py).
 
 ---
 
