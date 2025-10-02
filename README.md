@@ -9,23 +9,37 @@ Zeta is a small, pragmatic Lisp interpreter implemented in Python, designed for 
 - Tail-call optimization (TCO) via a trampoline evaluator, partial application for simple lambdas, and a growing set of special forms and builtins.
 
 ### Notes
-- This is a work in progress, alpha version. Test cases for language features included, but not exhaustive.
+- This is a work in progress, alpha version. Test cases for language features are included, but not exhaustive.
+
+### Use Cases & Future Work
+
+- Metaprogramming
+    - Macros for code generation, DSLs, and syntactic abstraction.
+    Examples
+    - [Term rewriting](docs/TermRewrite.md)
+  
+    - Do-Calculus
+  
+    - Data science and numerical computing
+      - Leverage Python libraries (NumPy, Pandas, SciPy, ML/AI libraries) with Lisp syntax and macros.
+    
+      - Distributed computing, using the Lisp's ability to treat 'code as data' to serialize 
+        and send code to remote workers for execution. On-the-fly updates to code and data.
+
+- Optimization.
+  - Currently experimenting with Rust implementation, allows implementation of
+  full Nan-Boxed, own paged heap memory management and garbage collection.
+
 
 ### Immediate TODO:
 
-- [ ] Provide a Prelude.
+- [ ] Provide an extended Prelude, minimal at present.
 - [ ] Provide a REPL, and LSP support for integration with editors.
 - [ ] Experiment with Python module interop (very basic at the moment).
 - [ ] Add Sphinx-based docs
 - [ ] Add more macros
 - [ ] Add more language features
 
-### Use Cases & Future Work
-
-- Metaprogramming, implementation of Do-Calculus is particularly interesting.
-- Optimization.
-  - Currently experimenting with Rust implementation, allows implementation of
-  full Nan-Boxed, own paged heap memory management and garbage collection.
 
 #### Python interop at a glance
 ```lisp
