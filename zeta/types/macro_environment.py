@@ -131,13 +131,17 @@ def _expand_lambda(head, args, macro_env, evaluator, transformer):
         return evaluator(body, call_env, macro_env)
     else:
         substituted = _substitute(body, call_env, set(seen_formals))
-        if (
-            isinstance(substituted, list)
-            and substituted
-            and substituted[0] == Symbol("quasiquote")
-        ):
-            return evaluator(substituted, call_env, macro_env)
-        return substituted
+        if isinstance(substituted, list) and substituted:
+            head_sym = substituted[0]
+            if head_sym == Symbol("quote"):
+                # Return quoted template untouched (e.g., (quote ...))
+                return substituted
+            if head_sym == Symbol("quasiquote"):
+                # Evaluate quasiquote template to produce expansion
+                return evaluator(substituted, call_env, macro_env)
+        # Otherwise, evaluate the substituted body to allow computed expansions
+        # such as (let ((g (gensym ...))) `( ... ,g ...))
+        return evaluator(substituted, call_env, macro_env)
 
 class MacroEnvironment:
     """
@@ -203,7 +207,10 @@ class MacroEnvironment:
     ) -> SExpression:
         expanded = self.macro_expand_head(form, evaluator, env)
 
+        # Do not recurse into (quote ...) or (quasiquote ...) templates.
         if isinstance(expanded, list):
+            if expanded and isinstance(expanded[0], Symbol) and expanded[0] in (Symbol("quote"), Symbol("quasiquote")):
+                return expanded
             return [self.macro_expand_all(x, evaluator, env) for x in expanded]
 
         if isinstance(expanded, tuple) and len(expanded) == 2:

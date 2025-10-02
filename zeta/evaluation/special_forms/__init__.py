@@ -21,7 +21,8 @@ from zeta.evaluation.special_forms.condition_case_form import condition_case_for
 from zeta.evaluation.special_forms.throw_catch_form import throw_form, catch_form
 from zeta.evaluation.special_forms.apply_form import apply_form
 from zeta.evaluation.special_forms.call_cc_form import call_cc_form
-from zeta.evaluation.special_forms.set_form import set_form
+from zeta.evaluation.special_forms.gensym_form import gensym_form
+
 
 SPECIAL_FORMS = {
     Symbol("set"): set_form,
@@ -48,4 +49,5 @@ SPECIAL_FORMS = {
     Symbol("catch"): catch_form,
     Symbol("apply"): apply_form,
     Symbol("call/cc"): call_cc_form,
+    Symbol("gensym"): gensym_form,
 }

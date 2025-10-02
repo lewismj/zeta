@@ -47,16 +47,21 @@ Zeta is a small, pragmatic Lisp interpreter implemented in Python, designed for 
 
 ### Features
 
-- Macro system
-  - `defmacro` with lambda-like parameters
-  - Quasiquote with `unquote` and `unquote-splicing`
-  - Recursive, head-position macro expansion with hygienic-leaning substitution and gensym
+
 - Lambdas and application
   - First-class `lambda` with positional parameters, `&rest`, and `&key` (named parameters like `:y 42`)
   - Multiple body forms implicitly wrapped in `progn`; empty body returns `nil`
   - Partial application for simple positional lambdas; `(apply ...)` enforces full application
+- Macro system
+  - `defmacro` implement.
+  - Quasiquote with `unquote` and `unquote-splicing`
+  - Recursive, head-position macro expansion with hygienic-leaning substitution and gensym.
 - Tail-call optimization (TCO)
   - Trampoline-based evaluator returns `TailCall` in tail position to avoid Python recursion limits
+- Continuations (call/cc)
+  - Scheme-style escape continuations via the special form `call/cc` (call-with-current-continuation)
+  - Continuations are single-shot and delimited to the dynamic extent of the call
+  - Invoking the continuation outside the dynamic extent of the original `call/cc` is not supported (single-shot semantics)
 - Python interoperability
   - `(import "module" as "alias" [helpers "helper_mod"])` binds modules into Zeta
   - Qualified symbol resolution like `np:array`, `os:path.join`, or package aliases

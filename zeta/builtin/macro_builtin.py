@@ -1,7 +1,4 @@
 """Builtin macro transformers for Zeta (implemented in Python).
-
-Provides common macros like `let` and `defun` that expand into core special
-forms and lambdas.
 """
 
 from typing import Any
