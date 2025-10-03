@@ -29,6 +29,10 @@ def resolve_object_path(env: Environment, path: Symbol) -> Any:
         package_env = root.packages[package_name]
         # If package_env is an Environment, lookup first attr inside it
         obj: Any = package_env.lookup(Symbol(rest.pop(0))) if rest else package_env
+    elif first in root.packages:
+        # Direct reference to a known package name
+        package_env = root.packages[first]
+        obj = package_env.lookup(Symbol(rest.pop(0))) if rest else package_env
     else:
         # Not a package: normal environment lookup (will climb as needed)
         obj = env.lookup(Symbol(first))

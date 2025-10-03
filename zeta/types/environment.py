@@ -26,12 +26,35 @@ class Environment:
         self.package_aliases: dict[str, str] = {}
 
     def define(self, name: Symbol, value: LispValue) -> None:
-        """Bind `name` to `value` in the current frame.
+        """Bind `name` to `value`.
+
+        Supports package-qualified symbols like pkg:sym. In that case, we resolve
+        the package at the root environment (respecting existing aliases) and
+        define `sym` inside that package environment. If the package does not exist,
+        we create it at the root.
 
         Raises ZetaInvalidSymbol if `name` is not a Symbol.
         """
         if not isinstance(name, Symbol):
             raise ZetaInvalidSymbol(f"Cannot define {name} as a symbol")
+
+        s = str(name)
+        if ":" in s:
+            pkg, sym = s.split(":", 1)
+            # climb to root
+            root = self
+            while root.outer is not None:
+                root = root.outer
+            # If pkg is an alias, resolve to real package name
+            if pkg in root.package_aliases:
+                pkg = root.package_aliases[pkg]
+            # Ensure package exists, then define inside it
+            pkg_env = root.packages.get(pkg)
+            if pkg_env is None:
+                pkg_env = root.define_package(pkg)
+            pkg_env.define(Symbol(sym), value)
+            return
+
         self.vars[name] = value
 
     def find(self, symbol: Symbol) -> Optional[Environment]:
@@ -57,17 +80,24 @@ class Environment:
         """Look up the value bound to `name`.
 
         Supports qualified lookups `pkg:symbol` by resolving package aliases and
-        searching the root environment's package table first. Falls back to the
-        lexical chain. Raises ZetaUnboundSymbol if not found.
+        searching the root environment's package table at the root frame first.
+        Falls back to the lexical chain. Raises ZetaUnboundSymbol if not found.
         """
         s = str(name)
         if ":" in s:
             pkg, sym = s.split(":", 1)
-            if pkg in self.package_aliases:
-                pkg = self.package_aliases[pkg]
-            pkg_env = self.packages.get(pkg)
+            # Always resolve against the root environment
+            root = self
+            while root.outer is not None:
+                root = root.outer
+            # Resolve aliases at the root
+            if pkg in root.package_aliases:
+                pkg = root.package_aliases[pkg]
+            # Look for a real package by that name
+            pkg_env = root.packages.get(pkg)
             if pkg_env:
                 return pkg_env.lookup(Symbol(sym))
+        # Fallback: unqualified or not found in packages; search lexical chain
         env = self.find(name)
         if env is None:
             raise ZetaUnboundSymbol(f"Cannot lookup unbound symbol {name}")

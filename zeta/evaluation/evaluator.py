@@ -75,10 +75,14 @@ def evaluate0(
                 elif ":" in head.id and head.id != "/":
                     attr = resolve_object_path(env, head)
                     args = [evaluate0(arg, env, macros) for arg in tail_args]
+                    # If the resolved attribute is a Zeta Lambda, apply via the engine
+                    if isinstance(attr, Lambda):
+                        return apply(attr, args, env, macros, evaluate0, is_tail_call)
+                    # If it is a wrapped Python callable, use its wrapper protocol
                     if callable(attr) and getattr(attr, "_zeta_wrapped", False):
                         return attr(env, args)
-                    else:
-                        return attr(*args)
+                    # Otherwise, call it as a normal Python callable
+                    return attr(*args)
                 else:
                     head = env.lookup(head)
 
