@@ -41,8 +41,8 @@ Work in progress.
 
 ```python
 def _mk_interp():
-    from zeta import Interpreter
-    return Interpreter(prelude=...)
+    from zeta.interpreter import Interpreter
+    return Interpreter(prelude=None) # Not needed for dummy example.
 
 interpreter = _mk_interp()
 res = interpreter.eval('''
@@ -67,27 +67,23 @@ dtype: int64, type:<class 'pandas.core.series.Series'>
 ### Future Work
 
 - REPL & LSP integration.
-- Enhance Python Interop 
-  - Fairly seamless, but need to consider `&optional` lambda parameters and converting
-  named parameters to kwargs etc.
+- Enhance Python Interop?
 - Use Python for sockets, message passing, etc. A core idea is the ability to send code to remote workers for execution.
-- 
+
 - Optimization.
-  - I'm currently experimenting with a Rust implementation. Would not rely on Python
-  GC, but have its own NanBox/HeapObject, Numeric tower of types, its own paged Heap and GC.
+  - I'm currently experimenting with a Rust implementation, for the core interpreter.
+   Would not rely on Python GC, but have its own NanBox/HeapObject, Numeric tower of types, its own paged Heap and GC.
+   Within the interpreter you can have Nan-Boxed primitives or a 'heap object'. A heap object could be
+   something we store in our heap (e.g. 128 bit number, etc. ) Or, a PyObj, that our GC wouldn't touch.
 
 
 ### Immediate TODO:
 
 - [ ] Provide an extended Prelude, minimal at present.
 - [ ] Provide a REPL, and LSP support for integration with editors.
-- [ ] Experiment with Python module interop, named and optional parameters, etc.
-- [ ] Add Sphinx-based docs
-- [ ] Add more macros (into the prelude).
 - [ ] Over time add more Common Lisp language features.
-
-
-
+- [ ] Investigate Rust Python integration to build a full Common Lisp implementation, with
+      'first class' Python interop.
 
 ### Features
 
@@ -251,7 +247,7 @@ Define simple structures with constructors and accessors:
       (define df
         (condition-case
           (pd:read_csv "C:/path/that/does/not/exist__zeta_demo.csv")
-          (error e (pd:DataFrame ())))) ;; can also use throw-catch standard Common Lisp.
+          (error e (pd:DataFrame ())))) ;; can also use catch-throw standard Common Lisp.
 
       ;; Summing an empty DataFrame yields an empty Series; convert to dict
       (define sums (df:sum))
