@@ -14,12 +14,15 @@ from zeta.types.nil import Nil
 class Lambda:
     """A first-class lambda with formal parameters, body, and closure env."""
 
+    __slots__ = ("formals", "body", "env")
+
     def __init__(
-        self, formals: list[Symbol], body: SExpression, env: Environment = Environment()
+        self, formals: list[Symbol], body: SExpression, env: Environment | None = None
     ):
         self.formals: list[Symbol] = formals
         self.body: SExpression = body
-        self.env: Environment = env
+        # Avoid shared default Environment across instances
+        self.env: Environment = env if env is not None else Environment()
 
     def __str__(self) -> str:
         with StringIO() as buffer:

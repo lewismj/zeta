@@ -90,11 +90,17 @@ def evaluate0(
             if isinstance(head, Lambda) or callable(head):
                 # Evaluate arguments (resolve any TailCalls eagerly so builtins
                 # never receive TailCall objects as values).
+                # Evaluate arguments, resolving TailCalls via a local trampoline stepper.
+                def _resolve_tail(v):
+                    while isinstance(v, TailCall):
+                        v = evaluate0(v.fn.body, v.env, v.macros, True)
+                    return v
                 args = []
                 for arg in tail_args:
                     val = evaluate0(arg, env, macros)
-                    while isinstance(val, TailCall):
-                        val = evaluate0(val.fn.body, val.env, val.macros, True)
+                    # Only resolve if needed (keeps hot path lean when no tailcalls)
+                    if isinstance(val, TailCall):
+                        val = _resolve_tail(val)
                     args.append(val)
                 result = apply(
                     head, args, env, macros, evaluate0, is_tail_call

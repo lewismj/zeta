@@ -1,0 +1,42 @@
+{
+  "name": "zeta-lang",
+  "displayName": "Zeta Lisp",
+  "description": "Minimal VS Code extension for Zeta Lisp with LSP and REPL",
+  "version": "0.0.1",
+  "publisher": "zeta",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:zeta",
+    "onCommand:zeta.startRepl",
+    "onCommand:zeta.evalSelection",
+    "onCommand:zeta.evalFile"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "zeta",
+        "aliases": ["Zeta", "zeta"],
+        "extensions": [".zeta", ".lisp", ".zetal"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "zeta",
+        "scopeName": "source.zeta",
+        "path": "./syntaxes/zeta.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      { "command": "zeta.startRepl", "title": "Zeta: Start REPL" },
+      { "command": "zeta.evalSelection", "title": "Zeta: Evaluate Selection" },
+      { "command": "zeta.evalFile", "title": "Zeta: Evaluate File" }
+    ]
+  },
+  "main": "./extension.js",
+  "scripts": {
+    "vscode:prepublish": "echo prepublish"
+  },
+  "dependencies": {}
+}

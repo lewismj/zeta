@@ -3,7 +3,10 @@ import sys
 
 
 class Symbol:
+    __slots__ = ("id",)
+
     def __init__(self, name: str):
+        # Intern to ensure fast equality/hash and reduce memory
         self.id = sys.intern(name)
 
     def __eq__(self, other: Symbol) -> bool:

@@ -71,19 +71,17 @@ dtype: int64, type:<class 'pandas.core.series.Series'>
 - Use Python for sockets, message passing, etc. A core idea is the ability to send code to remote workers for execution.
 
 - Optimization.
-  - I'm currently experimenting with a Rust implementation, for the core interpreter.
-   Would not rely on Python GC, but have its own NanBox/HeapObject, Numeric tower of types, its own paged Heap and GC.
-   Within the interpreter you can have Nan-Boxed primitives or a 'heap object'. A heap object could be
-   something we store in our heap (e.g. 128 bit number, etc. ) Or, a PyObj, that our GC wouldn't touch.
+  - Byte code compiler is the most likely option. Whilst implementing a full Common Lisp implementation,
+  would best be done in a systems language like Ansi C or Rust. The foreign function interface would negate
+  the benefits of the current Python no-cost interop.
 
 
 ### Immediate TODO:
 
 - [ ] Provide an extended Prelude, minimal at present.
 - [ ] Provide a REPL, and LSP support for integration with editors.
-- [ ] Over time add more Common Lisp language features.
-- [ ] Investigate Rust Python integration to build a full Common Lisp implementation, with
-      'first class' Python interop.
+- [ ] Implement proper package system.
+- [ ] Byte code compiler that runs within the Python process, rather than an interpreter.
 
 ### Features
 

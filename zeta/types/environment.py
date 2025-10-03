@@ -18,12 +18,28 @@ from zeta.types.symbol import Symbol
 class Environment:
     """Hierarchical mapping from Symbols to Lisp values with package support."""
 
+    __slots__ = (
+        "vars",
+        "outer",
+        "packages",
+        "package_aliases",
+        "_lookup_cache",
+        "_find_cache",
+    )
+
     def __init__(self, outer: Optional[Environment] = None):
         # Runtime environment stores evaluated LispValue(s)
         self.vars: dict[Symbol, LispValue] = {}
         self.outer: Environment | None = outer
         self.packages: dict[str, Environment] = {}
         self.package_aliases: dict[str, str] = {}
+        # Simple caches to speed up repeated lookups/find traversals
+        self._lookup_cache: dict[Symbol, LispValue] = {}
+        self._find_cache: dict[Symbol, Environment] = {}
+
+    def _clear_caches(self) -> None:
+        self._lookup_cache.clear()
+        self._find_cache.clear()
 
     def define(self, name: Symbol, value: LispValue) -> None:
         """Bind `name` to `value`.
@@ -37,6 +53,9 @@ class Environment:
         """
         if not isinstance(name, Symbol):
             raise ZetaInvalidSymbol(f"Cannot define {name} as a symbol")
+
+        # Any mutation invalidates caches along this chain (conservatively clear here)
+        self._clear_caches()
 
         s = str(name)
         if ":" in s:
@@ -59,9 +78,19 @@ class Environment:
 
     def find(self, symbol: Symbol) -> Optional[Environment]:
         """Find the nearest environment in the chain that contains `symbol`."""
+        # Cache lookup
+        env_cached = self._find_cache.get(symbol)
+        if env_cached is not None:
+            # ensure still valid (symbol still bound there)
+            if symbol in env_cached.vars:
+                return env_cached
+            else:
+                # stale: drop and continue search
+                self._find_cache.pop(symbol, None)
         env: Optional[Environment] = self
         while env is not None:
             if symbol in env.vars:
+                self._find_cache[symbol] = env
                 return env
             env = env.outer
         return None
@@ -75,6 +104,7 @@ class Environment:
         if env is None:
             raise ZetaUnboundSymbol(f"Cannot set unbound symbol {name}")
         env.vars[name] = value
+        self._clear_caches()
 
     def lookup(self, name: Symbol) -> LispValue:
         """Look up the value bound to `name`.
@@ -83,6 +113,11 @@ class Environment:
         searching the root environment's package table at the root frame first.
         Falls back to the lexical chain. Raises ZetaUnboundSymbol if not found.
         """
+        # Fast path: cached value
+        cached = self._lookup_cache.get(name)
+        if cached is not None:
+            return cached
+
         s = str(name)
         if ":" in s:
             pkg, sym = s.split(":", 1)
@@ -96,15 +131,22 @@ class Environment:
             # Look for a real package by that name
             pkg_env = root.packages.get(pkg)
             if pkg_env:
-                return pkg_env.lookup(Symbol(sym))
+                val = pkg_env.lookup(Symbol(sym))
+                self._lookup_cache[name] = val
+                return val
         # Fallback: unqualified or not found in packages; search lexical chain
         env = self.find(name)
         if env is None:
             raise ZetaUnboundSymbol(f"Cannot lookup unbound symbol {name}")
-        return env.vars[name]
+        val = env.vars[name]
+        self._lookup_cache[name] = val
+        return val
 
     def define_package(self, pkg_name: str) -> Environment:
         """Create or return a top-level package environment by name."""
+        # defining packages changes resolution; clear caches at root conservatively
+        self._clear_caches()
+
         env = self
         while env.outer is not None:
             env = env.outer
@@ -129,9 +171,13 @@ class Environment:
         while env.outer is not None:
             env = env.outer
         env.package_aliases[alias] = pkg_name
+        # alias resolution changed; clear caches
+        self._clear_caches()
 
     def update(self, mapping: dict[Symbol, LispValue]) -> None:
         """Bulk-define a mapping of Symbol -> value in the current frame."""
+        # mutation: clear caches
+        self._clear_caches()
         for k, v in mapping.items():
             if not isinstance(k, Symbol):
                 raise ZetaInvalidSymbol(f"Cannot define {k} as a symbol")

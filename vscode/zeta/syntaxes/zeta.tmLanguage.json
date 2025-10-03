@@ -1,0 +1,58 @@
+{
+  "scopeName": "source.zeta",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#parens" },
+    { "include": "#keywords" },
+    { "include": "#symbols" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.zeta",
+          "match": ";.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.zeta",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.zeta", "match": "\\\\." }
+          ]
+        }
+      ]
+    },
+    "parens": {
+      "patterns": [
+        { "name": "punctuation.section.parens.begin.zeta", "match": "\\(" },
+        { "name": "punctuation.section.parens.end.zeta", "match": "\\)" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.zeta",
+          "match": "\\b(progn|if|cond|define|defun|defmacro|lambda|catch|throw|condition-case|import)\\b"
+        }
+      ]
+    },
+    "symbols": {
+      "patterns": [
+        {
+          "name": "constant.other.keyword.symbol.zeta",
+          "match": ":[A-Za-z_][A-Za-z0-9_-?]*"
+        },
+        {
+          "name": "variable.other.symbol.zeta",
+          "match": "[A-Za-z_][A-Za-z0-9_-?:]*"
+        }
+      ]
+    }
+  }
+}
