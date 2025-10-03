@@ -49,7 +49,7 @@ res = interpreter.eval('''
     (progn
       (import "numpy" as "np" helpers "np_helpers")
       (np:to_list (np:dot (np:array (1 2)) (np:array (3 4)))))
-''')  # => 3
+''')  
 ```
 Note, the interpreter will treat classes as structs and methods as function,
 you can access free functions and class methods. Python objects are treated
