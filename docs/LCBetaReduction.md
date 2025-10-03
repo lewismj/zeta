@@ -26,17 +26,9 @@ What's implemented?
 
 ### Beta and Alpha
 
-- Beta‑reduction:
-
-  $$
-  (\lambda x.\,b)\ a \;\Rightarrow\; b[x := a]
-  $$
-
+- Beta‑reduction: $(\lambda x.\,b)\ a \;\Rightarrow\; b[x := a]$
 - Alpha‑conversion (to avoid capture): when substituting into $\lambda v.\,b$ and the bound $v$ occurs free in the value being substituted, pick a fresh symbol $g$ and rename:
-  
-  $$
-  \lambda v.\,b \;\Rightarrow\; \lambda g.\,b[v := g]\quad\text{where $g$ is fresh (via gensym)}
-  $$
+  $\lambda v.\,b \;\Rightarrow\; \lambda g.\,b[v := g] \quad$ where $g$ is fresh (via gensym).
 
 ---
 

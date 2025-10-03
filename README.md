@@ -12,9 +12,7 @@ Work in progress.
     Examples,
     - [Term rewriting](docs/TermRewrite.md)
     - [Boolean Simplifier](docs/BooleanSimplifier.md)
-    - [Lambda Calculus Beta Reducer](docs/LambdaCalculusBetaReduction.md)
-
-  
+    - [Lambda Calculus Beta Reducer](docs/LCBetaReduction.md)
     - Do-Calculus
   
 - Data science and numerical computing
@@ -22,6 +20,49 @@ Work in progress.
     
 - Distributed computing, using the Lisp's ability to treat 'code as data' to serialize 
   and send code to remote workers for execution. On-the-fly updates to code and data.
+- 
+#### Python interop at a glance
+
+ *Run in standalone mode or embed Lisp interpreter into Python.*
+
+## Standalone mode
+
+```lisp
+    (progn
+      (import "networkx" as "nx")
+      (define g (nx:Graph))
+      (g:add_edge "A" "B")       ;; add a small chain A-B-C
+      (g:add_edge "B" "C")
+      ;; query basic properties
+      (list (g:number_of_nodes) (g:number_of_edges) (nx:shortest_path_length g "A" "C"))) 
+```
+
+## Embedding into Python
+
+```python
+def _mk_interp():
+    from zeta import Interpreter
+    return Interpreter(prelude=...)
+
+interpreter = _mk_interp()
+res = interpreter.eval('''
+    (progn
+      (import "numpy" as "np" helpers "np_helpers")
+      (np:to_list (np:dot (np:array (1 2)) (np:array (3 4)))))
+''')  # => 3
+```
+Note, the interpreter will treat classes as structs and methods as function,
+you can access free functions and class methods. Python objects are treated
+as Lisp values, so you can pass them around and use them in Lisp code,
+no type conversion is required in-out of the Lisp interpreter.
+
+```
+Result:
+ col_a     5
+ col_b    7
+ col_c    9
+dtype: int64, type:<class 'pandas.core.series.Series'>
+```
 
 ### Future Work
 
@@ -46,23 +87,7 @@ Work in progress.
 - [ ] Over time add more Common Lisp language features.
 
 
-#### Python interop at a glance
-```lisp
-(progn
-  (import "numpy" as "np" helpers "np_helpers")
-  (np:to_list (np:dot (np:array (1 2)) (np:array (3 4)))))
-;; => [np.int64(11)]
-```
 
-```lisp
-(progn
-  (import "pandas" as "pd")
-  (define df
-    (catch 'any
-      (pd:read_csv "C://tmp//data.csv")
-      (pd:DataFrame ())))          ;; fallback on error
-  (df:sum))                        ;; call a Python method through a qualified symbol
-```
 
 ### Features
 
@@ -72,7 +97,7 @@ Work in progress.
   - Multiple body forms implicitly wrapped in `progn`; empty body returns `nil`
   - Partial application for simple positional lambdas; `(apply ...)` enforces full application
 - Macro system
-  - `defmacro` implement.
+  - `defmacro` implemented.
   - Quasiquote with `unquote` and `unquote-splicing`
   - Recursive, head-position macro expansion with hygienic-leaning substitution and gensym.
 - Tail-call optimization (TCO)
@@ -104,32 +129,6 @@ Work in progress.
 - Leverage Python’s rich ecosystem (NumPy, Pandas, SciPy, ML/AI libraries) while writing expressive Lisp code and macros.
 - Keep a compact, understandable interpreter for experimentation and language design.
 - Mix metaprogramming and data work without bridging through ad-hoc `exec` strings.
-
-### Quick start
-
-- Add Zeta to your Python project (as a package or module path) and spin up the interpreter:
-
-```python
-from zeta.interpreter import Interpreter
-
-interp = Interpreter()
-print(interp.eval('(progn (define inc (lambda (x) (+ x 1))) (inc 41))'))
-# => 42
-```
-
-Or evaluate a block with Python interop:
-
-```python
-from zeta.interpreter import Interpreter
-
-code = """
-(progn
-  (import "numpy" as "np")
-  (np:to_list (np:array (1 2 3))))
-"""
-print(Interpreter().eval(code))
-# => [np.int64(1), np.int64(2), np.int64(3)]
-```
 
 ### Language tour
 
@@ -213,17 +212,6 @@ Notes:
 - The provided continuation is represented as a function you can call with zero or one argument; zero defaults to `Nil`.
 - Invoking the continuation outside the dynamic extent of the original `call/cc` is not supported (single-shot semantics).
 
-#### Python interop in detail
-
-- Import module and call functions or methods via qualified symbols:
-
-```lisp
-(import "numpy" as "np")
-(np:sum (np:array (1 2 3)))
-```
-
-- Use package aliases to traverse attributes: `os:path.join` or `pd:DataFrame`.
-- Work with returned Python objects naturally; call methods the same way: `df:sum`.
 
 ### Error handling
 
@@ -252,12 +240,66 @@ Define simple structures with constructors and accessors:
 (point-y p)  ;; => 20
 ```
 
+### Pandas Example
+
+1. Capture Exceptions in the Lisp code itself.
+
+```lisp
+    (progn
+      (import "pandas" as "pd")
+      ;; Attempt to read a non-existent CSV file; on error, fall back to empty DataFrame
+      (define df
+        (condition-case
+          (pd:read_csv "C:/path/that/does/not/exist__zeta_demo.csv")
+          (error e (pd:DataFrame ())))) ;; can also use throw-catch standard Common Lisp.
+
+      ;; Summing an empty DataFrame yields an empty Series; convert to dict
+      (define sums (df:sum))
+      (sums:to_dict))
+```
+2. Lambdas with optional and named parameters.
+
+```
+    (progn
+      (import "pandas" as "pd")
+      ;; Build a simple DataFrame without requiring any helpers
+      (define data (list (list 1 2) (list 3 4)))
+      (define df   (pd:DataFrame data))
+
+      ;; Lambda with &optional default: (head-n df) -> df:head 1 by default
+      (define head-n
+        (lambda (df &optional (n 1))
+          (df:head n)))
+
+      ;; Lambda with optional axis parameter; when omitted, uses pandas' default
+      (define df-sum
+        (lambda (df &optional axis)
+          (cond
+            ((null? axis) (df:sum))
+            (else (df:sum axis)))))
+
+      ;; Use the lambdas and collect results
+      (define h1 (head-n df))          ;; default n=1
+      (define h2 (head-n df 2))        ;; explicit n=2
+
+      (define s_default_series (df-sum df))  ;; default axis (columns)
+      (define s_default (s_default_series:to_dict))
+      (define s_axis1_series (df-sum df 1))  ;; sum across rows
+      (define s_axis1 (s_axis1_series:to_list))
+
+      (define r1_series (h1:sum 1))  ;; head(1) row sums -> [3]
+      (define r1 (r1_series:to_list))
+      (define r2_series (h2:sum 1))  ;; head(2) row sums -> [3, 7]
+      (define r2 (r2_series:to_list))
+
+      (list s_default s_axis1 r1 r2))
+```
+
 ### Implementation notes
 
 - Evaluator
   - Macro expansion before ordinary application, with guarded expansion inside special forms
   - Tail-position produces `TailCall` consumed by a trampoline loop
-- Application engine
-  - Unified implementation for lambda/callable application, partials, and `&key`/`&rest`
+  - Implementation for lambda/callable application, partials, and `&key`/`&rest`
 - Reader/parser
   - Tokenizer and parser support Common Lisp-inspired literals, vectors, dotted lists, and reader macros

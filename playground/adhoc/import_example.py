@@ -1,3 +1,4 @@
+import os
 from zeta.types.macro_environment import MacroEnvironment
 from zeta.types.environment import Environment
 from zeta.reader.parser import lex, TokenStream
@@ -11,28 +12,23 @@ def main():
     macros = MacroEnvironment()
     register(env)
 
-    # # Example Lisp code with dynamic import and chained calls
-    # code = """
-    #     (import 'numpy' as 'np' helpers 'np_helpers')
-    #     (np:to_list (np:dot (np:array (1 2)) (np:array (3 4))))
-    # """
     examples = [
-        # '''
-        # (progn
-        #     (import "numpy" as "np" helpers "np_helpers")
-        #     (np:to_list (np:dot (np:array (1 2)) (np:array (3 4))))
-        # )
-        # ''',
-        # '''
-        #     (progn
-        #       (import "pandas" as "pd")
-        #       (define data (list (list 1 2) (list 3 4)))
-        #       (define df (pd:DataFrame data))
-        #       (define first-row (df:head 1))
-        #       (define col-sum (df:sum))
-        #       col-sum
-        #     )
-        # ''',
+        '''
+        (progn
+            (import "numpy" as "np" helpers "np_helpers")
+            (np:to_list (np:dot (np:array (1 2)) (np:array (3 4))))
+        )
+        ''',
+        '''
+            (progn
+              (import "pandas" as "pd")
+              (define data (list (list 1 2) (list 3 4)))
+              (define df (pd:DataFrame data))
+              (define first-row (df:head 1))
+              (define col-sum (df:sum))
+              col-sum
+            )
+        ''',
         '''
         (progn
           (import "pandas" as "pd")
@@ -73,4 +69,5 @@ def main():
 
 
 if __name__ == "__main__":
+    os.environ["ZETA_PACKAGE_PATH"] = "C:/Users/lewis/develop/zeta/playground/ext"
     main()

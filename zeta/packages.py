@@ -1,5 +1,6 @@
 from __future__ import annotations
 import importlib
+import os
 import sys
 import pathlib
 from typing import Callable, Any
@@ -8,13 +9,10 @@ from zeta import LispValue
 from zeta.types.environment import Environment
 from zeta.types.symbol import Symbol
 
-CWD: pathlib.Path = pathlib.Path.cwd()
-ZETA_PACKAGE_PATH: list[pathlib.Path] = [CWD / "ext"]  # external helpers
-
 
 def import_helpers_module(module_name: str) -> types.ModuleType:
     """Try to import a helper module from ZETA_PACKAGE_PATH."""
-    for path in ZETA_PACKAGE_PATH:
+    for path in os.environ.get("ZETA_PACKAGE_PATH", "").split(os.pathsep):
         sys.path.insert(0, str(path))
         try:
             module = importlib.import_module(module_name)

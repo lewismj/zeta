@@ -18,16 +18,19 @@ def resolve_object_path(env: Environment, path: Symbol) -> Any:
     parts = path.id.replace(":", ".").split(".")
     first, *rest = parts
 
-    # Check if first part is a package alias
-    if first in env.package_aliases:
-        package_name = env.package_aliases[first]
-        package_env = env.packages[package_name]
+    # Climb to the root environment to resolve package aliases and packages
+    root = env
+    while root.outer is not None:
+        root = root.outer
 
-        # If package_env is an Environment, lookup in its vars
-        obj: Any = package_env.lookup(Symbol(rest.pop(0)))
-
+    # Check if first part is a package alias (resolved at the root env)
+    if first in root.package_aliases:
+        package_name = root.package_aliases[first]
+        package_env = root.packages[package_name]
+        # If package_env is an Environment, lookup first attr inside it
+        obj: Any = package_env.lookup(Symbol(rest.pop(0))) if rest else package_env
     else:
-        # Not a package: normal environment lookup
+        # Not a package: normal environment lookup (will climb as needed)
         obj = env.lookup(Symbol(first))
 
     # Walk remaining attributes/methods

@@ -192,13 +192,8 @@ class Lambda:
 
             # Bind required
             _bind_positional(required_formals, supplied)
-            # Bind optionals
-            for spec in optional_specs:
-                if supplied:
-                    local_env.define(spec if isinstance(spec, Symbol) else spec[0], supplied.pop(0))
-                else:
-                    name = spec if isinstance(spec, Symbol) else spec[0]
-                    local_env.define(name, Nil)
+            # Bind optionals (support defaults and evaluation via evaluate_fn)
+            _bind_optionals(optional_specs)
 
             if supplied:
                 raise ZetaArityError(f"Too many arguments: {supplied}")
