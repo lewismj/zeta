@@ -48,9 +48,9 @@ def apply_lambda(
     """
     formals = list(fn.formals)
 
-    # If lambda uses &rest or &key, require full application via extend_env.
-    if Symbol("&rest") in formals or Symbol("&key") in formals:
-        new_env = fn.extend_env(list(args), caller_env)
+    # If lambda uses &rest, &key, or &optional, require full application via extend_env.
+    if Symbol("&rest") in formals or Symbol("&key") in formals or Symbol("&optional") in formals:
+        new_env = fn.extend_env(list(args), caller_env, evaluate_fn=evaluate_fn, macros=macros)
         if is_tail_call:
             return TailCall(fn, args, new_env, macros)
         else:

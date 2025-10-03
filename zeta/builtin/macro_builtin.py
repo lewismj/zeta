@@ -61,7 +61,37 @@ def defun_macro(args: list[SExpression], env: Any) -> SExpression:
     return [Symbol("define"), name, [Symbol("lambda"), params] + body]
 
 
+def let_star_macro(args: list[SExpression], env: Any) -> SExpression:
+    """
+    (let* ((v1 e1) (v2 e2) ...) body...)
+    => (let ((v1 e1)) (let* ((v2 e2) ...) body...))
+    Base case with no bindings => (progn body...)
+    """
+    if not args:
+        raise ZetaArityError("let* requires at least a bindings list")
+    bindings = args[0]
+    body = list(args[1:])
+    if not isinstance(bindings, list):
+        raise ZetaTypeError("Let* bindings must be a list")
+    # If no bindings, just wrap body in progn to preserve multiple forms
+    if len(bindings) == 0:
+        if not body:
+            return Symbol("nil")
+        if len(body) == 1:
+            return body[0]
+        return [Symbol("progn"), *body]
+    # Take first binding and recurse
+    first = bindings[0]
+    if not isinstance(first, list) or len(first) != 2 or not isinstance(first[0], Symbol):
+        raise ZetaTypeError(f"Let* binding must be (name value), got {first}")
+    var, val = first
+    rest = bindings[1:]
+    inner = [Symbol("let*"), rest] + body
+    return [Symbol("let"), [[var, val]], inner]
+
+
 def register(macro_env: MacroEnvironment) -> None:
     """Register builtin macros in the provided MacroEnvironment."""
     macro_env.define_macro(Symbol("defun"), defun_macro)
     macro_env.define_macro(Symbol("let"), let_macro)
+    macro_env.define_macro(Symbol("let*"), let_star_macro)

@@ -1,21 +1,22 @@
-# Lambda‑Calculus Beta‑Reduction in Zeta Lisp (Capture‑Avoiding)
+## Lambda‑Calculus Beta‑Reduction.
 
 This page documents a tiny lambda‑calculus reducer.  
 
 - See [source](../tests/test_lambda_calculus_beta_reduction.py).
 
-We encode lambda terms as quoted S‑expressions and implement normal‑order beta‑reduction (leftmost outermost redex) with alpha‑renaming to avoid variable capture 
+Lambda terms are encoded as quoted S‑expressions and implement normal‑order beta‑reduction (leftmost outermost redex) with alpha‑renaming to avoid variable capture 
 _(demonstrates capture‑avoiding substitution using `gensym`)._
 
 ---
 
-## Encoding
+### Encoding
 
 - Variables: plain symbols `x, y, z, ...`
 - Abstraction: `'(Lam x body)` encodes $\lambda x.\,body$
 - Application: `'(App f a)` encodes $(f\ a)$
 
-We will implement:
+What's implemented?
+
 - Free‑variable analysis `free-vars`
 - Alpha‑renaming `alpha`
 - Capture‑avoiding substitution $t[x := v]$
@@ -23,21 +24,23 @@ We will implement:
 
 ---
 
-## Beta and Alpha (math)
+### Beta and Alpha
 
 - Beta‑reduction:
+
   $$
   (\lambda x.\,b)\ a \;\Rightarrow\; b[x := a]
   $$
 
 - Alpha‑conversion (to avoid capture): when substituting into $\lambda v.\,b$ and the bound $v$ occurs free in the value being substituted, pick a fresh symbol $g$ and rename:
+  
   $$
   \lambda v.\,b \;\Rightarrow\; \lambda g.\,b[v := g]\quad\text{where $g$ is fresh (via gensym)}
   $$
 
 ---
 
-## Implementation
+### Implementation
 
 ```lisp
 ;; constructors/predicates for terms
@@ -121,7 +124,7 @@ Notes:
 
 ---
 
-## Examples
+### Examples
 
 ```lisp
 ;; ((λx. x) a) -> a

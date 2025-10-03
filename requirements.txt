@@ -4,3 +4,4 @@ hypothesis==6.139.1
 numpy==2.3.3
 pandas==2.3.2
 fsspec==2025.9.0
+networkx==3.3

@@ -8,6 +8,7 @@ from zeta.types.environment import Environment
 from zeta.types.errors import ZetaArityError
 from zeta.types.lambda_fn import Lambda
 from zeta.types.symbol import Symbol
+from zeta.types.nil import Nil
 
 
 def _substitute(
@@ -38,11 +39,10 @@ def _substitute(
     return expr
 
 def _expand_lambda(head, args, macro_env, evaluator, transformer):
-    # Bind arguments to formals with &rest/&body and &key support
+    # Bind arguments to formals with &optional, &rest/&body and &key support
     formals = list(transformer.formals)
     supplied = list(args)
 
-    # Normalize &body -> &rest for macro parameter lists
     has_rest = Symbol("&rest") in formals or Symbol("&body") in formals
     has_key = Symbol("&key") in formals
 
@@ -52,44 +52,83 @@ def _expand_lambda(head, args, macro_env, evaluator, transformer):
     call_env = Environment(outer=transformer.env)
     seen_formals: list[Symbol] = []
 
+    # Helper to bind optionals in a list of specs (symbol or (name default))
+    def bind_optionals(optional_specs: list[Symbol | list]):
+        nonlocal supplied
+        for spec in optional_specs:
+            if supplied:
+                name = spec if isinstance(spec, Symbol) else spec[0]
+                call_env.define(name, supplied.pop(0))
+                seen_formals.append(name)
+            else:
+                if isinstance(spec, Symbol):
+                    call_env.define(spec, Nil)
+                    seen_formals.append(spec)
+                else:
+                    name = spec[0]
+                    default_expr = spec[1] if len(spec) >= 2 else Nil
+                    if evaluator is not None and default_expr is not Nil:
+                        val = evaluator(default_expr, call_env, macro_env, False)
+                    else:
+                        val = Nil
+                    call_env.define(name, val)
+                    seen_formals.append(name)
+
     if has_rest:
-        # Find the rest marker and its binding name
-        # Allow either &rest name  OR  &body body
-        # Bind all remaining supplied args to that rest name
-        # Example: (times &body body) with args (3 (print "hi"))
+        # Find the rest/body marker
         i_rest = None
         for i, f in enumerate(formals):
             if f == Symbol("&rest") or f == Symbol("&body"):
                 i_rest = i
                 break
-        assert i_rest is not None  # by has_rest invariant
+        assert i_rest is not None
 
-        # Positional before the marker
         leading = formals[:i_rest]
-        # The symbol that names the rest/body
         if i_rest + 1 >= len(formals):
             raise ZetaArityError("Malformed parameter list: &rest/&body must be followed by a name")
         rest_name = formals[i_rest + 1]
 
-        # Bind positional
-        if len(supplied) < len(leading):
-            missing = [str(s) for s in leading[len(supplied):]]
+        # Split leading into required and optionals if present
+        if Symbol("&optional") in leading:
+            opt_index = leading.index(Symbol("&optional"))
+            required_formals = leading[:opt_index]
+            optional_specs = leading[opt_index + 1:]
+        else:
+            required_formals = leading
+            optional_specs = []
+
+        # Bind required positionals
+        if len(supplied) < len(required_formals):
+            missing = [str(s) for s in required_formals[len(supplied):]]
             raise ZetaArityError(f"Macro {head} missing {len(missing)} arg(s): {missing}")
-        for f, v in zip(leading, supplied[: len(leading)]):
+        for f, v in zip(required_formals, supplied[: len(required_formals)]):
             call_env.define(f, v)
             seen_formals.append(f)
+        supplied = supplied[len(required_formals):]
 
-        # Bind rest/name to the remaining args (possibly empty)
-        rest_vals = supplied[len(leading):]
-        call_env.define(rest_name, rest_vals)
+        # Bind optionals
+        bind_optionals(optional_specs)
+
+        # Rest gets whatever remains
+        call_env.define(rest_name, supplied)
         seen_formals.append(rest_name)
+        supplied = []
 
     elif has_key:
         key_index = formals.index(Symbol("&key"))
-        positional_formals = formals[:key_index]
+        leading = formals[:key_index]
         keyword_formals = formals[key_index + 1:]
 
-        # Bind positional first
+        # Split leading into required positionals and optionals
+        if Symbol("&optional") in leading:
+            opt_index = leading.index(Symbol("&optional"))
+            positional_formals = leading[:opt_index]
+            optional_specs = leading[opt_index + 1:]
+        else:
+            positional_formals = leading
+            optional_specs = []
+
+        # Bind required positionals
         if len(supplied) < len(positional_formals):
             missing = [str(s) for s in positional_formals[len(supplied):]]
             raise ZetaArityError(f"Macro {head} missing {len(missing)} arg(s): {missing}")
@@ -98,7 +137,10 @@ def _expand_lambda(head, args, macro_env, evaluator, transformer):
             seen_formals.append(f)
         supplied = supplied[len(positional_formals):]
 
-        # Keywords must be pairs like :name value
+        # Bind optionals
+        bind_optionals(optional_specs)
+
+        # Now bind keyword args from remaining supplied
         if len(supplied) % 2 != 0:
             raise ZetaArityError("Keyword arguments must be in pairs")
         provided_keys: dict[Symbol, SExpression] = {}
@@ -116,14 +158,35 @@ def _expand_lambda(head, args, macro_env, evaluator, transformer):
             seen_formals.append(kf)
 
     else:
-        # Simple positional: exact arity
-        if len(supplied) != len(formals):
-            raise ZetaArityError(
-                f"Macro {head} expected {len(formals)} args, got {len(supplied)}"
-            )
-        for f, v in zip(formals, supplied):
-            call_env.define(f, v)
-            seen_formals.append(f)
+        # No &rest or &key: allow &optional or simple positional
+        if Symbol("&optional") in formals:
+            opt_index = formals.index(Symbol("&optional"))
+            required_formals = formals[:opt_index]
+            optional_specs = formals[opt_index + 1:]
+
+            # Bind required
+            if len(supplied) < len(required_formals):
+                missing = [str(s) for s in required_formals[len(supplied):]]
+                raise ZetaArityError(f"Macro {head} missing {len(missing)} arg(s): {missing}")
+            for f, v in zip(required_formals, supplied[: len(required_formals)]):
+                call_env.define(f, v)
+                seen_formals.append(f)
+            supplied = supplied[len(required_formals):]
+
+            # Bind optionals
+            bind_optionals(optional_specs)
+
+            if supplied:
+                raise ZetaArityError(f"Too many arguments: {supplied}")
+        else:
+            # Simple positional: exact arity
+            if len(supplied) != len(formals):
+                raise ZetaArityError(
+                    f"Macro {head} expected {len(formals)} args, got {len(supplied)}"
+                )
+            for f, v in zip(formals, supplied):
+                call_env.define(f, v)
+                seen_formals.append(f)
 
     # Quasiquote-aware body handling
     body = transformer.body
@@ -134,13 +197,9 @@ def _expand_lambda(head, args, macro_env, evaluator, transformer):
         if isinstance(substituted, list) and substituted:
             head_sym = substituted[0]
             if head_sym == Symbol("quote"):
-                # Return quoted template untouched (e.g., (quote ...))
                 return substituted
             if head_sym == Symbol("quasiquote"):
-                # Evaluate quasiquote template to produce expansion
                 return evaluator(substituted, call_env, macro_env)
-        # Otherwise, evaluate the substituted body to allow computed expansions
-        # such as (let ((g (gensym ...))) `( ... ,g ...))
         return evaluator(substituted, call_env, macro_env)
 
 class MacroEnvironment:
@@ -160,7 +219,7 @@ class MacroEnvironment:
         self.macros: dict[Symbol, Lambda | Callable] = {}
         self._gensym_counter = count(1)
 
-    def define_macro(self, name: Symbol, transformer: Lambda):
+    def define_macro(self, name: Symbol, transformer: Lambda | Callable):
         self.macros[name] = transformer
 
     def is_macro(self, sym: Symbol) -> bool:

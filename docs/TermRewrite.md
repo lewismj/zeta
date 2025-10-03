@@ -1,4 +1,4 @@
-# Term Rewriting in Zeta Lisp: A Mini Symbolic Differentiator
+## Term Rewriting: A Mini Symbolic Differentiator.
 
 This page demonstrates term rewriting in Zeta. 
 
@@ -10,7 +10,7 @@ The examples implement:
 
 ---
 
-## Core Idea
+### Summary
 
 We represent algebra as quoted lists and apply rewrite rules by pattern-matching on list heads.
 
@@ -20,7 +20,7 @@ Differentiation and simplification are implemented as Lisp functions that operat
 
 ---
 
-## Implementation (helpers, simplifier, differentiator)
+### Implementation (helpers, simplifier, differentiator)
 
 ```lisp
 ;; Basic predicates and accessors over expressions
@@ -107,9 +107,9 @@ Differentiation and simplification are implemented as Lisp functions that operat
 
 ---
 
-## Examples
+### Examples
 
-### 1) Quadratic: $\frac{d}{dx}\big(x^2 + 3\big)$
+#### 1) Quadratic: $\frac{d}{dx}\big(x^2 + 3\big)$
 
 - Input S-expr: `'(+ (* x x) 3)` → $x^2 + 3$
 
@@ -135,7 +135,7 @@ $$
 
 ---
 
-### 2) Product: $\frac{d}{dx}\big(x(x+3)\big)$
+#### 2) Product: $\frac{d}{dx}\big(x(x+3)\big)$
 
 - Input S-expr: `'( * x (+ x 3) )` → $x(x + 3)$
 
@@ -152,7 +152,7 @@ Note: the simplifier keeps `(+ (+ x 3) x)` due to binary `*` and no flattening/a
 
 ---
 
-### 3) Chain Rule: $\frac{d}{dx}\big(\sin(x^2)\big)$
+#### 3) Chain Rule: $\frac{d}{dx}\big(\sin(x^2)\big)$
 
 - Input S-expr: `'(sin (* x x))` → $\sin(x^2)$
 
@@ -174,7 +174,7 @@ $$
 
 ---
 
-### 4) Power Rule with Inner Sum: $\frac{d}{dx}\big((x+1)^3\big)$
+#### 4) Power Rule with Inner Sum: $\frac{d}{dx}\big((x+1)^3\big)$
 
 - Input S-expr: `'( ^ (+ x 1) 3 )` → $(x+1)^3$
 
@@ -194,7 +194,7 @@ $$
 
 ---
 
-## Notes and Limitations
+### Notes and Limitations
 
 - The demo simplifier is intentionally small:
   - `*` and `+` are treated as binary nodes; there is no general flattening or reordering.
@@ -204,14 +204,4 @@ $$
   - Power rule for numeric exponents
   - Chain rule for `sin`, `cos`, `exp`, `log`
 - Everything is written in Lisp and operates over quoted S-expressions — a pure term rewriting style.
-
-## Running the Demo
-
-You can explore these examples interactively via the `Interpreter` in Python or consult the automated examples in `tests/test_term_rewriting.py`.
-
-```python
-from zeta.interpreter import Interpreter
-itp = Interpreter()
-# then eval the prelude above and the sample expressions
-```
 

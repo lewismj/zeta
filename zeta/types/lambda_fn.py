@@ -36,7 +36,11 @@ class Lambda:
 
     # --- Evaluation helpers ---
     def extend_env(
-        self, args: list[LispValue], caller_env: Environment | None = None
+        self,
+        args: list[LispValue],
+        caller_env: Environment | None = None,
+        evaluate_fn=None,
+        macros=None,
     ) -> Environment:
         """
         Bind the given argument values to this lambda's formal parameters and
@@ -55,13 +59,49 @@ class Lambda:
         supplied = list(args)
         local_env = Environment(outer=self.env)
 
-        # Analyze formals for &rest or &key
+        # Helper: bind &optional specs, evaluating defaults when provided
+        def _bind_optionals(optional_specs: list[Symbol | list]):
+            nonlocal supplied
+            for spec in optional_specs:
+                if supplied:
+                    # If caller supplied a value, just bind it to the name
+                    name = spec if isinstance(spec, Symbol) else spec[0]
+                    local_env.define(name, supplied.pop(0))
+                else:
+                    if isinstance(spec, Symbol):
+                        # No default expr; bind Nil
+                        local_env.define(spec, Nil)
+                    else:
+                        name = spec[0]
+                        default_expr = spec[1] if len(spec) >= 2 else Nil
+                        if evaluate_fn is not None and default_expr is not Nil:
+                            val = evaluate_fn(default_expr, local_env, macros, False)
+                        else:
+                            # If no evaluator or no default provided, fall back to Nil
+                            val = Nil
+                        local_env.define(name, val)
+
+        # Analyze formals for &optional, &rest or &key
         if Symbol("&rest") in formals and Symbol("&key") in formals:
             raise ZetaArityError("Malformed parameter list: cannot mix &rest and &key")
 
+        # Helper to bind simple positional list
+        def _bind_positional(fs: list[Symbol], sup: list[LispValue]):
+            while fs:
+                f = fs.pop(0)
+                if sup:
+                    local_env.define(f, sup.pop(0))
+                else:
+                    missing = [f] + fs
+                    raise ZetaArityError(
+                        f"Too few arguments; missing {len(missing)} parameter(s): {[str(s) for s in missing]}"
+                    )
+
+        # Handle &rest (may appear after required/optional)
         if Symbol("&rest") in formals:
-            # &rest collects the remaining arguments into a list bound to the
-            # following formal symbol.
+            leading: list[Symbol] = []
+            rest_name: Symbol | None = None
+            # Consume until &rest
             while formals:
                 formal = formals.pop(0)
                 if formal == Symbol("&rest"):
@@ -70,32 +110,44 @@ class Lambda:
                             "Malformed parameter list: &rest must be followed by a name"
                         )
                     rest_name = formals.pop(0)
-                    local_env.define(rest_name, supplied)
-                    supplied = []
                     break
-                if supplied:
-                    local_env.define(formal, supplied.pop(0))
-                else:
-                    # Too few arguments and no &rest to capture them
-                    missing = [formal] + formals
-                    raise ZetaArityError(
-                        f"Too few arguments; missing {len(missing)} parameter(s): {[str(s) for s in missing]}"
-                    )
+                leading.append(formal)
 
-            if supplied:
-                # Too many arguments with no &rest parameter
-                raise ZetaArityError(f"Too many arguments: {supplied}")
+            # Split optional if present in leading
+            if Symbol("&optional") in leading:
+                opt_index = leading.index(Symbol("&optional"))
+                required_formals = leading[:opt_index]
+                optional_specs = leading[opt_index + 1 :]
+            else:
+                required_formals = leading
+                optional_specs = []
 
+            # Bind required
+            _bind_positional(required_formals, supplied)
+            # Bind optionals (symbol or (name default)); evaluate defaults when provided
+            _bind_optionals(optional_specs)
+
+            # Bind rest to remaining
+            local_env.define(rest_name, supplied)
+            supplied = []
             return local_env
 
         # &key handling (Common Lisp-style named parameters)
         if Symbol("&key") in formals:
-            # split formals: positionals before &key, then list of keyword names
+            # split formals: positionals (possibly with &optional) before &key, then list of keyword names
             key_index = formals.index(Symbol("&key"))
-            positional_formals = formals[:key_index]
+            leading = formals[:key_index]
             keyword_formals = formals[key_index + 1 :]
 
-            # Bind positional first
+            if Symbol("&optional") in leading:
+                opt_index = leading.index(Symbol("&optional"))
+                positional_formals = leading[:opt_index]
+                optional_specs = leading[opt_index + 1 :]
+            else:
+                positional_formals = leading
+                optional_specs = []
+
+            # Bind required positional
             for pf in positional_formals:
                 if supplied:
                     local_env.define(pf, supplied.pop(0))
@@ -104,6 +156,9 @@ class Lambda:
                     raise ZetaArityError(
                         f"Too few arguments; missing {len(missing)} parameter(s): {[str(s) for s in missing]}"
                     )
+
+            # Bind optionals (evaluate defaults when provided)
+            _bind_optionals(optional_specs)
 
             # Remaining supplied must be keyword/value pairs
             if len(supplied) % 2 != 0:
@@ -129,7 +184,27 @@ class Lambda:
 
             return local_env
 
-        # No &rest or &key: simple positional arity
+        # No &rest or &key: may have &optional or simple positional
+        if Symbol("&optional") in formals:
+            opt_index = formals.index(Symbol("&optional"))
+            required_formals = formals[:opt_index]
+            optional_specs = formals[opt_index + 1 :]
+
+            # Bind required
+            _bind_positional(required_formals, supplied)
+            # Bind optionals
+            for spec in optional_specs:
+                if supplied:
+                    local_env.define(spec if isinstance(spec, Symbol) else spec[0], supplied.pop(0))
+                else:
+                    name = spec if isinstance(spec, Symbol) else spec[0]
+                    local_env.define(name, Nil)
+
+            if supplied:
+                raise ZetaArityError(f"Too many arguments: {supplied}")
+            return local_env
+
+        # Simple positional arity
         while formals:
             formal = formals.pop(0)
             if supplied:

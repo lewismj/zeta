@@ -1,6 +1,6 @@
-# Boolean Algebra Rewriting in Zeta Lisp
+## Boolean Algebra Rewriting 
 
-This page documents a small, self‑contained Boolean algebra simplifier implemented entirely in Zeta Lisp. 
+This page documents a small, self‑contained Boolean algebra simplifier. 
 
 The simplifier operates over quoted S‑expressions using heads `and`, `or`, and `not`. The goal is to apply algebraic identities until a fixed point is reached, producing a normalized form.
 
@@ -8,7 +8,7 @@ The simplifier operates over quoted S‑expressions using heads `and`, `or`, and
 
 ---
 
-## Core idea
+### Summary
 
 We represent Boolean formulas as quoted lists and apply rewrite rules by inspecting the list head. For example:
 
@@ -29,7 +29,7 @@ The following algebraic rules are applied recursively until no further change oc
 
 ---
 
-## Implementation
+### Implementation
 
 ```lisp
 (defun op (e) (car e))
@@ -96,7 +96,7 @@ Notes:
 
 ---
 
-## Examples
+### Examples
 
 ```lisp
 (simplify-bool* '(and x #t))                 ;; => x

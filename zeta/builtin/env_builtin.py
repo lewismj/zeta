@@ -36,17 +36,16 @@ def not_equals(env: Environment, expr: list[LispValue]) -> Symbol:
 
 
 def is_equal(a, b):
-    """Deep equality for Lisp values, with element-wise comparison for lists."""
+    """Deep equality for Lisp values, with element-wise comparison for lists and tuples."""
     if a is b:
         return True
-    if type(a) != type(b):
-        return False
-
-    if isinstance(a, list) and isinstance(b, list):
+    # Allow list/tuple structural equality if both are sequences of same length
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
         if len(a) != len(b):
             return False
         return all(is_equal(x, y) for x, y in zip(a, b))
-
+    if type(a) != type(b):
+        return False
     return a == b
 
 
@@ -154,35 +153,61 @@ def logical_not(env: Environment, expr: list[LispValue]) -> Symbol:
 
 
 def cons(env: Environment, expr: list[LispValue]) -> list[LispValue]:
-    """Construct a new list by prepending head to tail (list or Nil)."""
+    """Construct a new list/pair by prepending head to tail.
+
+    Behavior:
+    - If tail is Nil, returns a single-element list [head].
+    - If tail is a list, returns a new list [head] + tail (non-destructive).
+    - If tail is neither a list nor Nil, treat as a dotted pair and return
+      a two-element Python list [head, tail]. This supports assoc-style
+      key-value pairs used in alists (e.g., (cons x y)).
+    """
     if len(expr) != 2:
         raise ZetaArityError("Cons requires exactly 2 arguments")
     head, tail = expr
     if tail is Nil:
         return [head]
-    if not hasattr(tail, "__iter__"):
-        raise ZetaTypeError("Second argument to cons must be a list or Nil")
-    return [head] + list(tail)
+    if isinstance(tail, list):
+        return [head] + tail
+    # Dotted pair fallback: represent as a Python tuple (head . tail)
+    return (head, tail)
 
 
 def car(env: Environment, expr: list[LispValue]) -> LispValue:
-    """Return the first element of a list; Nil for empty or Nil."""
+    """Return the first element of a list or dotted pair; Nil for empty or Nil."""
     if len(expr) != 1:
         raise ZetaArityError("Car requires exactly 1 argument")
     xs = expr[0]
-    if xs is Nil or not xs:
+    if xs is Nil:
         return Nil
-    return xs[0]
+    # Support tuples as dotted pairs (head . tail)
+    if isinstance(xs, tuple):
+        return xs[0] if len(xs) > 0 else Nil
+    # Lists: empty list -> Nil, else first element
+    if isinstance(xs, list):
+        return xs[0] if xs else Nil
+    # Non-list, non-tuple: not a sequence; return Nil for safety
+    return Nil
 
 
 def cdr(env: Environment, expr: list[LispValue]) -> LispValue:
-    """Return the tail of a list (all but first); Nil for empty or singletons."""
+    """Return the tail of a list or dotted pair.
+
+    - For lists: return all but the first element; Nil for empty or singletons.
+    - For dotted pairs (tuples): return the tail element directly.
+    """
     if len(expr) != 1:
         raise ZetaArityError("Cdr requires exactly 1 argument")
     xs = expr[0]
-    if xs is Nil or not xs:
+    if xs is Nil:
         return Nil
-    return xs[1:] if len(xs) > 1 else Nil
+    # Dotted pair support
+    if isinstance(xs, tuple):
+        return xs[1] if len(xs) > 1 else Nil
+    # List support
+    if isinstance(xs, list):
+        return xs[1:] if len(xs) > 1 else Nil
+    return Nil
 
 
 def list_builtin(env: Environment, expr: list[LispValue]) -> list[LispValue]:
@@ -337,6 +362,7 @@ def register(env: Environment) -> None:
             Symbol("="): equals,
             Symbol("=="): equals,
             Symbol("eq"): equals,
+            Symbol("eq?"): equals,
             Symbol("/="): not_equals,
             Symbol("<"): lt,
             Symbol("<="): lte,

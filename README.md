@@ -13,6 +13,7 @@ Work in progress.
     - [Term rewriting](docs/TermRewrite.md)
     - [Boolean Simplifier](docs/BooleanSimplifier.md)
     - [Lambda Calculus Beta Reducer](docs/LambdaCalculusBetaReduction.md)
+
   
     - Do-Calculus
   
