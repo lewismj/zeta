@@ -171,7 +171,8 @@ Partial application for simple positional lambdas:
         acc
         (fact (- n 1) (* acc n)))))   ;; proper tail recursion via trampoline
 
-(fact 5 1)  ;; => 120
+   (fact 1500 1) ;; tail recursive native Python would fail with maximum recursion depth error.
+                 ;; Python based interpreter relies on Python numeric tower though.
 ```
 
 #### Continuations (call/cc)
