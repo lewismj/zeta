@@ -55,7 +55,8 @@ class MacroEnvironment:
         - Do NOT evaluate the returned expansion here; just return it.
         """
         # Bind arguments without pre-evaluating them; defaults may be evaluated via evaluator
-        call_env = transformer.extend_env(list(args), caller_env=None, evaluate_fn=evaluator, macros=macro_env)
+        from zeta.types.bind import bind_arguments
+        call_env = bind_arguments(transformer.formals, list(args), transformer.env, evaluator, macro_env)
 
         body = transformer.body
         # Execute transformer body to produce expansion (usually via quasiquote)

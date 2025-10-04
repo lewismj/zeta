@@ -81,42 +81,9 @@ dtype: int64, type:<class 'pandas.core.series.Series'>
 - [ ] Provide an extended Prelude, minimal at present.
 - [ ] Provide a REPL, and LSP support for integration with editors.
 - [ ] Implement proper package system.
+- [ ] Put in cyclic check/depth limit in the recursive macro expander.
 - [ ] Byte code compiler that runs within the Python process, rather than an interpreter.
 
-### Features
-
-
-- Lambdas and application
-  - First-class `lambda` with positional parameters, `&rest`, and `&key` (named parameters like `:y 42`)
-  - Multiple body forms implicitly wrapped in `progn`; empty body returns `nil`
-  - Partial application for simple positional lambdas; `(apply ...)` enforces full application
-- Macro system
-  - `defmacro` implemented.
-  - Quasiquote with `unquote` and `unquote-splicing`
-  - Recursive, head-position macro expansion with hygienic-leaning substitution and gensym.
-- Tail-call optimization (TCO)
-  - Trampoline-based evaluator returns `TailCall` in tail position to avoid Python recursion limits
-- Continuations (call/cc)
-  - Scheme-style escape continuations via the special form `call/cc` (call-with-current-continuation)
-  - Continuations are single-shot and delimited to the dynamic extent of the call
-  - Invoking the continuation outside the dynamic extent of the original `call/cc` is not supported (single-shot semantics)
-- Python interoperability
-  - `(import "module" as "alias" [helpers "helper_mod"])` binds modules into Zeta
-  - Qualified symbol resolution like `np:array`, `os:path.join`, or package aliases
-  - Calls into Python functions/methods and receives Python objects or native values
-- Reader and parser capabilities
-  - Symbols, strings, integers, floats, radix numbers (`#b`, `#o`, `#x`), complex (`#C`), bitstrings (`#*`)
-  - Lists and dotted lists, vectors `#(...)`, character literals `#\space`, read-time eval `#.`
-  - Function shorthand `#'sym` → `("function" sym)`
-- Core special forms and builtins
-  - `define`, `set`, `if`, `progn`, `quote`, `quasiquote`, `unquote`, `unquote-splicing`
-  - Loops: `do`, `dotimes`, `dolist`
-  - Error handling: `condition-case`, `catch`, `throw`
-  - Structures: `defstruct` generates constructors and accessors
-  - Lists and predicates: `cons`, `car`, `cdr`, `list`, `nil?`, `symbol?`, `atom`, `join`, etc.
-- Environments and packages
-  - Nested lexical environments
-  - Package tables and aliases enable `pkg:symbol` lookups
 
 ### Why Zeta?
 
