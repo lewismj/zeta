@@ -224,7 +224,7 @@ Define simple structures with constructors and accessors:
 ```
 2. Lambdas with optional and named parameters.
 
-```
+```lisp
     (progn
       (import "pandas" as "pd")
       ;; Build a simple DataFrame without requiring any helpers

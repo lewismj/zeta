@@ -165,3 +165,15 @@
  ;; Helpers
 (defun evenp (n) (= (mod n 2) 0))
 
+
+;; Pretty-print macro expansions (returns the expansion as value)
+(defun macroexpand-print (form)
+  (let ((exp (macroexpand form)))
+    (print exp)
+    exp))
+
+(defun macroexpand-1-print (form)
+  (let ((exp (macroexpand-1 form)))
+    (print exp)
+    exp))
+
