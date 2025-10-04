@@ -164,5 +164,4 @@
 
  ;; Helpers
 (defun evenp (n) (= (mod n 2) 0))
-(defmacro when (test &body body) `(if ,test (progn ,@body)))
 
