@@ -62,13 +62,27 @@ def test_nested_macro_expansion(env, macros):
     # wrap just quotes its argument (does not evaluate it yet)
     macros.define_macro(
         Symbol("wrap"),
-        Lambda([Symbol("y")], [Symbol("quote"), Symbol("y")], env)
+        Lambda(
+            [Symbol("y")],
+            [
+                Symbol("quasiquote"),
+                [
+                    Symbol("quote"),
+                    [Symbol("unquote"), Symbol("y")]
+                ],
+            ],
+            env,
+        ),
     )
 
-    # double_wrap calls wrap on its argument
+    # double_wrap constructs a call to wrap with the raw argument form
     macros.define_macro(
         Symbol("double_wrap"),
-        Lambda([Symbol("x")], [Symbol("wrap"), Symbol("x")], env)
+        Lambda(
+            [Symbol("x")],
+            [Symbol("quasiquote"), [Symbol("wrap"), [Symbol("unquote"), Symbol("x")]]],
+            env,
+        ),
     )
 
     # When expanded:

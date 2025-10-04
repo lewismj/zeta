@@ -84,8 +84,8 @@ class Lambda:
                             val = Nil
                         local_env.define(name, val)
 
-        # Analyze formals for &optional, &rest or &key
-        if Symbol("&rest") in formals and Symbol("&key") in formals:
+        # Analyze formals for &optional, &rest/&body or &key
+        if (Symbol("&rest") in formals or Symbol("&body") in formals) and Symbol("&key") in formals:
             raise ZetaArityError("Malformed parameter list: cannot mix &rest and &key")
 
         # Helper to bind simple positional list
@@ -100,17 +100,18 @@ class Lambda:
                         f"Too few arguments; missing {len(missing)} parameter(s): {[str(s) for s in missing]}"
                     )
 
-        # Handle &rest (may appear after required/optional)
-        if Symbol("&rest") in formals:
+        # Handle &rest or &body (may appear after required/optional)
+        if Symbol("&rest") in formals or Symbol("&body") in formals:
             leading: list[Symbol] = []
             rest_name: Symbol | None = None
-            # Consume until &rest
+            rest_marker = Symbol("&rest") if Symbol("&rest") in formals else Symbol("&body")
+            # Consume until &rest/&body
             while formals:
                 formal = formals.pop(0)
-                if formal == Symbol("&rest"):
+                if formal == rest_marker:
                     if not formals:
                         raise ZetaArityError(
-                            "Malformed parameter list: &rest must be followed by a name"
+                            "Malformed parameter list: &rest/&body must be followed by a name"
                         )
                     rest_name = formals.pop(0)
                     break
