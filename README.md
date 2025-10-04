@@ -78,6 +78,9 @@ dtype: int64, type:<class 'pandas.core.series.Series'>
 
 ### Immediate TODO:
 
+In the core semantics Zeta is a Lisp, It’s not a full Common Lisp or full Scheme (by intent), 
+but the interpreter now follows canonical Lisp rules in macroexpansion, binding, and evaluation. 
+
 - [ ] Provide an extended Prelude, minimal at present.
 - [ ] Provide a REPL, and LSP support for integration with editors.
 - [ ] Implement proper package system.
