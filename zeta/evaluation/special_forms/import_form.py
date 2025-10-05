@@ -3,7 +3,7 @@ from __future__ import annotations
 from zeta import SExpression, LispValue, EvaluatorFn
 from zeta.types.environment import Environment
 from zeta.types.macro_environment import MacroEnvironment
-from zeta.packages import import_module
+from zeta.modules.python_loader import import_module
 from zeta.types.nil import Nil
 from zeta.types.symbol import Symbol
 
