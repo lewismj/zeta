@@ -47,4 +47,6 @@ class Interpreter:
             results.append(self.backend.eval(expr, self.env, self.macros))
         if not results:
             return Nil
-        return results[0] if len(results) == 1 else results
+        if len(results) == 1:
+            return results[0]
+        return results

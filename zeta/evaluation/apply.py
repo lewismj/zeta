@@ -104,6 +104,29 @@ def apply(
     """
     if isinstance(head, Lambda):
         return apply_lambda(head, args, macros, evaluate_fn, tail, env)
+    # Allow evaluator to call VM closures by synthesizing a tiny chunk that calls the closure on the VM
+    try:
+        from zeta.compiler.function import Closure as _VMClosure
+        _is_vm_closure = isinstance(head, _VMClosure)
+    except Exception:
+        _is_vm_closure = False
+    if _is_vm_closure:
+        from zeta.compiler.chunk import Chunk
+        from zeta.compiler.opcodes import Opcode
+        from zeta.compiler.vm import run_chunk
+        chunk = Chunk()
+        # Push callee first, then args
+        cidx = chunk.add_const(head)
+        chunk.emit_op(Opcode.PUSH_CONST)
+        chunk.emit_u16(cidx)
+        for arg in args:
+            aidx = chunk.add_const(arg)
+            chunk.emit_op(Opcode.PUSH_CONST)
+            chunk.emit_u16(aidx)
+        chunk.emit_op(Opcode.CALL)
+        chunk.emit_u8(len(args))
+        chunk.emit_op(Opcode.HALT)
+        return run_chunk(chunk, env)
     elif callable(head):
         return head(env, args)
     else:
