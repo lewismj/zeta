@@ -11,6 +11,8 @@ from zeta.evaluation.special_forms.defmacro_form import defmacro_form
 from zeta.evaluation.special_forms.gensym_form import gensym_form
 from .compiler import compile_module
 from .vm import run_chunk
+import os
+from .disasm import disassemble_chunk
 
 
 class BytecodeBackend:
@@ -42,17 +44,27 @@ class BytecodeBackend:
             if head.id == "gensym":
                 # Generate symbol directly via special form handler (state in MacroEnvironment)
                 return gensym_form(tail, env, macros, evaluate0, False)
-            # Temporary guard: boolean simplifier functions can be evaluated by the classic evaluator
-            # until full local capture issues are resolved in the VM compiler.
-            if head.id in ("simplify-bool", "simplify-bool*"):
-                return evaluate0(expr, env, macros, False)
+            if head.id == "import":
+                # Handle Python interop import as a special form in VM path too
+                from zeta.evaluation.special_forms.import_form import import_form
+                return import_form(tail, env, macros, evaluate0, False)
+            if head.id == "condition-case":
+                # Delegate to the existing special form handler for condition-case
+                from zeta.evaluation.special_forms.throw_catch_form import condition_case_form
+                return condition_case_form(tail, env, macros, evaluate0, False)
 
         # Expand macros using the existing system to preserve semantics
         expanded = expr
         if macros is not None:
             expanded = macros.macro_expand_all(expr, evaluate0, env)
 
-
         chunk = compile_module(expanded)
+        if os.environ.get("ZETA_DISASM"):
+            try:
+                print("=== DISASM ===")
+                print(disassemble_chunk(chunk))
+                print("=== END DISASM ===")
+            except Exception:
+                pass
         result = run_chunk(chunk, env)
         return result

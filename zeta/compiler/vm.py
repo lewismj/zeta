@@ -315,6 +315,9 @@ class VM:
                         try:
                             result = callee(self.env, args)
                         except TypeError:
+                            # Only fallback to positional if callee doesn't look like a (env, args) function
+                            if hasattr(callee, "__code__") and getattr(callee.__code__, "co_argcount", 0) >= 2:
+                                raise
                             result = callee(*args)
                     except ContinuationEscape as esc:
                         # On continuation escape, unwind to the nearest handler

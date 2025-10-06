@@ -350,6 +350,70 @@ def format_builtin(env: Environment, args: list[LispValue]) -> str:
     return " ".join(_to_string(a) for a in args)
 
 
+# Helper used by the VM-compiled code to resolve and call colon-qualified heads
+# e.g., (df:sum 1) or (np:dot a b). Mirrors interpreter behavior in evaluator.evaluate0.
+from zeta.evaluation.py_module_util import resolve_object_path
+from zeta.types.lambda_fn import Lambda as _Lambda
+from zeta.compiler.function import Closure as _VMClosure
+from zeta.compiler.apply_vm import call_vm_closure as _call_vm_closure
+
+def __colon_call__(env: Environment, args: list[LispValue]) -> LispValue:
+    if not args:
+        raise ZetaArityError("__colon_call__ expects at least a head symbol argument")
+    head_sym = args[0]
+    call_args = list(args[1:])
+    if not isinstance(head_sym, Symbol):
+        raise ZetaTypeError("__colon_call__ first argument must be a Symbol")
+    target = resolve_object_path(env, head_sym)
+    # If the resolved attribute is a Zeta Lambda, apply via the engine
+    if isinstance(target, _Lambda):
+        return apply_engine(target, call_args, env, MacroEnvironment(), evaluate0, False)
+    # If it is a VM Closure, invoke via a tiny VM trampoline
+    if isinstance(target, _VMClosure):
+        return _call_vm_closure(env, target, call_args)
+    # If it is a wrapped Python callable, use its wrapper protocol
+    if callable(target) and getattr(target, "_zeta_wrapped", False):
+        return target(env, call_args)
+    # Otherwise, call it as a normal Python callable
+    return target(*call_args)
+
+
+def __import_special__(env: Environment, args: list[LispValue]) -> LispValue:
+    """VM helper: (import "module" as "alias" helpers "helpers_mod")
+    Parse arguments and perform the import via python_loader.import_module.
+    Returns Nil.
+    """
+    from zeta.modules.python_loader import import_module
+    module_name = None
+    alias = None
+    helpers_module = None
+    if not args:
+        raise ZetaArityError("import requires a module name")
+    module_name = args[0]
+    i = 1
+    while i < len(args):
+        key = args[i]
+        if isinstance(key, Symbol) and key.id == "as":
+            alias = args[i + 1] if i + 1 < len(args) else None
+            i += 2
+        elif isinstance(key, Symbol) and key.id == "helpers":
+            helpers_module = args[i + 1] if i + 1 < len(args) else None
+            i += 2
+        else:
+            i += 1
+    import_module(env, module_name, alias=alias, register_functions_module=helpers_module)
+    return Nil
+
+
+def __eval_list__(env: Environment, args: list[LispValue]) -> LispValue:
+    """Evaluate a single S-expression (args[0]) using the classic evaluator in the current env."""
+    if not args:
+        return Nil
+    expr = args[0]
+    # Use a fresh MacroEnvironment for safety
+    return evaluate0(expr, env, MacroEnvironment(), True)
+
+
 def register(env: Environment) -> None:
     """Register all builtin functions and constants into the given environment."""
     env.update(
@@ -385,6 +449,9 @@ def register(env: Environment) -> None:
             Symbol("string->symbol"): string_to_symbol,
             Symbol("print"): print_builtin,
             Symbol("format"): format_builtin,
+            Symbol("__colon_call__"): __colon_call__,
+            Symbol("__import_special__"): __import_special__,
+            Symbol("__eval_list__"): __eval_list__,
         }
     )
     env.define(Symbol("#t"), Symbol("#t"))

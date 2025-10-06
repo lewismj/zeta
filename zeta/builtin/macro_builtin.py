@@ -12,10 +12,40 @@ def let_macro(args: list[SExpression], env: Any) -> SExpression:
     """
     (let ((var1 val1) (var2 val2) ...) body...)
     => ((lambda (var1 var2 ...) body...) val1 val2 ...)
+
+    Named let:
+    (let name ((var1 val1) ...) body...)
+    => (let () (define name (lambda (var1 ...) body...)) (name val1 ...))
     """
     if len(args) < 2:
         raise ZetaArityError("Let requires bindings and at least one body form")
 
+    # Support named let: first arg is a symbol, second is bindings list
+    if isinstance(args[0], Symbol):
+        if len(args) < 3:
+            raise ZetaArityError("Named let requires (name (bindings) body...)")
+        name = args[0]
+        bindings = args[1]
+        body = list(args[2:])
+        if not isinstance(bindings, list):
+            raise ZetaTypeError("Let bindings must be a list")
+        vars_: list[Symbol] = []
+        vals_: list[SExpression] = []
+        for b in bindings:
+            if not isinstance(b, list) or len(b) != 2 or not isinstance(b[0], Symbol):
+                raise ZetaTypeError(f"Let binding must be (name value), got {b}")
+            var, val = b
+            vars_.append(var)
+            vals_.append(val)
+        # (let () (define name (lambda (vars_) body...)) (name vals_...))
+        return [
+            Symbol("let"),
+            [],
+            [Symbol("define"), name, [Symbol("lambda"), vars_] + body],
+            [name] + vals_,
+        ]
+
+    # Simple let
     bindings = args[0]
     body = list(args[1:])
 

@@ -16,6 +16,9 @@ class CompileCtx:
     in_tail: bool = False
     locals: dict[Symbol, int] | None = None
     upvalues: dict[Symbol, int] | None = None
+    self_name: Symbol | None = None
+    param_ids: set[str] | None = None
+    upvalue_ids: dict[str, int] | None = None
 
 
 def compile_module(expr: Any) -> Chunk:
@@ -64,12 +67,30 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
                             break
                 if not resolved and ctx.upvalues is not None:
                     for sym_k, idx in ctx.upvalues.items():
-                        # upvalues map is Symbol->int
-                        if isinstance(sym_k, Symbol) and sym_k.id == expr.id:
+                        # Match by id even if Symbol instances differ or keys are non-Symbol but stringify to same id
+                        key_id = sym_k.id if isinstance(sym_k, Symbol) else (str(sym_k) if hasattr(sym_k, "__str__") else None)
+                        if key_id == expr.id:
                             chunk.emit_op(Opcode.LOAD_UPVALUE)
                             chunk.emit_u16(idx)
                             resolved = True
                             break
+                # If still not resolved but the symbol matches a known parameter id and we have upvalues,
+                # try to resolve by id against upvalues map (defensive against instance/key mismatch)
+                if not resolved and ctx.upvalues is not None and ctx.param_ids is not None and expr.id in ctx.param_ids:
+                    for sym_k, idx in ctx.upvalues.items():
+                        key_id = sym_k.id if isinstance(sym_k, Symbol) else (str(sym_k) if hasattr(sym_k, "__str__") else None)
+                        if key_id == expr.id:
+                            chunk.emit_op(Opcode.LOAD_UPVALUE)
+                            chunk.emit_u16(idx)
+                            resolved = True
+                            break
+                # Final fallback: resolve by id using precomputed upvalue id map
+                if not resolved and ctx.upvalue_ids is not None:
+                    idx = ctx.upvalue_ids.get(expr.id)
+                    if idx is not None:
+                        chunk.emit_op(Opcode.LOAD_UPVALUE)
+                        chunk.emit_u16(idx)
+                        resolved = True
                 if not resolved:
                     # load from globals for MVP
                     gidx = chunk.add_const(expr)
@@ -89,6 +110,25 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
             if len(tail) != 1:
                 raise SyntaxError("quote takes exactly one argument")
             _emit_push_const(chunk, tail[0])
+            return
+        if head.id == "import":
+            # Compile (import ...) to a call of builtin __import_special__ to perform Python module import
+            cidx = chunk.add_const(Symbol("__import_special__"))
+            chunk.emit_op(Opcode.LOAD_GLOBAL)
+            chunk.emit_u16(cidx)
+            for arg in tail:
+                # Keep keywords 'as' and 'helpers' as literal symbols
+                if isinstance(arg, Symbol) and arg.id in ("as", "helpers"):
+                    _emit_push_const(chunk, arg)
+                else:
+                    compile_expr(arg, chunk, CompileCtx(False, locals=ctx.locals, upvalues=ctx.upvalues))
+            argc = len(tail)
+            if ctx.in_tail:
+                chunk.emit_op(Opcode.TAILCALL)
+                chunk.emit_u8(argc)
+            else:
+                chunk.emit_op(Opcode.CALL)
+                chunk.emit_u8(argc)
             return
         if head.id in ("progn", "begin"):
             for i, sub in enumerate(tail):
@@ -121,7 +161,7 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
             rel2 = (len(chunk.code) - (jend_pos + 2))
             chunk.patch_s16_at(jend_pos, rel2)
             return
-        if head.id == "cond":
+        if head.id == "cond": 
             # Rewrite cond into nested if/progn AST and compile that
             clauses = tail
             def make_progn(exprs: list[Any]) -> Any:
@@ -144,6 +184,19 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
                 return [Symbol("if"), test, make_progn(body), cond_to_if(cs[1:])]
             rewritten = cond_to_if(clauses)
             compile_expr(rewritten, chunk, ctx)
+            return
+        if head.id == "condition-case":
+            # Fallback to classic evaluator for complex special form
+            cidx = chunk.add_const(Symbol("__eval_list__"))
+            chunk.emit_op(Opcode.LOAD_GLOBAL)
+            chunk.emit_u16(cidx)
+            _emit_push_const(chunk, expr)
+            if ctx.in_tail:
+                chunk.emit_op(Opcode.TAILCALL)
+                chunk.emit_u8(1)
+            else:
+                chunk.emit_op(Opcode.CALL)
+                chunk.emit_u8(1)
             return
         if head.id == "and":
             # Short-circuit AND: (and a b c ...)
@@ -331,16 +384,15 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
             body = tail[1:] if len(tail) > 1 else [Nil]
             if not isinstance(params, list):
                 raise SyntaxError("lambda parameter list must be a list")
-            # Detect &rest parameter: (... &rest name)
+            # Detect &rest and &optional parameters
             rest_flag = False
             fixed_params: list[Symbol] = []
             rest_param: Symbol | None = None
+            optional_specs: list[tuple[Symbol, Any | None]] = []  # (name, defaultExpr or None)
             i = 0
             while i < len(params):
                 p = params[i]
-                if not isinstance(p, Symbol):
-                    raise SyntaxError("lambda params must be symbols")
-                if p.id in ("&rest", "&body"):
+                if isinstance(p, Symbol) and p.id in ("&rest", "&body"):
                     # Next item must be the rest parameter name
                     if i + 1 >= len(params) or not isinstance(params[i + 1], Symbol):
                         raise SyntaxError("&rest/&body must be followed by a symbol param name")
@@ -350,15 +402,102 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
                     if i != len(params):
                         raise SyntaxError("&rest/&body must appear at the end of parameter list")
                     break
-                else:
-                    fixed_params.append(p)
+                if isinstance(p, Symbol) and p.id == "&optional":
+                    # Parse optional specs until end
                     i += 1
+                    while i < len(params):
+                        spec = params[i]
+                        if isinstance(spec, list):
+                            if len(spec) != 2 or not isinstance(spec[0], Symbol):
+                                raise SyntaxError("&optional spec must be (name default)")
+                            optional_specs.append((spec[0], spec[1]))
+                        elif isinstance(spec, Symbol):
+                            optional_specs.append((spec, None))
+                        else:
+                            raise SyntaxError("lambda params must be symbols")
+                        i += 1
+                    break
+                if not isinstance(p, Symbol):
+                    raise SyntaxError("lambda params must be symbols")
+                fixed_params.append(p)
+                i += 1
+            # If we have optional specs, capture remaining args into a synthetic rest list
+            synthetic_rest: Symbol | None = None
+            if optional_specs and not rest_flag:
+                rest_flag = True
+                synthetic_rest = Symbol("__optrest")
+                rest_param = synthetic_rest
             # Compile function body and compute free variables for closure capture
             fn_chunk = Chunk()
             # Map parameters to local indices
             local_map: dict[Symbol, int] = {p: idx for idx, p in enumerate(fixed_params)}
+            # Assign slot for rest/synthetic rest
             if rest_flag and rest_param is not None:
                 local_map[rest_param] = len(fixed_params)
+            # Assign slots for optional params after rest slot (if any)
+            opt_start = len(fixed_params) + (1 if rest_flag and rest_param is not None else 0)
+            for j, (opt_name, _default) in enumerate(optional_specs):
+                local_map[opt_name] = opt_start + j
+
+            # Initialize optional parameters from rest list or defaults
+            if optional_specs:
+                # Cache indices for globals used (in function chunk)
+                sym_null = fn_chunk.add_const(Symbol("null?"))
+                sym_car = fn_chunk.add_const(Symbol("car"))
+                sym_cdr = fn_chunk.add_const(Symbol("cdr"))
+                assert rest_param is not None
+                rest_slot_idx = local_map[rest_param]
+                for j, (opt_name, default_expr) in enumerate(optional_specs):
+                    opt_slot_idx = local_map[opt_name]
+                    # if (null? rest) -> use default; else take (car rest) and rest := (cdr rest)
+                    fn_chunk.emit_op(Opcode.LOAD_GLOBAL)
+                    fn_chunk.emit_u16(sym_null)
+                    fn_chunk.emit_op(Opcode.LOAD_LOCAL)
+                    fn_chunk.emit_u16(rest_slot_idx)
+                    fn_chunk.emit_op(Opcode.CALL)
+                    fn_chunk.emit_u8(1)
+                    fn_chunk.emit_op(Opcode.JUMP_IF_TRUE)
+                    j_def = len(fn_chunk.code)
+                    fn_chunk.emit_s16(0)
+                    # provided path: value = (car rest)
+                    fn_chunk.emit_op(Opcode.LOAD_GLOBAL)
+                    fn_chunk.emit_u16(sym_car)
+                    fn_chunk.emit_op(Opcode.LOAD_LOCAL)
+                    fn_chunk.emit_u16(rest_slot_idx)
+                    fn_chunk.emit_op(Opcode.CALL)
+                    fn_chunk.emit_u8(1)
+                    fn_chunk.emit_op(Opcode.STORE_LOCAL)
+                    fn_chunk.emit_u16(opt_slot_idx)
+                    fn_chunk.emit_op(Opcode.POP)
+                    # rest = (cdr rest)
+                    fn_chunk.emit_op(Opcode.LOAD_GLOBAL)
+                    fn_chunk.emit_u16(sym_cdr)
+                    fn_chunk.emit_op(Opcode.LOAD_LOCAL)
+                    fn_chunk.emit_u16(rest_slot_idx)
+                    fn_chunk.emit_op(Opcode.CALL)
+                    fn_chunk.emit_u8(1)
+                    fn_chunk.emit_op(Opcode.STORE_LOCAL)
+                    fn_chunk.emit_u16(rest_slot_idx)
+                    fn_chunk.emit_op(Opcode.POP)
+                    # jump to end
+                    fn_chunk.emit_op(Opcode.JUMP)
+                    j_end = len(fn_chunk.code)
+                    fn_chunk.emit_s16(0)
+                    # default path target
+                    def_tgt = len(fn_chunk.code)
+                    if default_expr is None:
+                        fn_chunk.emit_op(Opcode.PUSH_NIL)
+                    else:
+                        compile_expr(default_expr, fn_chunk, CompileCtx(False, locals=local_map))
+                    fn_chunk.emit_op(Opcode.STORE_LOCAL)
+                    fn_chunk.emit_u16(opt_slot_idx)
+                    fn_chunk.emit_op(Opcode.POP)
+                    # patch jumps
+                    rel_def = def_tgt - (j_def + 2)
+                    fn_chunk.patch_s16_at(j_def, rel_def)
+                    end_tgt = len(fn_chunk.code)
+                    rel_end = end_tgt - (j_end + 2)
+                    fn_chunk.patch_s16_at(j_end, rel_end)
 
             # Determine free variables w.r.t. enclosing scope
             enclosing_locals = ctx.locals or {}
@@ -368,7 +507,9 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
                 out: set[Symbol] = set()
                 def walk(e: Any, bound_inner: set[Symbol]):
                     if isinstance(e, Symbol):
-                        if e not in bound_inner and (e in enclosing_locals or e in enclosing_upvals) and not e.id.startswith(":"):
+                        # Treat parameter names as bound even if the Symbol instance differs; compare by id
+                        is_bound = (e in bound_inner) or any((isinstance(b, Symbol) and b.id == e.id) for b in bound_inner)
+                        if (not is_bound) and (e in enclosing_locals or e in enclosing_upvals) and not e.id.startswith(":"):
                             out.add(e)
                         return
                     if isinstance(e, list) and e:
@@ -385,7 +526,53 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
                     # atoms ignored
                 walk([Symbol("progn"), *body], set(local_map.keys()))
                 return out
-            free_vars = list(find_free_vars(body, set(local_map.keys())))
+            # At top-level (no enclosing locals/upvalues), no free variables can be captured
+            if not enclosing_locals and not enclosing_upvals:
+                free_vars = []
+            else:
+                free_vars = list(find_free_vars(body, set(local_map.keys())))
+            # Extra safety: never treat parameters as free vars (by id)
+            if free_vars:
+                param_ids = {p.id for p in fixed_params}
+                free_vars = [uv for uv in free_vars if not (isinstance(uv, Symbol) and uv.id in param_ids)]
+            # If all detected free vars are actually parameter-name duplicates by id, ignore them
+            if free_vars:
+                param_ids = {p.id for p in fixed_params}
+                if all(isinstance(uv, Symbol) and uv.id in param_ids for uv in free_vars):
+                    free_vars = []
+            # Augment free_vars by including any enclosing-local symbols referenced by id in the body (robust against instance mismatch)
+            if enclosing_locals:
+                ref_ids: set[str] = set()
+                def collect_ids(e: Any):
+                    if isinstance(e, Symbol):
+                        ref_ids.add(e.id)
+                        return
+                    if isinstance(e, list):
+                        for x in e:
+                            collect_ids(x)
+                    elif isinstance(e, tuple) and len(e) == 2:
+                        a,b = e
+                        collect_ids(a)
+                        collect_ids(b)
+                collect_ids([Symbol("progn"), *body])
+                for sym_k in list(enclosing_locals.keys()):
+                    if isinstance(sym_k, Symbol) and sym_k.id in ref_ids:
+                        # ensure presence in free_vars
+                        if all(not (isinstance(fv, Symbol) and fv.id == sym_k.id) for fv in free_vars):
+                            free_vars.append(sym_k)
+            # Exclude recursive self-reference (name being defined) from free vars
+            if ctx.self_name is not None:
+                free_vars = [uv for uv in free_vars if not (isinstance(uv, Symbol) and uv.id == ctx.self_name.id)]
+            # Debug: print lambda capture info for simplify-bool* when disassembly is enabled
+            import os as _os_dbg
+            if _os_dbg.environ.get("ZETA_DISASM") and ctx.self_name is not None and isinstance(ctx.self_name, Symbol) and ctx.self_name.id == "simplify-bool*":
+                try:
+                    print("[DEBUG lambda] name=", ctx.self_name.id,
+                          " params=", [p.id for p in fixed_params],
+                          " free_vars=", [fv.id if isinstance(fv, Symbol) else str(fv) for fv in free_vars],
+                          sep="")
+                except Exception:
+                    pass
             # Build upvalue descriptors and child upvalue index map
             up_descs: list[UpvalueDescriptor] = []
             child_up_map: dict[Symbol, int] = {}
@@ -397,11 +584,29 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
                 child_up_map[uv_sym] = len(child_up_map)
 
             # Compile body with local and upvalue context
+            # Precompute upvalue id map for robust resolution inside the function body
+            up_ids = None
+            if child_up_map:
+                up_ids = {}
+                for k, v in child_up_map.items():
+                    kid = k.id if isinstance(k, Symbol) else (str(k) if hasattr(k, "__str__") else None)
+                    if kid is not None:
+                        up_ids[kid] = v
             for i, expr_i in enumerate(body):
-                compile_expr(expr_i, fn_chunk, CompileCtx(in_tail=(i == len(body) - 1), locals=local_map, upvalues=child_up_map))
+                compile_expr(expr_i, fn_chunk, CompileCtx(in_tail=(i == len(body) - 1), locals=local_map, upvalues=child_up_map, self_name=ctx.self_name, param_ids={p.id for p in fixed_params}, upvalue_ids=up_ids))
                 if i < len(body) - 1:
                     fn_chunk.emit_op(Opcode.POP)
             fn_chunk.emit_op(Opcode.RETURN)
+            # Optional debug: disassemble function chunk for named lambdas to aid VM debugging
+            try:
+                import os as _os_dbg2
+                from .disasm import disassemble_chunk as _dis
+                if _os_dbg2.environ.get("ZETA_DISASM_NAME") and ctx.self_name is not None:
+                    print(f"=== FUNC DISASM: {ctx.self_name.id} ===")
+                    print(_dis(fn_chunk))
+                    print("=== END FUNC DISASM ===")
+            except Exception:
+                pass
             fn = Function(chunk=fn_chunk, arity=len(fixed_params), rest=rest_flag, upvalues=up_descs, name=None)
             fidx = chunk.add_const(fn)
             if up_descs:
@@ -422,7 +627,14 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
                 raise SyntaxError("define syntax: (define <symbol> <expr>)")
             name: Symbol = tail[0]
             val_expr = tail[1]
-            compile_expr(val_expr, chunk, CompileCtx(False, locals=ctx.locals, upvalues=ctx.upvalues))
+            # Pass the self_name into lambda compilation to support proper recursion handling
+            # Special-case: if compiling a top-level (no enclosing locals/upvalues) lambda, force MAKE_LAMBDA emission by
+            # clearing any accidental free-var captures (ensures params are locals and avoids wrapper closures).
+            if isinstance(val_expr, list) and val_expr and isinstance(val_expr[0], Symbol) and val_expr[0].id == "lambda" and not (ctx.locals or ctx.upvalues):
+                # Compile lambda with an empty enclosing context and mark self_name for recursion
+                compile_expr(val_expr, chunk, CompileCtx(False, locals=None, upvalues=None, self_name=name))
+            else:
+                compile_expr(val_expr, chunk, CompileCtx(False, locals=ctx.locals, upvalues=ctx.upvalues, self_name=name))
             gidx = chunk.add_const(name)
             chunk.emit_op(Opcode.DUP)
             chunk.emit_op(Opcode.STORE_GLOBAL)
@@ -446,10 +658,49 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
             return
 
     # Function application
-    # Evaluate callee then args left-to-right
-    compile_expr(head, chunk, CompileCtx(False, locals=ctx.locals))
+    # Handle non-symbol heads according to evaluator semantics:
+    # - If head is a list (e.g., (lambda (...) ...) ...), evaluate it to a callable and apply.
+    # - If head is a non-list atom (number, string, etc.), treat the whole form as data literal.
+    if not isinstance(head, Symbol):
+        if isinstance(head, list):
+            # Evaluate callee expression then args, then CALL
+            compile_expr(head, chunk, CompileCtx(False, locals=ctx.locals, upvalues=ctx.upvalues))
+            for arg in tail:
+                compile_expr(arg, chunk, CompileCtx(False, locals=ctx.locals, upvalues=ctx.upvalues))
+            argc = len(tail)
+            if ctx.in_tail:
+                chunk.emit_op(Opcode.TAILCALL)
+                chunk.emit_u8(argc)
+            else:
+                chunk.emit_op(Opcode.CALL)
+                chunk.emit_u8(argc)
+            return
+        else:
+            _emit_push_const(chunk, expr)
+            return
+    # Special-case colon-qualified heads (e.g., df:sum, np:dot): delegate to builtin __colon_call__
+    if isinstance(head, Symbol) and (":" in head.id) and head.id != "/":
+        # Load the helper __colon_call__ as callee
+        cidx = chunk.add_const(Symbol("__colon_call__"))
+        chunk.emit_op(Opcode.LOAD_GLOBAL)
+        chunk.emit_u16(cidx)
+        # First argument to helper is the head symbol itself
+        _emit_push_const(chunk, head)
+        # Then compile and push user arguments
+        for arg in tail:
+            compile_expr(arg, chunk, CompileCtx(False, locals=ctx.locals, upvalues=ctx.upvalues, self_name=ctx.self_name, param_ids=ctx.param_ids, upvalue_ids=ctx.upvalue_ids))
+        argc = len(tail) + 1
+        if ctx.in_tail:
+            chunk.emit_op(Opcode.TAILCALL)
+            chunk.emit_u8(argc)
+        else:
+            chunk.emit_op(Opcode.CALL)
+            chunk.emit_u8(argc)
+        return
+    # General case: evaluate callee then args left-to-right
+    compile_expr(head, chunk, CompileCtx(False, locals=ctx.locals, upvalues=ctx.upvalues, self_name=ctx.self_name, param_ids=ctx.param_ids, upvalue_ids=ctx.upvalue_ids))
     for arg in tail:
-        compile_expr(arg, chunk, CompileCtx(False, locals=ctx.locals))
+        compile_expr(arg, chunk, CompileCtx(False, locals=ctx.locals, upvalues=ctx.upvalues, self_name=ctx.self_name, param_ids=ctx.param_ids, upvalue_ids=ctx.upvalue_ids))
     argc = len(tail)
     if ctx.in_tail:
         chunk.emit_op(Opcode.TAILCALL)
