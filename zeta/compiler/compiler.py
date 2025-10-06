@@ -6,9 +6,9 @@ from typing import Any, List
 from zeta.types.symbol import Symbol
 from zeta.types.nil import Nil
 
-from .opcodes import Opcode
-from .chunk import Chunk
-from .function import Function, UpvalueDescriptor
+from zeta.compiler.opcodes import Opcode
+from zeta.compiler.chunk import Chunk
+from zeta.compiler.function import Function, UpvalueDescriptor
 
 
 @dataclass

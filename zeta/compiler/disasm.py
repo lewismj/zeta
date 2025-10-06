@@ -1,9 +1,9 @@
 from __future__ import annotations
 from typing import Any
 
-from .chunk import Chunk
-from .opcodes import Opcode
-from .function import Function
+from zeta.compiler.chunk import Chunk
+from zeta.compiler.opcodes import Opcode
+from zeta.compiler.function import Function
 
 
 def disassemble_chunk(chunk: Chunk) -> str:
