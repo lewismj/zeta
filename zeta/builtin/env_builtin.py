@@ -367,7 +367,9 @@ def __colon_call__(env: Environment, args: list[LispValue]) -> LispValue:
     target = resolve_object_path(env, head_sym)
     # If the resolved attribute is a Zeta Lambda, apply via the engine
     if isinstance(target, _Lambda):
-        return apply_engine(target, call_args, env, MacroEnvironment(), evaluate0, False)
+        from zeta.runtime_context import get_current_macros
+        macros = get_current_macros() or MacroEnvironment()
+        return apply_engine(target, call_args, env, macros, evaluate0, False)
     # If it is a VM Closure, invoke via a tiny VM trampoline
     if isinstance(target, _VMClosure):
         return _call_vm_closure(env, target, call_args)
@@ -410,8 +412,9 @@ def __eval_list__(env: Environment, args: list[LispValue]) -> LispValue:
     if not args:
         return Nil
     expr = args[0]
-    # Use a fresh MacroEnvironment for safety
-    return evaluate0(expr, env, MacroEnvironment(), True)
+    from zeta.runtime_context import get_current_macros
+    macros = get_current_macros() or MacroEnvironment()
+    return evaluate0(expr, env, macros, True)
 
 
 def register(env: Environment) -> None:

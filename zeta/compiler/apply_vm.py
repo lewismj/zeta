@@ -26,4 +26,11 @@ def call_vm_closure(env: Any, closure: Any, args: list[Any]) -> Any:
     chunk.emit_op(Opcode.CALL)
     chunk.emit_u8(len(args))
     chunk.emit_op(Opcode.HALT)
-    return run_chunk(chunk, env)
+    # Propagate current macro environment into the VM so mixed-mode fallbacks see user-defined macros
+    try:
+        from zeta.runtime_context import get_current_macros
+    except Exception:
+        macros = None
+    else:
+        macros = get_current_macros()
+    return run_chunk(chunk, env, macros)

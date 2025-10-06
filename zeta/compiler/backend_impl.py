@@ -66,5 +66,5 @@ class BytecodeBackend:
                 print("=== END DISASM ===")
             except Exception:
                 pass
-        result = run_chunk(chunk, env)
+        result = run_chunk(chunk, env, macros)
         return result

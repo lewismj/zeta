@@ -2,8 +2,12 @@
 
 ### Summary
 
-Zeta is a small, pragmatic Lisp interpreter implemented in Python, designed for metaprogramming and seamless Python interoperability.
-Work in progress.
+Zeta is a small, pragmatic Lisp system implemented in Python. 
+Designed for metaprogramming and seamless Python interoperability.
+
+The implementation started with an interpreter, 
+now includes a bytecode compiler and VM, that run within the Python process.
+
 
 ### Use Cases 
 
@@ -20,7 +24,15 @@ Work in progress.
     
 - Distributed computing, using the Lisp's ability to treat 'code as data' to serialize 
   and send code to remote workers for execution. On-the-fly updates to code and data.
-- 
+
+### Note:
+ 
+- The examples below show the use of the interpreter, but the bytecode compiler and VM
+ (that can also run within the Python process). The interpreter is useful for development,
+experimentation with language features (of the Lisp) etc. The Readme examples below will be
+updated to show the bytecode compiler and VM usage in due course.
+
+
 #### Python interop at a glance
 
  *Run in standalone mode or embed Lisp interpreter into Python.*
@@ -85,9 +97,7 @@ but the interpreter now follows canonical Lisp rules in macroexpansion, binding,
 - [ ] Provide a REPL, and LSP support for integration with editors.
 - [ ] Implement proper package system.
 - [ ] Put in cyclic check/depth limit in the recursive macro expander.
-- [ ] Byte code compiler that runs within the Python process, rather than an interpreter.
-
-
+-
 ### Why Zeta?
 
 - Leverage Python’s rich ecosystem (NumPy, Pandas, SciPy, ML/AI libraries) while writing expressive Lisp code and macros.

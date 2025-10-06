@@ -23,8 +23,9 @@ class Frame:
 
 
 class VM:
-    def __init__(self, env: Environment):
+    def __init__(self, env: Environment, macros=None):
         self.env = env
+        self.macros = macros
         self.stack: List[Any] = []
         self.frames: List[Frame] = []
         self.handlers: List[tuple[int, int]] = []  # (target_ip, base)
@@ -258,22 +259,27 @@ class VM:
                     self.frames.append(new_frame)
                 elif callable(callee):
                     # Host call with try/except to catch continuation escape
+                    from zeta.runtime_context import set_current_macros as _set_macros
                     try:
+                        _set_macros(self.macros)
                         try:
-                            result = callee(self.env, [k_callable])
-                        except TypeError:
-                            result = callee(k_callable)
-                    except ContinuationEscape as esc:
-                        depth, base0 = self.cc_handlers.pop()
-                        while len(self.frames) - 1 > depth:
-                            self.frames.pop()
-                        if len(self.stack) > base0:
-                            del self.stack[base0:]
-                        self.push(esc.value)
-                        continue
-                    # Normal return ends dynamic extent immediately
-                    self.cc_handlers.pop()
-                    self.push(result)
+                            try:
+                                result = callee(self.env, [k_callable])
+                            except TypeError:
+                                result = callee(k_callable)
+                        except ContinuationEscape as esc:
+                            depth, base0 = self.cc_handlers.pop()
+                            while len(self.frames) - 1 > depth:
+                                self.frames.pop()
+                            if len(self.stack) > base0:
+                                del self.stack[base0:]
+                            self.push(esc.value)
+                            continue
+                        # Normal return ends dynamic extent immediately
+                        self.cc_handlers.pop()
+                        self.push(result)
+                    finally:
+                        _set_macros(None)
                 else:
                     raise TypeError(f"Cannot call {type(callee)} in call/cc")
 
@@ -323,39 +329,44 @@ class VM:
                         self.frames.append(new_frame)
                 elif callable(callee):
                     # Host call: prefer Zeta builtin protocol (env, args) then fallback to positional
+                    from zeta.runtime_context import set_current_macros as _set_macros
                     try:
+                        _set_macros(self.macros)
                         try:
-                            result = callee(self.env, args)
-                        except TypeError:
-                            # Only fallback to positional if callee doesn't look like a (env, args) function
-                            if hasattr(callee, "__code__") and getattr(callee.__code__, "co_argcount", 0) >= 2:
+                            try:
+                                result = callee(self.env, args)
+                            except TypeError:
+                                # Only fallback to positional if callee doesn't look like a (env, args) function
+                                if hasattr(callee, "__code__") and getattr(callee.__code__, "co_argcount", 0) >= 2:
+                                    raise
+                                result = callee(*args)
+                        except ContinuationEscape as esc:
+                            # On continuation escape, unwind to the nearest handler
+                            if not self.cc_handlers:
                                 raise
-                            result = callee(*args)
-                    except ContinuationEscape as esc:
-                        # On continuation escape, unwind to the nearest handler
-                        if not self.cc_handlers:
-                            raise
-                        depth, base0 = self.cc_handlers.pop()
-                        # Pop frames until we are back to the handler's frame depth
-                        while len(self.frames) - 1 > depth:
+                            depth, base0 = self.cc_handlers.pop()
+                            # Pop frames until we are back to the handler's frame depth
+                            while len(self.frames) - 1 > depth:
+                                self.frames.pop()
+                            # Trim stack to recorded base and push the escape value
+                            if len(self.stack) > base0:
+                                del self.stack[base0:]
+                            self.push(esc.value)
+                            # Continue execution in the current frame after the original call
+                            continue
+                        if op == Opcode.TAILCALL:
+                            # Tail-call into host callable: replace current frame
+                            base = frame.base
                             self.frames.pop()
-                        # Trim stack to recorded base and push the escape value
-                        if len(self.stack) > base0:
-                            del self.stack[base0:]
-                        self.push(esc.value)
-                        # Continue execution in the current frame after the original call
-                        continue
-                    if op == Opcode.TAILCALL:
-                        # Tail-call into host callable: replace current frame
-                        base = frame.base
-                        self.frames.pop()
-                        if len(self.stack) > base:
-                            del self.stack[base:]
-                        if not self.frames:
-                            return result
-                        self.push(result)
-                    else:
-                        self.push(result)
+                            if len(self.stack) > base:
+                                del self.stack[base:]
+                            if not self.frames:
+                                return result
+                            self.push(result)
+                        else:
+                            self.push(result)
+                    finally:
+                        _set_macros(None)
                 else:
                     raise TypeError(f"Cannot call {type(callee)}")
 
@@ -416,6 +427,6 @@ class VM:
                 raise RuntimeError(f"Unknown opcode: {op}")
 
 
-def run_chunk(chunk: Chunk, env: Environment) -> Any:
-    vm = VM(env)
+def run_chunk(chunk: Chunk, env: Environment, macros=None) -> Any:
+    vm = VM(env, macros)
     return vm.run(chunk)
