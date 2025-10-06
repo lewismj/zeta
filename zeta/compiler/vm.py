@@ -28,7 +28,8 @@ class VM:
         self.macros = macros
         self.stack: List[Any] = []
         self.frames: List[Frame] = []
-        self.handlers: List[tuple[int, int]] = []  # (target_ip, base)
+        # Handlers: list of (frame_index_at_setup, target_ip, base_stack_len)
+        self.handlers: List[tuple[int, int, int]] = []
         # Continuation handlers: list of (frame_index_at_setup, base_stack_at_setup)
         self.cc_handlers: List[tuple[int, int]] = []
 
@@ -47,6 +48,26 @@ class VM:
         return self.stack[-1 - n]
 
     # --- Execution ---
+    def _unwind_to_handler(self, value: Any) -> bool:
+        """Unwind frames and jump to the nearest active handler. Push value for handler.
+        Returns True if a handler was found and control transferred; False if none.
+        """
+        if not self.handlers:
+            return False
+        # Take the most recent handler (dynamic scope)
+        frame_idx, target_ip, base_len = self.handlers.pop()
+        # Pop frames until we are at the handler's frame
+        while len(self.frames) - 1 > frame_idx:
+            self.frames.pop()
+        # Trim the operand stack to the recorded base
+        if len(self.stack) > base_len:
+            del self.stack[base_len:]
+        # Set current frame ip to target and push the value for handler body
+        frame = self.frames[-1]
+        frame.ip = target_ip
+        self.push(value)
+        return True
+
     def run(self, chunk: Chunk) -> Any:
         self.frames.append(Frame(chunk=chunk, ip=0, base=0, env_cells=None))
 
@@ -172,6 +193,29 @@ class VM:
                     rel = rel - (1 << 16)
                 frame.ip += 2
                 frame.ip += rel
+
+            elif op == Opcode.SETUP_CATCH:
+                # Operand is s16 relative target from after operand
+                rel = ((code[frame.ip] << 8) | code[frame.ip + 1])
+                if rel & 0x8000:
+                    rel = rel - (1 << 16)
+                frame.ip += 2
+                target_ip = frame.ip + rel
+                # Record handler with current frame index and base stack pointer
+                self.handlers.append((len(self.frames) - 1, target_ip, len(self.stack)))
+
+            elif op == Opcode.POP_CATCH:
+                if self.handlers:
+                    self.handlers.pop()
+
+            elif op == Opcode.THROW:
+                # Pop value and transfer to nearest handler
+                val = self.pop() if self.stack else Nil
+                if not self._unwind_to_handler(val):
+                    # No handler: rethrow as Python exception
+                    raise RuntimeError(f"Uncaught condition: {val!r}")
+                # Continue loop at new ip
+                continue
 
             elif op == Opcode.JUMP_IF_TRUE:
                 rel = ((code[frame.ip] << 8) | code[frame.ip + 1])
@@ -353,6 +397,13 @@ class VM:
                                 del self.stack[base0:]
                             self.push(esc.value)
                             # Continue execution in the current frame after the original call
+                            continue
+                        except Exception as ex:
+                            # Map Python exceptions to a generic 'error condition; route to VM handler
+                            if not self._unwind_to_handler(ex):
+                                # No handler installed: re-raise original exception
+                                raise
+                            # Control transferred to handler; continue dispatch loop
                             continue
                         if op == Opcode.TAILCALL:
                             # Tail-call into host callable: replace current frame

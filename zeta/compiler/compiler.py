@@ -186,17 +186,69 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
             compile_expr(rewritten, chunk, ctx)
             return
         if head.id == "condition-case":
-            # Fallback to classic evaluator for complex special form
-            cidx = chunk.add_const(Symbol("__eval_list__"))
-            chunk.emit_op(Opcode.LOAD_GLOBAL)
-            chunk.emit_u16(cidx)
-            _emit_push_const(chunk, expr)
-            if ctx.in_tail:
-                chunk.emit_op(Opcode.TAILCALL)
-                chunk.emit_u8(1)
+            # Compile native VM try/handler region.
+            if not tail:
+                raise SyntaxError("condition-case requires at least a body expression")
+            body_expr = tail[0]
+            handlers = tail[1:]
+            # Emit SETUP_CATCH to jump to handler block on exception
+            chunk.emit_op(Opcode.SETUP_CATCH)
+            setup_pos = len(chunk.code)  # operand start
+            chunk.emit_s16(0)  # placeholder
+            # Compile the try body (not in tail to ensure POP_CATCH runs)
+            compile_expr(body_expr, chunk, CompileCtx(False, locals=ctx.locals, upvalues=ctx.upvalues))
+            # On success, pop the handler and continue
+            chunk.emit_op(Opcode.POP_CATCH)
+            # Jump over handler block
+            chunk.emit_op(Opcode.JUMP)
+            jend_pos = len(chunk.code)
+            chunk.emit_s16(0)
+            # Handler label
+            handler_ip = len(chunk.code)
+            # Patch SETUP_CATCH to handler target (relative from after operand)
+            rel_h = handler_ip - (setup_pos + 2)
+            chunk.patch_s16_at(setup_pos, rel_h)
+            # At handler entry, top of stack holds the exception object/value.
+            # Find an (error var body...) clause; minimal implementation supports only 'error.
+            error_clause = None
+            for h in handlers:
+                if isinstance(h, list) and h and isinstance(h[0], Symbol) and h[0].id == "error":
+                    error_clause = h
+                    break
+            if error_clause is None:
+                # No matching handler: rethrow the value
+                chunk.emit_op(Opcode.THROW)
+                # Unreachable, but keep structure
             else:
-                chunk.emit_op(Opcode.CALL)
-                chunk.emit_u8(1)
+                # Optional variable binding
+                rest = error_clause[1:]
+                local_map = dict(ctx.locals or {})
+                next_slot = (max(local_map.values()) + 1) if local_map else 0
+                if rest and isinstance(rest[0], Symbol):
+                    var_sym = rest[0]
+                    local_map[var_sym] = next_slot
+                    # Store exception value into local and drop the stack copy
+                    chunk.emit_op(Opcode.STORE_LOCAL)
+                    chunk.emit_u16(next_slot)
+                    chunk.emit_op(Opcode.POP)
+                    handler_body = rest[1:]
+                else:
+                    # No variable requested; leave value on stack but drop it before running body
+                    chunk.emit_op(Opcode.POP)
+                    handler_body = rest
+                # Compile handler body; result of last expr becomes the whole condition-case result
+                if not handler_body:
+                    # If no body, nil
+                    chunk.emit_op(Opcode.PUSH_NIL)
+                else:
+                    for i, bexpr in enumerate(handler_body):
+                        compile_expr(bexpr, chunk, CompileCtx(in_tail=(ctx.in_tail and i == len(handler_body) - 1), locals=local_map, upvalues=ctx.upvalues))
+                        if i < len(handler_body) - 1:
+                            chunk.emit_op(Opcode.POP)
+            # End label
+            end_ip = len(chunk.code)
+            rel_end = end_ip - (jend_pos + 2)
+            chunk.patch_s16_at(jend_pos, rel_end)
             return
         if head.id == "and":
             # Short-circuit AND: (and a b c ...)

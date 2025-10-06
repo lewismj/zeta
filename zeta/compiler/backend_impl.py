@@ -48,10 +48,6 @@ class BytecodeBackend:
                 # Handle Python interop import as a special form in VM path too
                 from zeta.evaluation.special_forms.import_form import import_form
                 return import_form(tail, env, macros, evaluate0, False)
-            if head.id == "condition-case":
-                # Delegate to the existing special form handler for condition-case
-                from zeta.evaluation.special_forms.throw_catch_form import condition_case_form
-                return condition_case_form(tail, env, macros, evaluate0, False)
 
         # Expand macros using the existing system to preserve semantics
         expanded = expr
