@@ -112,9 +112,21 @@ class VM:
                 frame.ip += 2
                 val = self.peek()
                 slot = frame.base + idx
-                # Grow stack if needed
-                while len(self.stack) <= slot:
+                # Ensure that popping after STORE_LOCAL (emitted by compiler) does not remove the stored local slot.
+                # We keep the operand value on the top of the stack for the subsequent POP to consume, but if the
+                # target slot coincides with the current top index (or is beyond current length), we insert placeholder(s)
+                # so that the stored local resides below the top and survives the POP.
+                if slot >= len(self.stack):
+                    # Need to extend with placeholders so that len(stack) > slot after extension.
+                    needed = (slot - len(self.stack)) + 1  # bring length to slot+1
+                    # Also ensure there's at least one extra placeholder above the slot for POP to remove
+                    needed += 1
+                    for _ in range(needed):
+                        self.stack.append(Nil)
+                elif slot == len(self.stack) - 1:
+                    # Slot is currently at the top; append a placeholder so POP won't remove the stored value
                     self.stack.append(Nil)
+                # Now it's safe to assign into the slot (which is below the top element)
                 self.stack[slot] = val
 
             elif op == Opcode.LOAD_GLOBAL:

@@ -178,8 +178,8 @@ def compile_expr(expr: Any, chunk: Chunk, ctx: CompileCtx) -> None:
                     raise SyntaxError("cond clause must be a non-empty list")
                 test = first[0]
                 body = first[1:]
-                # default clause if test is #t
-                if isinstance(test, Symbol) and test.id == "#t":
+                # default clause if test is #t or 'else
+                if isinstance(test, Symbol) and (test.id == "#t" or test.id == "else"):
                     return make_progn(body)
                 return [Symbol("if"), test, make_progn(body), cond_to_if(cs[1:])]
             rewritten = cond_to_if(clauses)
