@@ -64,6 +64,13 @@ class VM:
         d[Opcode.DUP] = self.op_dup
         d[Opcode.POP] = self.op_pop
         d[Opcode.SWAP] = self.op_swap
+        # Quickened variants
+        d[Opcode.PUSH_CONST_Q] = self.op_push_const_q
+        d[Opcode.LOAD_LOCAL_Q] = self.op_load_local_q
+        d[Opcode.STORE_LOCAL_Q] = self.op_store_local_q
+        d[Opcode.LOAD_UPVALUE_Q] = self.op_load_upvalue_q
+        d[Opcode.STORE_UPVALUE_Q] = self.op_store_upvalue_q
+        d[Opcode.JUMP_Q] = self.op_jump_q
         # Locals / upvalues / globals
         d[Opcode.LOAD_LOCAL] = self.op_load_local
         d[Opcode.STORE_LOCAL] = self.op_store_local
@@ -146,6 +153,20 @@ class VM:
         self.push(consts[idx])
         return VM.RunSignal.NORMAL, None
 
+    def op_push_const_q(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
+        code = frame.chunk.code
+        qidx = (code[frame.ip] << 8) | code[frame.ip + 1]
+        frame.ip += 2
+        # Read from pre-decoded immediates if available; otherwise fallback to constants
+        arr = getattr(frame.chunk, 'quick_imms', None)
+        if arr and 0 <= qidx < len(arr):
+            self.push(arr[qidx])
+        else:
+            # Fallback: treat as normal PUSH_CONST
+            consts = frame.chunk.constants
+            self.push(consts[qidx])
+        return VM.RunSignal.NORMAL, None
+
     def op_dup(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
         self.push(self.peek())
         return VM.RunSignal.NORMAL, None
@@ -169,7 +190,32 @@ class VM:
         self.push(self.stack[frame.base + idx])
         return VM.RunSignal.NORMAL, None
 
+    def op_load_local_q(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
+        # Quickened operand path: currently identical operand read; reserved for future pre-decode
+        code = frame.chunk.code
+        idx = (code[frame.ip] << 8) | code[frame.ip + 1]
+        frame.ip += 2
+        self.push(self.stack[frame.base + idx])
+        return VM.RunSignal.NORMAL, None
+
     def op_store_local(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
+        code = frame.chunk.code
+        idx = (code[frame.ip] << 8) | code[frame.ip + 1]
+        frame.ip += 2
+        val = self.peek()
+        slot = frame.base + idx
+        if slot >= len(self.stack):
+            needed = (slot - len(self.stack)) + 1
+            needed += 1
+            for _ in range(needed):
+                self.stack.append(Nil)
+        elif slot == len(self.stack) - 1:
+            self.stack.append(Nil)
+        self.stack[slot] = val
+        return VM.RunSignal.NORMAL, None
+
+    def op_store_local_q(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
+        # Quickened operand path: identical semantics
         code = frame.chunk.code
         idx = (code[frame.ip] << 8) | code[frame.ip + 1]
         frame.ip += 2
@@ -217,7 +263,23 @@ class VM:
         self.push(frame.env_cells[uidx].value)
         return VM.RunSignal.NORMAL, None
 
+    def op_load_upvalue_q(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
+        code = frame.chunk.code
+        uidx = (code[frame.ip] << 8) | code[frame.ip + 1]
+        frame.ip += 2
+        assert frame.env_cells is not None
+        self.push(frame.env_cells[uidx].value)
+        return VM.RunSignal.NORMAL, None
+
     def op_store_upvalue(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
+        code = frame.chunk.code
+        uidx = (code[frame.ip] << 8) | code[frame.ip + 1]
+        frame.ip += 2
+        assert frame.env_cells is not None
+        frame.env_cells[uidx].value = self.peek()
+        return VM.RunSignal.NORMAL, None
+
+    def op_store_upvalue_q(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
         code = frame.chunk.code
         uidx = (code[frame.ip] << 8) | code[frame.ip + 1]
         frame.ip += 2
@@ -240,6 +302,12 @@ class VM:
         return rel
 
     def op_jump(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
+        rel = self._read_rel16(frame)
+        frame.ip += rel
+        return VM.RunSignal.NORMAL, None
+
+    def op_jump_q(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
+        # Quickened jump variant; same operand path for now
         rel = self._read_rel16(frame)
         frame.ip += rel
         return VM.RunSignal.NORMAL, None
@@ -485,7 +553,8 @@ class VM:
     # Arithmetic / comparison and logical not
     def op_not(self, frame: Frame, op: int) -> Tuple[int, Any | None]:
         v = self.pop()
-        self.push(not v)
+        # Use Zeta truthiness: only Nil and Symbol("#f") are falsey.
+        self.push(not self._is_truthy(v))
         return VM.RunSignal.NORMAL, None
 
     def _arith2(self, opfun: Callable[[Any, Any], Any]) -> Tuple[int, Any | None]:

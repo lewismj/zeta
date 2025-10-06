@@ -25,10 +25,16 @@ def compile_module(expr: Any) -> Chunk:
     """Compile a single top-level expression into a chunk that returns its value.
     For now, treat 'expr' as a single form. The caller (Interpreter) already splits.
     """
+    import os
+    from .optimize import optimize_chunk
+
     chunk = Chunk()
     compile_expr(expr, chunk, CompileCtx(in_tail=False))
     # For top-level, implicit HALT
     chunk.emit_op(Opcode.HALT)
+    # Optional optimization/quickening pass controlled by env var ZETA_OPT
+    if os.getenv("ZETA_OPT", "0") not in ("0", "false", "False", "no", "off"):
+        chunk = optimize_chunk(chunk)
     return chunk
 
 

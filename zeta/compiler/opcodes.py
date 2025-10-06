@@ -14,6 +14,13 @@ class Opcode(IntEnum):
     DUP = 0x06
     POP = 0x07
     SWAP = 0x08
+    # Quickened variants (optimizer-emitted)
+    PUSH_CONST_Q = 0xC0  # u16 qidx into chunk.quick_imms
+    LOAD_LOCAL_Q = 0xC1  # u16
+    STORE_LOCAL_Q = 0xC2  # u16
+    LOAD_UPVALUE_Q = 0xC3  # u16
+    STORE_UPVALUE_Q = 0xC4  # u16
+    JUMP_Q = 0xC5  # s16 (pre-decoded reserved)
 
     # Locals / upvalues / globals
     LOAD_LOCAL = 0x10  # u16

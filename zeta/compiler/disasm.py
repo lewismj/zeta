@@ -29,11 +29,14 @@ def disassemble_chunk(chunk: Chunk) -> str:
             opname = f"OP_{op:02X}"
         line = f"{i:04d}: {opname}"
         i += 1
-        if op in (Opcode.PUSH_CONST, Opcode.LOAD_GLOBAL, Opcode.STORE_GLOBAL,
+        if op in (Opcode.PUSH_CONST, Opcode.PUSH_CONST_Q,
+                  Opcode.LOAD_GLOBAL, Opcode.STORE_GLOBAL,
                   Opcode.LOAD_LOCAL, Opcode.STORE_LOCAL,
                   Opcode.LOAD_UPVALUE, Opcode.STORE_UPVALUE,
                   Opcode.MAKE_LAMBDA, Opcode.MAKE_CLOSURE, Opcode.LOAD_ATTR, Opcode.STORE_ATTR,
-                  Opcode.INVOKE):
+                  Opcode.INVOKE,
+                  Opcode.LOAD_LOCAL_Q, Opcode.STORE_LOCAL_Q,
+                  Opcode.LOAD_UPVALUE_Q, Opcode.STORE_UPVALUE_Q):
             if op == Opcode.MAKE_CLOSURE:
                 fidx = u16(i); i += 2
                 ucount = u8(i); i += 1
@@ -49,7 +52,7 @@ def disassemble_chunk(chunk: Chunk) -> str:
             else:
                 val = u16(i); i += 2
                 line += f" {val}"
-        elif op in (Opcode.JUMP, Opcode.JUMP_IF_TRUE, Opcode.JUMP_IF_FALSE, Opcode.JUMP_IF_NIL):
+        elif op in (Opcode.JUMP, Opcode.JUMP_Q, Opcode.JUMP_IF_TRUE, Opcode.JUMP_IF_FALSE, Opcode.JUMP_IF_NIL):
             rel = s16(i); i += 2
             line += f" {rel:+d} -> {i + rel}"
         elif op in (Opcode.PUSH_INT,):

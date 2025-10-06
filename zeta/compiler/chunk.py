@@ -16,6 +16,9 @@ class Chunk:
     code: bytearray = field(default_factory=bytearray)
     constants: List[Any] = field(default_factory=list)
     lines: list[tuple[int, int, int]] = field(default_factory=list)  # (ip, line, col)
+    # Quickening/IC support (optional). Optimizer may fill these.
+    quick_imms: list[Any] = field(default_factory=list)
+    inline_caches: list[Any] = field(default_factory=list)
 
     def add_const(self, value: Any) -> int:
         try:

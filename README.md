@@ -38,6 +38,8 @@ updated to show the bytecode compiler and VM usage in due course.
 Some simple benchmarks comparing the interpreter and the VM execution only time.
 Highlights the performance of a VM vs. a tree-walking interpreter.
 
+Note, these are likely not representative of real-world use cases, just simple tests on the interpreter vs. the VM.
+
 ```aiignore
 Benchmark: environment lookup chain (pure Python env lookup)
   time: 0.001523s
@@ -52,13 +54,15 @@ Benchmark: python interop: math.sqrt loop
 ```
 | Benchmark                                         | Interpreter Time | VM Time (exec only) | Speedup (interpreter ÷ VM) |
 | ------------------------------------------------- | ---------------- | ------------------- | -------------------------- |
-| Environment lookup chain (pure Python env lookup) | 0.001943 s       | —                   | —                          |
-| Lambda application                                | 0.861429 s       | 0.376770 s          | 2.29×                      |
-| Tail recursion (factorial)                        | 2.748699 s       | 1.105078 s          | 2.49×                      |
-| Arithmetic sum 1..500 (tail-rec)                  | 20.594172 s      | 5.549974 s          | 3.71×                      |
-| Python interop: math.sqrt loop                    | 1.690459 s       | 0.610393 s          | 2.77×                      |
-| **Geometric mean**                                | —                | —                   | **2.78× faster**           |
+| Environment lookup chain (pure Python env lookup) | 0.001451 s       | —                   | —                          |
+| Lambda application                                | 0.463497 s       | 0.257307 s          | 1.80×                      |
+| Tail recursion (factorial)                        | 1.768257 s       | 0.572886 s          | 3.09×                      |
+| Arithmetic sum 1..500 (tail-rec)                  | 17.382334 s      | 5.521134 s          | 3.15×                      |
+| Python interop: math.sqrt loop                    | 1.722354 s       | 0.615799 s          | 2.80×                      |
+| **Geometric mean**                                | —                | —                   | **2.65× faster**           |
 
+
+Likely, moving a bit of vm.py to a CPython extension would improve performance.
 
 
 #### Python interop at a glance
