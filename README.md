@@ -50,14 +50,15 @@ Benchmark: arithmetic sum 1..500 (tail-rec)
 Benchmark: python interop: math.sqrt loop
   interpreter: 1.662747s  |  vm (exec only): 0.798996s  [rounds=200]
 ```
+| Benchmark                                         | Interpreter Time | VM Time (exec only) | Speedup (interpreter ÷ VM) |
+| ------------------------------------------------- | ---------------- | ------------------- | -------------------------- |
+| Environment lookup chain (pure Python env lookup) | 0.001943 s       | —                   | —                          |
+| Lambda application                                | 0.861429 s       | 0.376770 s          | 2.29×                      |
+| Tail recursion (factorial)                        | 2.748699 s       | 1.105078 s          | 2.49×                      |
+| Arithmetic sum 1..500 (tail-rec)                  | 20.594172 s      | 5.549974 s          | 3.71×                      |
+| Python interop: math.sqrt loop                    | 1.690459 s       | 0.610393 s          | 2.77×                      |
+| **Geometric mean**                                | —                | —                   | **2.78× faster**           |
 
-| Benchmark                  | Speedup (interpreter ÷ VM) |
-| -------------------------- | -------------------------- |
-| Lambda application         | 2.36×                      |
-| Tail recursion (factorial) | 2.30×                      |
-| Arithmetic sum             | 2.21×                      |
-| Python interop             | 2.08×                      |
-| **Geometric mean**         | **2.22× faster**           |
 
 
 #### Python interop at a glance
