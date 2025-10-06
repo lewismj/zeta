@@ -5,8 +5,8 @@
 Zeta is a small, pragmatic Lisp system implemented in Python. 
 Designed for metaprogramming and seamless Python interoperability.
 
-The implementation started with an interpreter, 
-now includes a bytecode compiler and VM, that run within the Python process.
+The implementation started with an [interpreter](zeta/evaluation/evaluator.py), 
+now includes a [bytecode compiler](zeta/compiler/compiler.py) and [VM](zeta/compiler/vm.py), that run within the Python process.
 
 
 ### Use Cases 
@@ -31,6 +31,33 @@ now includes a bytecode compiler and VM, that run within the Python process.
  (that can also run within the Python process). The interpreter is useful for development,
 experimentation with language features (of the Lisp) etc. The Readme examples below will be
 updated to show the bytecode compiler and VM usage in due course.
+
+
+### Benchmarks
+
+Some simple benchmarks comparing the interpreter and the VM execution only time.
+Highlights the performance of a VM vs. a tree-walking interpreter.
+
+```aiignore
+Benchmark: environment lookup chain (pure Python env lookup)
+  time: 0.001523s
+Benchmark: lambda application
+  interpreter: 0.480917s  |  vm (exec only): 0.203567s  [rounds=20000]
+Benchmark: tail recursion (factorial)
+  interpreter: 1.714973s  |  vm (exec only): 0.746755s  [rounds=500]
+Benchmark: arithmetic sum 1..500 (tail-rec)
+  interpreter: 17.269993s  |  vm (exec only): 7.827139s  [rounds=1000]
+Benchmark: python interop: math.sqrt loop
+  interpreter: 1.662747s  |  vm (exec only): 0.798996s  [rounds=200]
+```
+
+| Benchmark                  | Speedup (interpreter ÷ VM) |
+| -------------------------- | -------------------------- |
+| Lambda application         | 2.36×                      |
+| Tail recursion (factorial) | 2.30×                      |
+| Arithmetic sum             | 2.21×                      |
+| Python interop             | 2.08×                      |
+| **Geometric mean**         | **2.22× faster**           |
 
 
 #### Python interop at a glance
