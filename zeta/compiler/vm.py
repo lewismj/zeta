@@ -664,7 +664,7 @@ def run_chunk(chunk: Chunk, env: Environment, macros=None) -> Any:
 try:
     import os as _os
     if _os.getenv("ZETA_CY_VM", "1") not in ("0", "false", "False", "no", "off"):
-        from .vm_cy import VM as _CyVM, run_chunk as _cy_run_chunk  # type: ignore
+        from .vm_cy import VM as _CyVM  # type: ignore
         VM = _CyVM  # type: ignore[assignment]
         # Rebind run_chunk to ensure callers importing from .vm use the cython fast path
         def run_chunk(chunk: Chunk, env: Environment, macros=None) -> Any:  # type: ignore[no-redef]

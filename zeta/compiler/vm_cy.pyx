@@ -12,6 +12,15 @@ from zeta.compiler.opcodes import Opcode
 from zeta.compiler.function import Closure, Cell
 from zeta.evaluation.special_forms.call_cc_form import ContinuationEscape
 
+# Top-level call/cc continuation function to avoid closures inside cpdef methods
+# Signature matches host-call convention for built-ins: (env, args)
+# It raises ContinuationEscape with the provided value (or Nil if none)
+# so that the VM can unwind to the nearest call/cc handler.
+
+def _callcc_k(env, args):
+    value = args[0] if len(args) >= 1 else Nil
+    raise ContinuationEscape(value)
+
 
 cdef enum RunSignal:
     NORMAL = 0
@@ -75,7 +84,9 @@ cdef class VM:
 
     cdef inline object _peek(self, int n=0):
         cdef int idx = len(self.stack) - 1 - n
-        return self.stack[idx]
+        if idx < 0:
+            raise IndexError("peek from empty stack")
+        return (<list>self.stack)[idx]
 
     cdef inline bint _is_truthy(self, object v):
         # Only Nil and Symbol("#f") are falsey in Zeta
@@ -410,6 +421,7 @@ cdef class VM:
     cdef tuple _call_callable(self, Frame frame, object callee, list args, bint tail):
         from zeta.runtime_context import set_current_macros as _set_macros
         cdef int base
+        cdef object result
         try:
             _set_macros(self.macros)
             try:
@@ -420,10 +432,18 @@ cdef class VM:
                         raise
                     result = callee(*args)
             except ContinuationEscape as esc:
-                # Minimal continuation handling: treat as normal return of its value
-                result = esc.value
+                # Unwind to the last call/cc handler
+                if not self.cc_handlers:
+                    raise
+                depth, base0 = self.cc_handlers.pop()
+                while len(self.frames) - 1 > depth:
+                    self.frames.pop()
+                if len(self.stack) > base0:
+                    del self.stack[base0:]
+                self._push(esc.value)
+                return RunSignal.CONTINUE, None
             except Exception:
-                # Propagate for now
+                # Propagate for now (structured exception handling can be added similarly)
                 raise
             if tail:
                 base = frame.base
@@ -509,6 +529,12 @@ cdef class VM:
             return RunSignal.RETURN, ret
         # Otherwise, push return value for caller and continue
         self._push(ret)
+        # If returning from a frame established by call/cc, drop its handler
+        if self.cc_handlers:
+            last_idx = len(self.cc_handlers) - 1
+            top = self.cc_handlers[last_idx]
+            if top[0] == (len(self.frames) - 1):
+                self.cc_handlers.pop()
         return RunSignal.NORMAL, None
 
     cpdef tuple op_halt(self, Frame frame, int op):
@@ -521,15 +547,24 @@ cdef class VM:
 
     cpdef tuple op_call_cc(self, Frame frame, int op):
         cdef object proc = self._pop()
-        cdef int base = frame.base
-        cdef list stack_state = self.stack[base:]
-        cdef list frames_state = self.frames[:]
+        # Push a continuation handler capturing current depth and base
+        self.cc_handlers.append((len(self.frames) - 1, len(self.stack)))
 
-        # Create continuation object to capture current state
-        cdef object cont = Continuation(base, stack_state, frames_state)
-
-        # Call the procedure with continuation as single argument
-        return self._call_callable(frame, proc, [cont], False)
+        if isinstance(proc, Closure):
+            # Set up a new frame and pass the continuation function as argument
+            new_frame = Frame(proc.fn.chunk, len(self.stack))
+            new_frame.env_cells = proc.upvalues
+            self.stack.append(_callcc_k)
+            self.frames.append(new_frame)
+            return RunSignal.NORMAL, None
+        elif callable(proc):
+            sig_val = self._call_callable(frame, proc, [_callcc_k], False)
+            if sig_val[0] == RunSignal.NORMAL:
+                # Normal return: pop continuation handler
+                self.cc_handlers.pop()
+            return sig_val
+        else:
+            raise TypeError(f"Cannot call {type(proc)} in call/cc")
 
     def run(self, chunk):
         self.frames.append(Frame(chunk, 0))
