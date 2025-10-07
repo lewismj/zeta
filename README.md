@@ -14,9 +14,8 @@ type conversions, or marshaling.
  The development is still in progress:
 
  - Initially implemented a simple 'tree walking' evaluator: [evaluator](zeta/evaluation/evaluator.py).
- - Next a bytecode compiler: [compiler](zeta/compiler/compiler.py) and VM: [vm](zeta/compiler/vm.py).
- - A very basic byte code optimizer was implemented: [optimizer](zeta/compiler/optimizer.py).
- - A simple VM is provided here: [vm_py](zeta/compiler/vm_py.py)
+ - Next a bytecode [compiler](zeta/compiler/compiler.py) and [vm](zeta/compiler/vm.py).
+ - A very basic byte code [optimizer](zeta/compiler/optimizer.py) was implemented.
  - A Cython-based VM was implemented for better performance: [cvm](zeta/compiler/vm_cy.pyx) (Runtime switch to
    choose between the two VMs).
  - Tests are in [tests](tests), and run all configurations (Interpreter, VM, _Cythonized_ VM).
