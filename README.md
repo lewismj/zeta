@@ -27,39 +27,39 @@ now includes a [bytecode compiler](zeta/compiler/compiler.py) and [VM](zeta/comp
 
 ### Note:
  
-- The examples below show the use of the interpreter, but the bytecode compiler and VM
- (that can also run within the Python process). The interpreter is useful for development,
-experimentation with language features (of the Lisp) etc. The Readme examples below will be
-updated to show the bytecode compiler and VM usage in due course.
+ The development is still in progress.
 
+ - Initially implemented a simple 'tree walking' evaluator: [evaluator](zeta/evaluation/evaluator.py).
+ - Next a bytecode compiler: [compiler](zeta/compiler/compiler.py)) and VM: [vm](zeta/compiler/vm.py).
+ - A very basic optimizer was implemented: [optimizer](zeta/compiler/optimizer.py).
+ - The original VM was implemented in Python. There is now a Cython-based VM for better performance: [cvm](zeta/compiler/vm_cy.c).
 
 ### Benchmarks
 
 Some simple benchmarks comparing the interpreter and the VM execution only time.
-Highlights the performance of a VM vs. a tree-walking interpreter.
+Note, these benchmarks were generated using the Cython-based VM.
 
-Note, these are likely not representative of real-world use cases, just simple tests on the interpreter vs. the VM.
 
 ```aiignore
 Benchmark: environment lookup chain (pure Python env lookup)
-  time: 0.001523s
+  time: 0.001427s
 Benchmark: lambda application
-  interpreter: 0.480917s  |  vm (exec only): 0.203567s  [rounds=20000]
+  interpreter: 0.461862s  |  vm (exec only): 0.170856s  [rounds=20000]
 Benchmark: tail recursion (factorial)
-  interpreter: 1.714973s  |  vm (exec only): 0.746755s  [rounds=500]
+  interpreter: 1.685704s  |  vm (exec only): 0.305634s  [rounds=500]
 Benchmark: arithmetic sum 1..500 (tail-rec)
-  interpreter: 17.269993s  |  vm (exec only): 7.827139s  [rounds=1000]
+  interpreter: 16.677846s  |  vm (exec only): 2.963271s  [rounds=1000]
 Benchmark: python interop: math.sqrt loop
-  interpreter: 1.662747s  |  vm (exec only): 0.798996s  [rounds=200]
+  interpreter: 1.641686s  |  vm (exec only): 0.354214s  [rounds=200]
 ```
 | Benchmark                                         | Interpreter Time | VM Time (exec only) | Speedup (interpreter ÷ VM) |
 | ------------------------------------------------- | ---------------- | ------------------- | -------------------------- |
-| Environment lookup chain (pure Python env lookup) | 0.001451 s       | —                   | —                          |
-| Lambda application                                | 0.463497 s       | 0.257307 s          | 1.80×                      |
-| Tail recursion (factorial)                        | 1.768257 s       | 0.572886 s          | 3.09×                      |
-| Arithmetic sum 1..500 (tail-rec)                  | 17.382334 s      | 5.521134 s          | 3.15×                      |
-| Python interop: math.sqrt loop                    | 1.722354 s       | 0.615799 s          | 2.80×                      |
-| **Geometric mean**                                | —                | —                   | **2.65× faster**           |
+| Environment lookup chain (pure Python env lookup) | 0.001427 s       | —                   | —                          |
+| Lambda application                                | 0.461862 s       | 0.170856 s          | 2.70×                      |
+| Tail recursion (factorial)                        | 1.685704 s       | 0.305634 s          | 5.52×                      |
+| Arithmetic sum 1..500 (tail-rec)                  | 16.677846 s      | 2.963271 s          | 5.63×                      |
+| Python interop: math.sqrt loop                    | 1.641686 s       | 0.354214 s          | 4.63×                      |
+| **Geometric mean**                                | —                | —                   | **4.49× faster**           |
 
 
 Likely, moving a bit of vm.py to a CPython extension would improve performance.

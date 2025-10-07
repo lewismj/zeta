@@ -148,8 +148,11 @@ cdef class VM:
         d[Opcode.JUMP_Q] = self.op_jump_q
         # Calls
         d[Opcode.CALL] = self.op_call
-        # NOTE: Additional opcodes can be ported incrementally.
+        # Exceptions / handlers
         d[Opcode.SETUP_CATCH] = self.op_setup_catch  # 0x80 (128)
+        d[Opcode.POP_CATCH] = self.op_pop_catch
+        d[Opcode.THROW] = self.op_throw
+        # Continuations
         d[Opcode.CALL_CC] = self.op_call_cc  # 0x92 (146)
 
     # --- Opcode handlers (cpdef so Python can call via dict) ---
@@ -285,10 +288,15 @@ cdef class VM:
         cdef bytearray code = <bytearray>frame.chunk.code
         cdef int idx = (code[frame.ip] << 8) | code[frame.ip+1]
         frame.ip += 2
-        val = self._peek()
+        cdef object val = self._peek()
         cdef int slot = frame.base + idx
+        # Ensure stack large enough; avoid Cython block-scoped cdef
         if slot >= len(self.stack):
-            self.stack.extend([Nil] * (slot - len(self.stack) + 1))
+            needed = (slot - len(self.stack)) + 1
+            needed += 1
+            self.stack.extend([Nil] * needed)
+        elif slot == len(self.stack) - 1:
+            self.stack.append(Nil)
         self.stack[slot] = val
         return RunSignal.NORMAL, None
 
@@ -296,10 +304,15 @@ cdef class VM:
         cdef bytearray code = <bytearray>frame.chunk.code
         cdef int idx = (code[frame.ip] << 8) | code[frame.ip+1]
         frame.ip += 2
-        val = self._peek()
+        cdef object val = self._peek()
         cdef int slot = frame.base + idx
+        # Ensure stack large enough; avoid Cython block-scoped cdef
         if slot >= len(self.stack):
-            self.stack.extend([Nil] * (slot - len(self.stack) + 1))
+            needed = (slot - len(self.stack)) + 1
+            needed += 1
+            self.stack.extend([Nil] * needed)
+        elif slot == len(self.stack) - 1:
+            self.stack.append(Nil)
         self.stack[slot] = val
         return RunSignal.NORMAL, None
 
@@ -442,9 +455,11 @@ cdef class VM:
                     del self.stack[base0:]
                 self._push(esc.value)
                 return RunSignal.CONTINUE, None
-            except Exception:
-                # Propagate for now (structured exception handling can be added similarly)
-                raise
+            except Exception as ex:
+                # Try condition-case handler unwind; else re-raise
+                if not self._unwind_to_handler(ex):
+                    raise
+                return RunSignal.CONTINUE, None
             if tail:
                 base = frame.base
                 # pop current frame
@@ -540,10 +555,38 @@ cdef class VM:
     cpdef tuple op_halt(self, Frame frame, int op):
         return RunSignal.RETURN, (self._pop() if self.stack else Nil)
 
+    cdef bint _unwind_to_handler(self, object value):
+        if not self.handlers:
+            return False
+        cdef object tup = self.handlers.pop()
+        cdef int frame_idx = tup[0]
+        cdef int target_ip = tup[1]
+        cdef int base_len = tup[2]
+        while len(self.frames) - 1 > frame_idx:
+            self.frames.pop()
+        if len(self.stack) > base_len:
+            del self.stack[base_len:]
+        cdef Frame f = <Frame> self.frames[len(self.frames) - 1]
+        f.ip = target_ip
+        self.stack.append(value)
+        return True
+
     cpdef tuple op_setup_catch(self, Frame frame, int op):
         cdef int target = self._read_rel16(frame)
-        self.handlers.append((frame, frame.ip + target))
+        cdef int target_ip = frame.ip + target
+        self.handlers.append((len(self.frames) - 1, target_ip, len(self.stack)))
         return RunSignal.NORMAL, None
+
+    cpdef tuple op_pop_catch(self, Frame frame, int op):
+        if self.handlers:
+            self.handlers.pop()
+        return RunSignal.NORMAL, None
+
+    cpdef tuple op_throw(self, Frame frame, int op):
+        cdef object val = self._pop() if self.stack else Nil
+        if not self._unwind_to_handler(val):
+            raise RuntimeError(f"Uncaught condition: {val!r}")
+        return RunSignal.CONTINUE, None
 
     cpdef tuple op_call_cc(self, Frame frame, int op):
         cdef object proc = self._pop()
