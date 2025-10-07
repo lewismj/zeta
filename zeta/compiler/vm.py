@@ -658,3 +658,18 @@ class VM:
 def run_chunk(chunk: Chunk, env: Environment, macros=None) -> Any:
     vm = VM(env, macros)
     return vm.run(chunk)
+
+# --- Optional Cython VM override (feature-gated) ---
+# If ZETA_CY_VM is truthy and the extension is available, prefer it.
+try:
+    import os as _os
+    if _os.getenv("ZETA_CY_VM", "1") not in ("0", "false", "False", "no", "off"):
+        from .vm_cy import VM as _CyVM  # type: ignore
+        VM = _CyVM  # type: ignore[assignment]
+        # Rebind run_chunk to ensure callers importing from .vm use the cython fast path
+        def run_chunk(chunk: Chunk, env: Environment, macros=None) -> Any:  # type: ignore[no-redef]
+            vm = VM(env, macros)
+            return vm.run(chunk)
+except Exception:
+    # Silently fall back to the pure-Python VM if cython build/import fails
+    pass
