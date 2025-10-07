@@ -21,18 +21,16 @@ now includes a [bytecode compiler](zeta/compiler/compiler.py) and [VM](zeta/comp
   
 - Data science and numerical computing
   - Leverage Python libraries (NumPy, Pandas, SciPy, ML/AI libraries) with Lisp syntax and macros.
-    
-- Distributed computing, using the Lisp's ability to treat 'code as data' to serialize 
-  and send code to remote workers for execution. On-the-fly updates to code and data.
+
 
 ### Note:
  
  The development is still in progress.
 
  - Initially implemented a simple 'tree walking' evaluator: [evaluator](zeta/evaluation/evaluator.py).
- - Next a bytecode compiler: [compiler](zeta/compiler/compiler.py)) and VM: [vm](zeta/compiler/vm.py).
+ - Next a bytecode compiler: [compiler](zeta/compiler/compiler.py) and VM: [vm](zeta/compiler/vm.py).
  - A very basic optimizer was implemented: [optimizer](zeta/compiler/optimizer.py).
- - The original VM was implemented in Python. There is now a Cython-based VM for better performance: [cvm](zeta/compiler/vm_cy.c).
+ - The original VM was implemented in Python. There is now a Cython-based VM for better performance: [cvm](zeta/compiler/vm_cy.pyx).
 
 ### Benchmarks
 
@@ -62,12 +60,9 @@ Benchmark: python interop: math.sqrt loop
 | **Geometric mean**                                | —                | —                   | **4.49× faster**           |
 
 
-Likely, moving a bit of vm.py to a CPython extension would improve performance.
-
 
 #### Python interop at a glance
 
- *Run in standalone mode or embed Lisp interpreter into Python.*
 
 ## Standalone mode
 
@@ -111,13 +106,8 @@ dtype: int64, type:<class 'pandas.core.series.Series'>
 ### Future Work
 
 - REPL & LSP integration.
-- Enhance Python Interop?
-- Use Python for sockets, message passing, etc. A core idea is the ability to send code to remote workers for execution.
-
-- Optimization.
-  - Byte code compiler is the most likely option. Whilst implementing a full Common Lisp implementation,
-  would best be done in a systems language like Ansi C or Rust. The foreign function interface would negate
-  the benefits of the current Python no-cost interop.
+- Package system.
+- Extended Prelude.
 
 
 ### Immediate TODO:
@@ -129,7 +119,8 @@ but the interpreter now follows canonical Lisp rules in macroexpansion, binding,
 - [ ] Provide a REPL, and LSP support for integration with editors.
 - [ ] Implement proper package system.
 - [ ] Put in cyclic check/depth limit in the recursive macro expander.
--
+- [ ] General tidy up/refactor - possibly use this project as a template for a full Lisp implementation.
+
 ### Why Zeta?
 
 - Leverage Python’s rich ecosystem (NumPy, Pandas, SciPy, ML/AI libraries) while writing expressive Lisp code and macros.
