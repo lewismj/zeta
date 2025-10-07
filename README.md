@@ -5,11 +5,17 @@
 Zeta is a small, pragmatic Lisp system implemented in Python. 
 Designed for metaprogramming and seamless Python interoperability.
 
+ - Provides the ability to embed Lisp into Python code without having to deal with any foreign-function interface,
+type conversions, or marshaling.
+ - Run Lisp code standalone via the Python interpreter if desired.
+ - Interpreter, VM, and Cythonized VM are provided.
+
+
  The development is still in progress:
 
  - Initially implemented a simple 'tree walking' evaluator: [evaluator](zeta/evaluation/evaluator.py).
  - Next a bytecode compiler: [compiler](zeta/compiler/compiler.py) and VM: [vm](zeta/compiler/vm.py).
- - A very basic optimizer was implemented: [optimizer](zeta/compiler/optimizer.py).
+ - A very basic byte code optimizer was implemented: [optimizer](zeta/compiler/optimizer.py).
  - The original VM was implemented in Python. There is now a Cython-based VM for better performance: [cvm](zeta/compiler/vm_cy.pyx).
  - Tests are in [tests](tests), and run all 3 configurations (interpreter, VM, _Cythonized_ VM).
  - Module system is in place, requires documentation.
@@ -17,6 +23,7 @@ Designed for metaprogramming and seamless Python interoperability.
 ### Use Cases, Why Zeta?
 
 - Leverage Python’s ecosystem (NumPy, Pandas, SciPy, ML/AI libraries) while using Lisp.
+
 
 - Metaprogramming
     - Macros for code generation, DSLs, and syntactic abstraction.
