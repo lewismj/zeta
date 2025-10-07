@@ -8,7 +8,7 @@ Designed for metaprogramming and seamless Python interoperability.
  - Provides the ability to embed Lisp into Python code without having to deal with any foreign-function interface,
 type conversions, or marshaling.
  - Run Lisp code standalone via the Python interpreter if desired.
- - Interpreter, VM, and Cythonized VM are provided.
+ - Interpreter, VM, and _Cythonized_ VM are provided and can be used interchangeably.
 
 
  The development is still in progress:
@@ -16,8 +16,10 @@ type conversions, or marshaling.
  - Initially implemented a simple 'tree walking' evaluator: [evaluator](zeta/evaluation/evaluator.py).
  - Next a bytecode compiler: [compiler](zeta/compiler/compiler.py) and VM: [vm](zeta/compiler/vm.py).
  - A very basic byte code optimizer was implemented: [optimizer](zeta/compiler/optimizer.py).
- - The original VM was implemented in Python. There is now a Cython-based VM for better performance: [cvm](zeta/compiler/vm_cy.pyx).
- - Tests are in [tests](tests), and run all 3 configurations (interpreter, VM, _Cythonized_ VM).
+ - A simple VM is provided here: [vm_py](zeta/compiler/vm_py.py)
+ - A Cython-based VM was implemented for better performance: [cvm](zeta/compiler/vm_cy.pyx) (Runtime switch to
+   choose between the two VMs).
+ - Tests are in [tests](tests), and run all configurations (Interpreter, VM, _Cythonized_ VM).
  - Module system is in place, requires documentation.
 
 ### Use Cases, Why Zeta?
