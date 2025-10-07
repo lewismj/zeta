@@ -13,6 +13,8 @@ from typing import Optional
 from zeta import LispValue
 from zeta.types.errors import ZetaInvalidSymbol, ZetaUnboundSymbol, ZetaNameError
 from zeta.types.symbol import Symbol
+from zeta.runtime_context import get_current_package
+from zeta.package_registry import get_registry
 
 
 class Environment:
@@ -109,9 +111,12 @@ class Environment:
     def lookup(self, name: Symbol) -> LispValue:
         """Look up the value bound to `name`.
 
-        Supports qualified lookups `pkg:symbol` by resolving package aliases and
-        searching the root environment's package table at the root frame first.
-        Falls back to the lexical chain. Raises ZetaUnboundSymbol if not found.
+        Order of resolution:
+        1) Cache
+        2) Qualified pkg:symbol via root.packages (package or alias)
+        3) Lexical chain (locals/closures)
+        4) Package registry: current package env, then each used package's exports
+        Raises ZetaUnboundSymbol if not found.
         """
         # Fast path: cached value
         cached = self._lookup_cache.get(name)
@@ -134,16 +139,47 @@ class Environment:
                 val = pkg_env.lookup(Symbol(sym))
                 self._lookup_cache[name] = val
                 return val
-        # Fallback: unqualified or not found in packages; search lexical chain
+        # 3) Lexical chain first for unqualified names (preserve scoping)
         env = self.find(name)
-        if env is None:
-            raise ZetaUnboundSymbol(f"Cannot lookup unbound symbol {name}")
-        val = env.vars[name]
-        self._lookup_cache[name] = val
-        return val
+        if env is not None:
+            val = env.vars[name]
+            self._lookup_cache[name] = val
+            return val
+        # 4) Package registry fallback: check current package and its use_list exports
+        root = self
+        while root.outer is not None:
+            root = root.outer
+        reg = get_registry()
+        current_pkg_name = get_current_package()
+        pkg = reg.get(current_pkg_name)
+        if pkg is not None:
+            # Current package own env first (treat as globals)
+            if name in pkg.env.vars:
+                val = pkg.env.vars[name]
+                self._lookup_cache[name] = val
+                return val
+            # Then each used package's exported symbols
+            for used in pkg.use_list:
+                up = reg.get(used)
+                if up is None:
+                    continue
+                if name.id in up.exports:
+                    if name in up.env.vars:
+                        val = up.env.vars[name]
+                    else:
+                        # Fallback to env lookup in that package
+                        val = up.env.lookup(name)
+                    self._lookup_cache[name] = val
+                    return val
+        # As a last resort, if the symbol exists in a root package env (even without exports), let it be not found.
+        raise ZetaUnboundSymbol(f"Cannot lookup unbound symbol {name}")
 
     def define_package(self, pkg_name: str) -> Environment:
-        """Create or return a top-level package environment by name."""
+        """Create or return a top-level package environment by name.
+
+        Also ensures an entry exists in the global PackageRegistry for this package,
+        pointing at the same Environment.
+        """
         # defining packages changes resolution; clear caches at root conservatively
         self._clear_caches()
 
@@ -153,6 +189,9 @@ class Environment:
 
         if pkg_name not in env.packages:
             env.packages[pkg_name] = Environment()
+        # Keep registry in sync
+        reg = get_registry()
+        reg.ensure(pkg_name, env.packages[pkg_name])
         return env.packages[pkg_name]
 
     def get_package_symbol(self, pkg_name: str, sym: Symbol) -> LispValue:

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Literal
 
 from zeta.reader.parser import lex, TokenStream
 from zeta.types.nil import Nil
@@ -17,7 +17,7 @@ class Interpreter:
     Maintains an Environment and MacroEnvironment across calls.
     """
 
-    def __init__(self, backend: Backend | None = None, prelude: str | None = None):
+    def __init__(self, backend: Backend | None = None, prelude: str | None | Literal['auto'] = 'auto'):
         # Lazy default to avoid circular imports when possible.
         if backend is None:
             from zeta.evaluation.backend_impl import EvalBackend  # local import to avoid hard coupling at import time
@@ -30,7 +30,17 @@ class Interpreter:
         self.macros: MacroEnvironment = MacroEnvironment()
         register_macros(self.macros)
 
-        if prelude:
+        if prelude is None:
+            pass  # explicit: no prelude
+        elif prelude == 'auto':
+            try:
+                # Lazy import to avoid circular imports
+                from zeta.modules.package_loader import load_prelude
+                load_prelude(self)
+            except FileNotFoundError:
+                # Be permissive: no prelude found -> proceed
+                pass
+        elif prelude:
             self.eval_prelude(prelude)
 
     def eval_prelude(self, code: str) -> None:

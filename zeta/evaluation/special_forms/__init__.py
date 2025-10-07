@@ -25,6 +25,13 @@ from zeta.evaluation.special_forms.call_cc_form import call_cc_form
 from zeta.evaluation.special_forms.gensym_form import gensym_form
 from zeta.evaluation.special_forms.logic_forms import and_form, or_form
 from zeta.evaluation.special_forms.macroexpand_forms import macroexpand1_form, macroexpand_form
+from zeta.evaluation.special_forms.package_forms import (
+    defpackage_form,
+    in_package_form,
+    export_form,
+    use_package_form,
+    from_form,
+)
 
 
 SPECIAL_FORMS = {
@@ -55,6 +62,12 @@ SPECIAL_FORMS = {
     Symbol("gensym"): gensym_form,
     Symbol("and"): and_form,
     Symbol("or"): or_form,
+    # Package management forms
+    Symbol("defpackage"): defpackage_form,
+    Symbol("in-package"): in_package_form,
+    Symbol("export"): export_form,
+    Symbol("use-package"): use_package_form,
+    Symbol("from"): from_form,
     # Note, these forms are used just for the macroexpand-print/macroexpand-1-print
     # prelude functions, an aid to debugging user defined macros.
     Symbol("macroexpand-1"): macroexpand1_form,
