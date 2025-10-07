@@ -27,9 +27,9 @@ def time_interpreter(code: str, rounds: int) -> float:
     itp = Interpreter(prelude=None)  # defaults to EvalBackend
     expr = _parse_one(code)
     # Warmup
-    itp.backend.eval(expr, itp.env, itp.macros)
+    itp.eval_fn(expr, itp.env, itp.macros)
     # Timed
-    return timeit(lambda: itp.backend.eval(expr, itp.env, itp.macros), number=rounds)
+    return timeit(lambda: itp.eval_fn(expr, itp.env, itp.macros), number=rounds)
 
 
 def time_vm(code: str, rounds: int) -> float:

@@ -204,12 +204,8 @@ class VM:
         frame.ip += 2
         val = self.peek()
         slot = frame.base + idx
-        if slot >= len(self.stack):
-            needed = (slot - len(self.stack)) + 1
-            needed += 1
-            for _ in range(needed):
-                self.stack.append(Nil)
-        elif slot == len(self.stack) - 1:
+        # Ensure the operand stack is large enough to hold the target slot (inclusive)
+        while len(self.stack) <= slot:
             self.stack.append(Nil)
         self.stack[slot] = val
         return VM.RunSignal.NORMAL, None
@@ -221,12 +217,7 @@ class VM:
         frame.ip += 2
         val = self.peek()
         slot = frame.base + idx
-        if slot >= len(self.stack):
-            needed = (slot - len(self.stack)) + 1
-            needed += 1
-            for _ in range(needed):
-                self.stack.append(Nil)
-        elif slot == len(self.stack) - 1:
+        while len(self.stack) <= slot:
             self.stack.append(Nil)
         self.stack[slot] = val
         return VM.RunSignal.NORMAL, None
@@ -659,17 +650,43 @@ def run_chunk(chunk: Chunk, env: Environment, macros=None) -> Any:
     vm = VM(env, macros)
     return vm.run(chunk)
 
-# --- Optional Cython VM override (feature-gated) ---
-# If ZETA_CY_VM is truthy and the extension is available, prefer it.
-try:
-    import os as _os
+# --- Optional Cython VM selection at runtime (feature-gated) ---
+# Choose the VM implementation each call based on the current environment.
+import os as _os
+
+def _select_vm_class():
     if _os.getenv("ZETA_CY_VM", "1") not in ("0", "false", "False", "no", "off"):
-        from .vm_cy import VM as _CyVM  # type: ignore
-        VM = _CyVM  # type: ignore[assignment]
-        # Rebind run_chunk to ensure callers importing from .vm use the cython fast path
-        def run_chunk(chunk: Chunk, env: Environment, macros=None) -> Any:  # type: ignore[no-redef]
-            vm = VM(env, macros)
-            return vm.run(chunk)
+        try:
+            from .vm_cy import VM as _CyVM  # type: ignore
+            return _CyVM
+        except Exception:
+            # Fall back to Python VM if cy build/import fails
+            assert False, "Cython VM failed to import"
+    return VM
+
+# New explicit backend selection that does not rely on env
+_def_backend_map = {
+    "py": VM,
+}
+try:
+    from .vm_cy import VM as _CyVM  # type: ignore
+    _def_backend_map["cy"] = _CyVM
 except Exception:
-    # Silently fall back to the pure-Python VM if cython build/import fails
     pass
+
+def get_vm_class(backend: str | None = None):
+    if backend is None:
+        return _select_vm_class()
+    return _def_backend_map.get(backend, VM)
+
+
+def run_chunk(chunk: Chunk, env: Environment, macros=None) -> Any:  # type: ignore[no-redef]
+    VMClass = _select_vm_class()
+    vm = VMClass(env, macros)
+    return vm.run(chunk)
+
+
+def run_chunk_backend(chunk: Chunk, env: Environment, macros=None, backend: str = "py") -> Any:
+    VMClass = get_vm_class(backend)
+    vm = VMClass(env, macros)
+    return vm.run(chunk)

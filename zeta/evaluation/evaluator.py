@@ -14,11 +14,13 @@ from zeta.types.symbol import Symbol
 from zeta.evaluation.apply import apply
 from zeta.evaluation.special_forms import SPECIAL_FORMS
 from zeta.evaluation.py_module_util import resolve_object_path
+from zeta.compiler.function import Closure as VMClosure  # for interop with VM-compiled closures
+from zeta.compiler.apply_vm import call_vm_closure  # tiny trampoline for VM closures
 from zeta.types.tail_call import TailCall
 
 
 def evaluate(
-    expr: SExpression, env: Environment, macros: MacroEnvironment | None = None, _=False
+    expr: SExpression, env: Environment, macros: MacroEnvironment | None = None
 ) -> LispValue:
     """
     Trampoline evaluator: tail-call aware evaluation.
@@ -78,6 +80,9 @@ def evaluate0(
                     # If the resolved attribute is a Zeta Lambda, apply via the engine
                     if isinstance(attr, Lambda):
                         return apply(attr, args, env, macros, evaluate0, is_tail_call)
+                    # If it is a VM Closure (from compiled code), invoke via a tiny VM trampoline
+                    if isinstance(attr, VMClosure):
+                        return call_vm_closure(env, attr, args)
                     # If it is a wrapped Python callable, use its wrapper protocol
                     if callable(attr) and getattr(attr, "_zeta_wrapped", False):
                         return attr(env, args)

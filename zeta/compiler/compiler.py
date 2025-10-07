@@ -33,7 +33,7 @@ def compile_module(expr: Any) -> Chunk:
     # For top-level, implicit HALT
     chunk.emit_op(Opcode.HALT)
     # Optional optimization/quickening pass controlled by env var ZETA_OPT
-    if os.getenv("ZETA_OPT", "0") not in ("0", "false", "False", "no", "off"):
+    if os.getenv("ZETA_OPT", "1") not in ("0", "false", "False", "no", "off"):
         chunk = optimize_chunk(chunk)
     return chunk
 
