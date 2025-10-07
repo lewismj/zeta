@@ -5,8 +5,12 @@
 Zeta is a small, pragmatic Lisp system implemented in Python. 
 Designed for metaprogramming and seamless Python interoperability.
 
-The implementation started with an [interpreter](zeta/evaluation/evaluator.py), 
-now includes a [bytecode compiler](zeta/compiler/compiler.py) and [VM](zeta/compiler/vm.py), that run within the Python process.
+ The development is still in progress:
+
+ - Initially implemented a simple 'tree walking' evaluator: [evaluator](zeta/evaluation/evaluator.py).
+ - Next a bytecode compiler: [compiler](zeta/compiler/compiler.py) and VM: [vm](zeta/compiler/vm.py).
+ - A very basic optimizer was implemented: [optimizer](zeta/compiler/optimizer.py).
+ - The original VM was implemented in Python. There is now a Cython-based VM for better performance: [cvm](zeta/compiler/vm_cy.pyx).
 
 
 ### Use Cases 
@@ -23,16 +27,7 @@ now includes a [bytecode compiler](zeta/compiler/compiler.py) and [VM](zeta/comp
   - Leverage Python libraries (NumPy, Pandas, SciPy, ML/AI libraries) with Lisp syntax and macros.
 
 
-### Note:
- 
- The development is still in progress.
-
- - Initially implemented a simple 'tree walking' evaluator: [evaluator](zeta/evaluation/evaluator.py).
- - Next a bytecode compiler: [compiler](zeta/compiler/compiler.py) and VM: [vm](zeta/compiler/vm.py).
- - A very basic optimizer was implemented: [optimizer](zeta/compiler/optimizer.py).
- - The original VM was implemented in Python. There is now a Cython-based VM for better performance: [cvm](zeta/compiler/vm_cy.pyx).
-
-### Benchmarks
+### Benchmark Comparison Interpreter vs (Cythonized) VM.
 
 Some simple benchmarks comparing the interpreter and the VM execution only time.
 Note, these benchmarks were generated using the Cython-based VM.
