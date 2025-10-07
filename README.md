@@ -11,9 +11,12 @@ Designed for metaprogramming and seamless Python interoperability.
  - Next a bytecode compiler: [compiler](zeta/compiler/compiler.py) and VM: [vm](zeta/compiler/vm.py).
  - A very basic optimizer was implemented: [optimizer](zeta/compiler/optimizer.py).
  - The original VM was implemented in Python. There is now a Cython-based VM for better performance: [cvm](zeta/compiler/vm_cy.pyx).
+ - Tests are in [tests](tests), and run all 3 configurations (interpreter, VM, _Cythonized_ VM).
+ - Module system is in place, requires documentation.
 
+### Use Cases, Why Zeta?
 
-### Use Cases 
+- Leverage Python’s ecosystem (NumPy, Pandas, SciPy, ML/AI libraries) while using Lisp.
 
 - Metaprogramming
     - Macros for code generation, DSLs, and syntactic abstraction.
@@ -26,8 +29,22 @@ Designed for metaprogramming and seamless Python interoperability.
 - Data science and numerical computing
   - Leverage Python libraries (NumPy, Pandas, SciPy, ML/AI libraries) with Lisp syntax and macros.
 
+### Immediate TODO:
 
-### Benchmark Comparison Interpreter vs (Cythonized) VM.
+In the core semantics Zeta is a Lisp, It’s not a full Common Lisp or full Scheme (by intent), 
+but the interpreter now follows canonical Lisp rules in macroexpansion, binding, and evaluation. 
+
+- [ ] Provide an extended Prelude, minimal at present.
+- [ ] Provide a REPL, and LSP support for integration with editors.
+- [ ] Implement cyclic check/depth limit in the recursive macro expander.
+- [ ] Refactor required;
+  - There are common functions are in the evaluation module that can be extracted to a common module.
+  - No real requirement for the interpreter/compiler to have the same 'eval' signature.
+  - The VM uses the Macro expansion via evaluator (gets the prelude macros), this is messy and can be removed.
+  - Need some sort of 'embed' API where switch between interpreter, VM (Python, native) is a parameter switch.
+- 
+
+### Benchmark Comparison Interpreter vs. (Cythonized) VM.
 
 Some simple benchmarks comparing the interpreter and the VM execution only time.
 Note, these benchmarks were generated using the Cython-based VM.
@@ -63,7 +80,7 @@ Benchmark: python interop: math.sqrt loop
 
 ```lisp
     (progn
-      (import "networkx" as "nx")
+      (import "networkx" as "nx") ;; import a Python module.
       (define g (nx:Graph))
       (g:add_edge "A" "B")       ;; add a small chain A-B-C
       (g:add_edge "B" "C")
@@ -73,9 +90,15 @@ Benchmark: python interop: math.sqrt loop
 
 ## Embedding into Python
 
+Note, you don't have to use the interpreter when embedding Zeta into Python,
+you can embed the VM (native or '_Cythonized_') directly. Use the interpreter
+if you want to debug into it, as it may be easier than debugging the bytecode VM.
+Use the VM for better performance.
+
+
 ```python
 def _mk_interp():
-    from zeta.interpreter import Interpreter
+    from zeta.interpreter import Interpreter  
     return Interpreter(prelude=None) # Not needed for dummy example.
 
 interpreter = _mk_interp()
@@ -85,10 +108,8 @@ res = interpreter.eval('''
       (np:to_list (np:dot (np:array (1 2)) (np:array (3 4)))))
 ''')  
 ```
-Note, the interpreter will treat classes as structs and methods as function,
-you can access free functions and class methods. Python objects are treated
-as Lisp values, so you can pass them around and use them in Lisp code,
-no type conversion is required in-out of the Lisp interpreter.
+Python objects are treated as Lisp values, so you can pass them around and use them in Lisp code.
+No type conversion is required in-out of the Lisp interpreter.
 
 ```
 Result:
@@ -98,29 +119,6 @@ Result:
 dtype: int64, type:<class 'pandas.core.series.Series'>
 ```
 
-### Future Work
-
-- REPL & LSP integration.
-- Package system.
-- Extended Prelude.
-
-
-### Immediate TODO:
-
-In the core semantics Zeta is a Lisp, It’s not a full Common Lisp or full Scheme (by intent), 
-but the interpreter now follows canonical Lisp rules in macroexpansion, binding, and evaluation. 
-
-- [ ] Provide an extended Prelude, minimal at present.
-- [ ] Provide a REPL, and LSP support for integration with editors.
-- [ ] Implement proper package system.
-- [ ] Put in cyclic check/depth limit in the recursive macro expander.
-- [ ] General tidy up/refactor - possibly use this project as a template for a full Lisp implementation.
-
-### Why Zeta?
-
-- Leverage Python’s rich ecosystem (NumPy, Pandas, SciPy, ML/AI libraries) while writing expressive Lisp code and macros.
-- Keep a compact, understandable interpreter for experimentation and language design.
-- Mix metaprogramming and data work without bridging through ad-hoc `exec` strings.
 
 ### Language tour
 
