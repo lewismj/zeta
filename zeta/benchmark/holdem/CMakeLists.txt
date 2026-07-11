@@ -59,6 +59,10 @@ add_executable(zeta-bench-holdem-range-parser
     src/range_parser_benchmark.cpp
 )
 
+add_executable(zeta-bench-holdem-terminal
+    src/terminal_benchmark.cpp
+)
+
 target_link_libraries(zeta-bench-holdem-evaluator
     PRIVATE
     zeta-holdem
@@ -71,9 +75,16 @@ target_link_libraries(zeta-bench-holdem-range-parser
     benchmark::benchmark
 )
 
+target_link_libraries(zeta-bench-holdem-terminal
+    PRIVATE
+    zeta-holdem
+    benchmark::benchmark
+)
+
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta-bench-holdem-evaluator PRIVATE stdc++ m)
     target_link_libraries(zeta-bench-holdem-range-parser PRIVATE stdc++ m)
+    target_link_libraries(zeta-bench-holdem-terminal PRIVATE stdc++ m)
 endif()
 
 add_custom_target(zeta-bench-holdem-evaluator-json
@@ -94,4 +105,14 @@ add_custom_target(zeta-bench-holdem-range-parser-json
     USES_TERMINAL
     VERBATIM
     COMMENT "Running Google Benchmark Hold'em range parser suite and writing JSON baseline"
+)
+
+add_custom_target(zeta-bench-holdem-terminal-json
+    COMMAND $<TARGET_FILE:zeta-bench-holdem-terminal>
+        --benchmark_out=${CMAKE_CURRENT_BINARY_DIR}/holdem-terminal-benchmark.json
+        --benchmark_out_format=json
+    DEPENDS zeta-bench-holdem-terminal
+    USES_TERMINAL
+    VERBATIM
+    COMMENT "Running Google Benchmark Hold'em terminal suite and writing JSON baseline"
 )

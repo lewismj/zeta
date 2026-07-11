@@ -1,0 +1,636 @@
+#pragma once
+
+#include <array>
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+
+#include "board.h"
+#include "evaluator.h"
+#include "range.h"
+
+namespace zeta::holdem {
+
+    enum class player : uint8_t {
+        oop,
+        ip
+    };
+
+    using terminal_value = float;
+    using accumulator = double;
+    using utility = double;
+
+    struct terminal_pot {
+        utility gross_pot = 0.0;
+        utility rake = 0.0;
+        utility oop_contribution = 0.0;
+        utility ip_contribution = 0.0;
+    };
+
+    struct terminal_context {
+        terminal_pot pot{};
+    };
+
+    struct terminal_payoff {
+        utility oop = 0.0;
+        utility ip = 0.0;
+    };
+
+    [[nodiscard]] constexpr std::size_t player_index(const player p) noexcept {
+        return p == player::oop ? 0u : 1u;
+    }
+
+    struct terminal_values {
+        std::array<std::array<terminal_value, combination_count>, 2> values{};
+
+        [[nodiscard]] constexpr const std::array<terminal_value, combination_count>& operator[](
+            const player p
+        ) const noexcept {
+            return values[player_index(p)];
+        }
+
+        [[nodiscard]] constexpr std::array<terminal_value, combination_count>& operator[](const player p) noexcept {
+            return values[player_index(p)];
+        }
+    };
+
+    struct terminal_summary {
+        accumulator oop_ev = 0.0;
+        accumulator ip_ev = 0.0;
+        accumulator matchup_weight = 0.0;
+        accumulator ties = 0.0;
+        accumulator oop_wins = 0.0;
+        accumulator ip_wins = 0.0;
+    };
+
+    struct terminal_result {
+        terminal_values values{};
+        terminal_summary summary{};
+    };
+
+    struct reach_vector {
+        std::array<combo_weight, combination_count> weights{};
+
+        [[nodiscard]] constexpr combo_weight operator[](const combination_index idx) const noexcept {
+            return weights[idx];
+        }
+
+        [[nodiscard]] constexpr combo_weight& operator[](const combination_index idx) noexcept {
+            return weights[idx];
+        }
+    };
+
+    [[nodiscard]] inline reach_vector make_reach_vector(const hand_range& range) noexcept {
+        reach_vector reach{};
+        reach.weights = range.weights;
+        return reach;
+    }
+
+    [[nodiscard]] constexpr utility distributed_pot(const terminal_pot pot) noexcept {
+        assert(pot.gross_pot >= 0.0);
+        assert(pot.rake >= 0.0);
+        assert(pot.oop_contribution >= 0.0);
+        assert(pot.ip_contribution >= 0.0);
+        assert(pot.gross_pot >= pot.rake);
+        assert((pot.gross_pot - pot.rake) >= pot.oop_contribution + pot.ip_contribution);
+        return pot.gross_pot - pot.rake;
+    }
+
+    [[nodiscard]] constexpr terminal_payoff payoff_for_oop_win(const terminal_pot pot) noexcept {
+        const auto awarded = distributed_pot(pot);
+        return terminal_payoff{
+            .oop = awarded - pot.oop_contribution,
+            .ip = -pot.ip_contribution
+        };
+    }
+
+    [[nodiscard]] constexpr terminal_payoff payoff_for_ip_win(const terminal_pot pot) noexcept {
+        const auto awarded = distributed_pot(pot);
+        return terminal_payoff{
+            .oop = -pot.oop_contribution,
+            .ip = awarded - pot.ip_contribution
+        };
+    }
+
+    [[nodiscard]] constexpr terminal_payoff payoff_for_tie(const terminal_pot pot) noexcept {
+        const auto split = distributed_pot(pot) * 0.5;
+        return terminal_payoff{
+            .oop = split - pot.oop_contribution,
+            .ip = split - pot.ip_contribution
+        };
+    }
+
+    [[nodiscard]] constexpr terminal_payoff payoff_for_fold(const terminal_pot pot, const player folded) noexcept {
+        return folded == player::oop ? payoff_for_ip_win(pot) : payoff_for_oop_win(pot);
+    }
+
+    using combo_bitset = std::array<uint64_t, (combination_count + 63) / 64>;
+    using rank_key = uint16_t;
+    constexpr std::size_t river_live_combination_count = ((52u - 5u) * (52u - 6u)) / 2u;
+    constexpr uint8_t missing_bucket_card_mass = UINT8_MAX;
+
+    struct combo_cards {
+        uint8_t first = 0;
+        uint8_t second = 0;
+    };
+
+    [[nodiscard]] constexpr bool combo_live(const combo_bitset& bits, const combination_index idx) noexcept {
+        return (bits[idx / 64u] & (uint64_t{1} << (idx % 64u))) != 0;
+    }
+
+    constexpr void set_combo_live(combo_bitset& bits, const combination_index idx) noexcept {
+        bits[idx / 64u] |= uint64_t{1} << (idx % 64u);
+    }
+
+    [[nodiscard]] inline combo_cards extract_combo_cards(card_mask mask) noexcept {
+        const auto first_bit = ops::pop_lsb(mask);
+        const auto second_bit = ops::pop_lsb(mask);
+        assert(mask == 0);
+        return combo_cards{
+            .first = static_cast<uint8_t>(ops::lsb_index(first_bit)),
+            .second = static_cast<uint8_t>(ops::lsb_index(second_bit))
+        };
+    }
+
+    struct river_terminal_cache {
+        uint64_t board_hash = 0;
+        board river_board{};
+        std::array<card_mask, combination_count> masks{};
+        std::array<rank_key, combination_count> rank_keys{};
+        std::array<hand_rank, river_live_combination_count + 1> unique_ranks{};
+        uint16_t unique_rank_count = 0;
+        std::array<combo_cards, combination_count> cards{};
+        combo_bitset live{};
+        std::array<combination_index, river_live_combination_count> rank_order{};
+        std::size_t rank_order_count = 0;
+    };
+
+    struct river_rank_bucket {
+        rank_key rank = 0;
+        accumulator total_mass = 0.0;
+        uint16_t begin = 0;
+        uint16_t end = 0;
+        uint16_t card_mass_begin = 0;
+        uint16_t card_mass_end = 0;
+        std::array<uint8_t, 52> card_mass_lookup{};
+    };
+
+    struct river_bucket_card_mass {
+        uint8_t card = 0;
+        accumulator mass = 0.0;
+    };
+
+    struct river_reach_index {
+        uint64_t board_hash = 0;
+        std::array<combo_weight, combination_count> weights{};
+        std::array<combination_index, combination_count> active_indices{};
+        std::array<accumulator, 52> mass_by_card{};
+        accumulator total_live_mass = 0.0;
+        uint16_t active_count = 0;
+        std::array<river_rank_bucket, combination_count> rank_buckets{};
+        uint16_t unique_rank_count = 0;
+        std::array<river_bucket_card_mass, combination_count * 2> bucket_card_masses{};
+        uint16_t bucket_card_mass_count = 0;
+    };
+
+    [[nodiscard]] inline river_terminal_cache make_river_terminal_cache(const board river) noexcept {
+        assert(river.board_street() == street::river);
+        assert(ops::popcount(river.mask) == 5);
+
+        river_terminal_cache cache{};
+        cache.board_hash = static_cast<uint64_t>(river.mask);
+        cache.river_board = river;
+
+        std::array<hand_rank, combination_count> evaluated_ranks{};
+        const auto board_masks = suit_rank_masks(river.mask);
+
+        for (combination_index i = 0; i < combination_count; ++i) {
+            const auto combo = combination_mask(i);
+            cache.masks[i] = combo;
+            cache.cards[i] = extract_combo_cards(combo);
+
+            if ((combo & river.mask) != 0) {
+                continue;
+            }
+
+            const auto combo_masks = suit_rank_masks(combo);
+            const hand_masks masks{
+                .spades = static_cast<uint16_t>(board_masks.spades | combo_masks.spades),
+                .hearts = static_cast<uint16_t>(board_masks.hearts | combo_masks.hearts),
+                .diamonds = static_cast<uint16_t>(board_masks.diamonds | combo_masks.diamonds),
+                .clubs = static_cast<uint16_t>(board_masks.clubs | combo_masks.clubs)
+            };
+            evaluated_ranks[i] = evaluate(masks);
+            set_combo_live(cache.live, i);
+            cache.rank_order[cache.rank_order_count++] = i;
+        }
+
+        auto begin = cache.rank_order.begin();
+        auto end = begin + static_cast<std::ptrdiff_t>(cache.rank_order_count);
+        std::sort(begin, end, [&](const combination_index lhs, const combination_index rhs) {
+            const auto lhs_rank = evaluated_ranks[lhs];
+            const auto rhs_rank = evaluated_ranks[rhs];
+            if (lhs_rank == rhs_rank) {
+                return lhs < rhs;
+            }
+            return lhs_rank < rhs_rank;
+        });
+
+        hand_rank previous{};
+        bool have_previous = false;
+        rank_key current_key = 0;
+
+        for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+            const auto idx = cache.rank_order[order];
+            const auto rank = evaluated_ranks[idx];
+            if (!have_previous || rank != previous) {
+                ++current_key;
+                cache.unique_ranks[current_key] = rank;
+                previous = rank;
+                have_previous = true;
+            }
+            cache.rank_keys[idx] = current_key;
+        }
+
+        cache.unique_rank_count = current_key;
+        return cache;
+    }
+
+    [[nodiscard]] inline accumulator clamp_compatible_mass(const accumulator mass) noexcept {
+        if (mass < 0.0 && mass > -1.0e-3) {
+            return 0.0;
+        }
+        assert(mass >= -1.0e-3);
+        return mass;
+    }
+
+    [[nodiscard]] inline accumulator compatible_mass_from_bucket(
+        const accumulator total,
+        const accumulator first_card_mass,
+        const accumulator second_card_mass,
+        const accumulator exact_same_combo_weight
+    ) noexcept {
+        return clamp_compatible_mass(total - first_card_mass - second_card_mass + exact_same_combo_weight);
+    }
+
+    [[nodiscard]] inline accumulator bucket_card_mass(
+        const river_reach_index& index,
+        const river_rank_bucket& bucket,
+        const uint8_t card
+    ) noexcept {
+        const auto offset = bucket.card_mass_lookup[card];
+        if (offset == missing_bucket_card_mass) {
+            return 0.0;
+        }
+        const auto entry_index = static_cast<uint16_t>(bucket.card_mass_begin + offset);
+        assert(entry_index < bucket.card_mass_end);
+        return index.bucket_card_masses[entry_index].mass;
+    }
+
+    inline void add_bucket_cards(
+        std::array<accumulator, 52>& out,
+        const river_reach_index& index,
+        const river_rank_bucket& bucket
+    ) noexcept {
+        for (uint16_t i = bucket.card_mass_begin; i < bucket.card_mass_end; ++i) {
+            const auto entry = index.bucket_card_masses[i];
+            out[entry.card] += entry.mass;
+        }
+    }
+
+    [[nodiscard]] inline accumulator compatible_reach_mass(
+        const river_terminal_cache& cache,
+        const river_reach_index& opponent,
+        const combination_index hero_combo
+    ) noexcept {
+        assert(cache.board_hash == opponent.board_hash);
+        const auto [first, second] = cache.cards[hero_combo];
+        return compatible_mass_from_bucket(
+            opponent.total_live_mass,
+            opponent.mass_by_card[first],
+            opponent.mass_by_card[second],
+            opponent.weights[hero_combo]
+        );
+    }
+
+    [[nodiscard]] inline accumulator compatible_mass(
+        const river_terminal_cache& cache,
+        const river_reach_index& opponent,
+        const combination_index hero_combo
+    ) noexcept {
+        return compatible_reach_mass(cache, opponent, hero_combo);
+    }
+
+    [[nodiscard]] inline river_reach_index make_river_reach_index(
+        const river_terminal_cache& cache,
+        const reach_vector& reach
+    ) noexcept {
+        river_reach_index index{};
+        index.board_hash = cache.board_hash;
+
+        std::array<accumulator, 52> bucket_card_accumulator{};
+        bool have_bucket = false;
+        uint16_t current_bucket = 0;
+
+        const auto flush_bucket = [&]() noexcept {
+            if (!have_bucket) {
+                return;
+            }
+
+            auto& bucket = index.rank_buckets[current_bucket];
+            bucket.end = index.active_count;
+            bucket.card_mass_begin = index.bucket_card_mass_count;
+            for (uint8_t card = 0; card < bucket_card_accumulator.size(); ++card) {
+                const auto mass = bucket_card_accumulator[card];
+                if (mass <= 0.0) {
+                    continue;
+                }
+                assert(index.bucket_card_mass_count < index.bucket_card_masses.size());
+                const auto relative_offset = static_cast<uint8_t>(index.bucket_card_mass_count - bucket.card_mass_begin);
+                bucket.card_mass_lookup[card] = relative_offset;
+                index.bucket_card_masses[index.bucket_card_mass_count++] = river_bucket_card_mass{
+                    .card = card,
+                    .mass = static_cast<combo_weight>(mass)
+                };
+            }
+            bucket.card_mass_end = index.bucket_card_mass_count;
+            bucket_card_accumulator.fill(0.0);
+        };
+
+        for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+            const auto combo_idx = cache.rank_order[order];
+            const auto weight = reach[combo_idx];
+            if (weight <= 0.0f) {
+                continue;
+            }
+
+            const auto rank = cache.rank_keys[combo_idx];
+            assert(rank != 0);
+            if (!have_bucket || index.rank_buckets[current_bucket].rank != rank) {
+                flush_bucket();
+                current_bucket = index.unique_rank_count++;
+                auto& bucket = index.rank_buckets[current_bucket];
+                bucket.rank = rank;
+                bucket.begin = index.active_count;
+                bucket.total_mass = 0.0;
+                bucket.card_mass_lookup.fill(missing_bucket_card_mass);
+                have_bucket = true;
+            }
+
+            index.weights[combo_idx] = weight;
+            index.active_indices[index.active_count++] = combo_idx;
+            index.total_live_mass += weight;
+
+            auto& bucket = index.rank_buckets[current_bucket];
+            bucket.total_mass += weight;
+
+            const auto [first, second] = cache.cards[combo_idx];
+            index.mass_by_card[first] += weight;
+            index.mass_by_card[second] += weight;
+            bucket_card_accumulator[first] += weight;
+            bucket_card_accumulator[second] += weight;
+        }
+
+        flush_bucket();
+        assert(index.bucket_card_mass_count <= index.active_count * 2u);
+        return index;
+    }
+
+    inline void accumulate_showdown_bucket_values(
+        terminal_result& result,
+        const river_terminal_cache& cache,
+        const player hero_player,
+        const river_reach_index& hero_index,
+        const river_reach_index& opponent_index,
+        const river_rank_bucket& hero_bucket,
+        const accumulator opponent_lower_total,
+        const std::array<accumulator, 52>& opponent_lower_by_card,
+        const river_rank_bucket* const opponent_equal_bucket,
+        const utility win_component,
+        const utility tie_component,
+        const utility loss_component,
+        const bool record_matchups
+    ) noexcept {
+        const accumulator opponent_equal_total = opponent_equal_bucket == nullptr ? 0.0 : opponent_equal_bucket->total_mass;
+        const accumulator opponent_higher_total =
+            static_cast<accumulator>(opponent_index.total_live_mass) - opponent_lower_total - opponent_equal_total;
+
+        for (uint16_t offset = hero_bucket.begin; offset < hero_bucket.end; ++offset) {
+            const auto hero_combo = hero_index.active_indices[offset];
+            const auto [first, second] = cache.cards[hero_combo];
+
+            const accumulator equal_first = opponent_equal_bucket == nullptr
+                ? 0.0
+                : bucket_card_mass(opponent_index, *opponent_equal_bucket, first);
+            const accumulator equal_second = opponent_equal_bucket == nullptr
+                ? 0.0
+                : bucket_card_mass(opponent_index, *opponent_equal_bucket, second);
+
+            const auto lower = compatible_mass_from_bucket(
+                opponent_lower_total,
+                opponent_lower_by_card[first],
+                opponent_lower_by_card[second],
+                0.0
+            );
+            const auto equal = compatible_mass_from_bucket(
+                opponent_equal_total,
+                equal_first,
+                equal_second,
+                opponent_index.weights[hero_combo]
+            );
+            const auto higher = compatible_mass_from_bucket(
+                opponent_higher_total,
+                static_cast<accumulator>(opponent_index.mass_by_card[first]) - opponent_lower_by_card[first] - equal_first,
+                static_cast<accumulator>(opponent_index.mass_by_card[second]) - opponent_lower_by_card[second] - equal_second,
+                0.0
+            );
+
+            const accumulator value = lower * win_component + equal * tie_component + higher * loss_component;
+            result.values[hero_player][hero_combo] = static_cast<terminal_value>(value);
+
+            const accumulator hero_weight = hero_index.weights[hero_combo];
+            if (record_matchups) {
+                result.summary.oop_wins += hero_weight * lower;
+                result.summary.ties += hero_weight * equal;
+                result.summary.ip_wins += hero_weight * higher;
+                result.summary.matchup_weight += hero_weight * (lower + equal + higher);
+                result.summary.oop_ev += hero_weight * value;
+            } else {
+                result.summary.ip_ev += hero_weight * value;
+            }
+        }
+    }
+
+    [[nodiscard]] inline terminal_result evaluate_showdown(
+        const river_terminal_cache& cache,
+        const river_reach_index& oop_index,
+        const river_reach_index& ip_index,
+        const terminal_context context
+    ) noexcept {
+        assert(cache.board_hash == oop_index.board_hash);
+        assert(cache.board_hash == ip_index.board_hash);
+
+        terminal_result result{};
+        const auto oop_win = payoff_for_oop_win(context.pot);
+        const auto ip_win = payoff_for_ip_win(context.pot);
+        const auto tie = payoff_for_tie(context.pot);
+
+        std::size_t oop_bucket_idx = 0;
+        std::size_t ip_bucket_idx = 0;
+        accumulator oop_lower_total = 0.0;
+        accumulator ip_lower_total = 0.0;
+        std::array<accumulator, 52> oop_lower_by_card{};
+        std::array<accumulator, 52> ip_lower_by_card{};
+
+        while (oop_bucket_idx < oop_index.unique_rank_count || ip_bucket_idx < ip_index.unique_rank_count) {
+            const rank_key oop_rank = oop_bucket_idx < oop_index.unique_rank_count
+                ? oop_index.rank_buckets[oop_bucket_idx].rank
+                : static_cast<rank_key>(UINT16_MAX);
+            const rank_key ip_rank = ip_bucket_idx < ip_index.unique_rank_count
+                ? ip_index.rank_buckets[ip_bucket_idx].rank
+                : static_cast<rank_key>(UINT16_MAX);
+            const rank_key rank = std::min(oop_rank, ip_rank);
+
+            const river_rank_bucket* const oop_equal = oop_rank == rank ? &oop_index.rank_buckets[oop_bucket_idx] : nullptr;
+            const river_rank_bucket* const ip_equal = ip_rank == rank ? &ip_index.rank_buckets[ip_bucket_idx] : nullptr;
+
+            if (oop_equal != nullptr) {
+                accumulate_showdown_bucket_values(
+                    result,
+                    cache,
+                    player::oop,
+                    oop_index,
+                    ip_index,
+                    *oop_equal,
+                    ip_lower_total,
+                    ip_lower_by_card,
+                    ip_equal,
+                    oop_win.oop,
+                    tie.oop,
+                    ip_win.oop,
+                    true
+                );
+            }
+
+            if (ip_equal != nullptr) {
+                accumulate_showdown_bucket_values(
+                    result,
+                    cache,
+                    player::ip,
+                    ip_index,
+                    oop_index,
+                    *ip_equal,
+                    oop_lower_total,
+                    oop_lower_by_card,
+                    oop_equal,
+                    ip_win.ip,
+                    tie.ip,
+                    oop_win.ip,
+                    false
+                );
+            }
+
+            if (oop_equal != nullptr) {
+                oop_lower_total += oop_equal->total_mass;
+                add_bucket_cards(oop_lower_by_card, oop_index, *oop_equal);
+                ++oop_bucket_idx;
+            }
+            if (ip_equal != nullptr) {
+                ip_lower_total += ip_equal->total_mass;
+                add_bucket_cards(ip_lower_by_card, ip_index, *ip_equal);
+                ++ip_bucket_idx;
+            }
+        }
+
+        return result;
+    }
+
+    [[nodiscard]] inline terminal_result evaluate_showdown(
+        const river_terminal_cache& cache,
+        const reach_vector& oop_reach,
+        const reach_vector& ip_reach,
+        const terminal_context context
+    ) noexcept {
+        const auto oop_index = make_river_reach_index(cache, oop_reach);
+        const auto ip_index = make_river_reach_index(cache, ip_reach);
+        return evaluate_showdown(cache, oop_index, ip_index, context);
+    }
+
+    [[nodiscard]] inline terminal_values evaluate_showdown_values(
+        const river_terminal_cache& cache,
+        const river_reach_index& oop_index,
+        const river_reach_index& ip_index,
+        const terminal_context context
+    ) noexcept {
+        return evaluate_showdown(cache, oop_index, ip_index, context).values;
+    }
+
+    [[nodiscard]] inline terminal_values evaluate_showdown_values(
+        const river_terminal_cache& cache,
+        const reach_vector& oop_reach,
+        const reach_vector& ip_reach,
+        const terminal_context context
+    ) noexcept {
+        return evaluate_showdown(cache, oop_reach, ip_reach, context).values;
+    }
+
+    [[nodiscard]] inline terminal_summary summarize_showdown(
+        const river_terminal_cache& cache,
+        const river_reach_index& oop_index,
+        const river_reach_index& ip_index,
+        const terminal_context context
+    ) noexcept {
+        return evaluate_showdown(cache, oop_index, ip_index, context).summary;
+    }
+
+    [[nodiscard]] inline terminal_summary summarize_showdown(
+        const river_terminal_cache& cache,
+        const reach_vector& oop_reach,
+        const reach_vector& ip_reach,
+        const terminal_context context
+    ) noexcept {
+        return evaluate_showdown(cache, oop_reach, ip_reach, context).summary;
+    }
+
+    [[nodiscard]] inline terminal_values evaluate_fold_values(
+        const river_terminal_cache& cache,
+        const river_reach_index& oop_index,
+        const river_reach_index& ip_index,
+        const terminal_context context,
+        const player folded
+    ) noexcept {
+        assert(cache.board_hash == oop_index.board_hash);
+        assert(cache.board_hash == ip_index.board_hash);
+
+        terminal_values values{};
+        const auto payoff = payoff_for_fold(context.pot, folded);
+
+        for (uint16_t offset = 0; offset < oop_index.active_count; ++offset) {
+            const auto combo = oop_index.active_indices[offset];
+            const auto compatible = compatible_mass(cache, ip_index, combo);
+            values[player::oop][combo] = static_cast<terminal_value>(compatible * payoff.oop);
+        }
+
+        for (uint16_t offset = 0; offset < ip_index.active_count; ++offset) {
+            const auto combo = ip_index.active_indices[offset];
+            const auto compatible = compatible_mass(cache, oop_index, combo);
+            values[player::ip][combo] = static_cast<terminal_value>(compatible * payoff.ip);
+        }
+
+        return values;
+    }
+
+    [[nodiscard]] inline terminal_values evaluate_fold_values(
+        const river_terminal_cache& cache,
+        const reach_vector& oop_reach,
+        const reach_vector& ip_reach,
+        const terminal_context context,
+        const player folded
+    ) noexcept {
+        const auto oop_index = make_river_reach_index(cache, oop_reach);
+        const auto ip_index = make_river_reach_index(cache, ip_reach);
+        return evaluate_fold_values(cache, oop_index, ip_index, context, folded);
+    }
+
+}

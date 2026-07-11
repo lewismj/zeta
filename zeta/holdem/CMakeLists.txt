@@ -7,6 +7,7 @@ add_library(zeta-holdem STATIC
     src/range.h
     src/range_parser.h
     src/tables.h
+    src/terminal.h
     src/tables.generated.cpp
 )
 add_library(zeta_holdem ALIAS zeta-holdem)

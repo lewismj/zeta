@@ -26,13 +26,13 @@ namespace zeta::holdem::lookup {
 
         [[nodiscard]] int straight_high(const uint16_t mask) noexcept {
             for (int hi = 12; hi >= 4; --hi) {
-                const uint16_t run = static_cast<uint16_t>(0x1Fu << (hi - 4));
+                const auto run = static_cast<uint16_t>(0x1Fu << (hi - 4));
                 if ((mask & run) == run) {
                     return hi;
                 }
             }
 
-            const uint16_t wheel = static_cast<uint16_t>((1u << 12) | 0x0Fu);
+            const auto wheel = static_cast<uint16_t>((1u << 12) | 0x0Fu);
             if ((mask & wheel) == wheel) {
                 return 3;
             }
@@ -172,7 +172,7 @@ namespace zeta::holdem::lookup {
             uint16_t fours = 0;
 
             for (int r = 0; r < 13; ++r) {
-                const uint16_t bit = static_cast<uint16_t>(1u << r);
+                const auto bit = static_cast<uint16_t>(1u << r);
                 const uint8_t c = counts[r];
                 if (c >= 1) ones = static_cast<uint16_t>(ones | bit);
                 if (c >= 2) twos = static_cast<uint16_t>(twos | bit);

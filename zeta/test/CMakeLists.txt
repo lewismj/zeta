@@ -110,6 +110,14 @@ set(_zeta_holdem_test_cases    holdem_detects_straight_flush
     holdem_range_normalize_empty_and_non_positive_is_noop
     holdem_range_remove_dead_filters_blocked_combos
     holdem_range_remove_dead_zero_preserves_weights
+    holdem_terminal_payoffs_use_gross_pot_less_rake
+    holdem_terminal_reach_vector_copies_hand_range_weights
+    holdem_river_terminal_cache_builds_live_rank_order
+    holdem_river_reach_index_builds_sparse_rank_buckets
+    holdem_river_reach_index_preserves_cache_rank_order
+    holdem_terminal_fold_values_respect_card_removal
+    holdem_terminal_fold_values_handle_board_blockers_and_both_folded_players
+    holdem_terminal_showdown_matches_reference_oracle
     holdem_combination_mask_helper_matches_table
     holdem_range_parser_direct_combo_index_matches_combination_table
     holdem_range_parser_parses_basic_hand_classes
