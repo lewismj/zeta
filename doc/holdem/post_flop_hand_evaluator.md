@@ -104,6 +104,16 @@ const uint64_t key =
     | (uint64_t(fours)  << 39);
 ```
 
+Key bit layout:
+
+```text
+63                                                          52 51        39 38        26 25        13 12         0
++------------------------------------------------------------+------------+------------+------------+------------+
+| unused                                                     | fours      | threes     | twos       | ones       |
++------------------------------------------------------------+------------+------------+------------+------------+
+                                                             13 bits      13 bits      13 bits      13 bits
+```
+
 ### Restricted quinary index
 
 The four layers are converted to one base-5 digit per rank:
@@ -129,6 +139,51 @@ The runtime indexer chunks the 13 ranks into `4 + 4 + 5` ranks and uses generate
 chunk tables, avoiding a 13-step dependent DP loop in the hot path. The rank
 table is therefore a dense array, with no hash, stored key, empty slots, or
 probe loop.
+
+```mermaid
+flowchart LR
+    M["hand_masks<br/>spades, hearts, diamonds, clubs<br/>13 bits each"]
+    L["rank layers<br/>ones / twos / threes / fours"]
+    C0["chunk 0<br/>ranks 0..3<br/>4 quinary digits<br/>5^4 = 625 codes"]
+    C1["chunk 1<br/>ranks 4..7<br/>4 quinary digits<br/>5^4 = 625 codes"]
+    C2["chunk 2<br/>ranks 8..12<br/>5 quinary digits<br/>5^5 = 3125 codes"]
+    I["dense restricted-quinary index<br/>0..49204"]
+    R["non_flush_table[index]"]
+
+    M --> L
+    L --> C0 --> C1 --> C2 --> I --> R
+```
+
+Packed chunk-entry layout:
+
+```text
+31                       24 23                                                    0
++-------------------------+--------------------------------------------------------+
+| cards used by this chunk | dense-index contribution                              |
++-------------------------+--------------------------------------------------------+
+         8 bits                                      24 bits
+```
+
+The low 24 bits are selected with `0x00ff'ffff`; the high byte is read with
+`packed >> 24`.
+
+### Numeric layout notes
+
+Several small integers appear directly in the hot-path code. They are deliberately
+left as literals, while the layout is documented here:
+
+| Value | Meaning |
+|---:|---|
+| `7` | Cards in the evaluated Hold'em hand; valid remaining-card counts are `0..7`. |
+| `13` | Ranks in the deck; each suit-rank mask is 13 bits. |
+| `12` | Highest rank index, used to convert a rank offset to the DP remaining-ranks dimension. |
+| `4` | Suits, maximum same-rank multiplicity, and the first two chunk widths. |
+| `5` | Quinary radix for rank counts `0..4`; also the final chunk width. |
+| `625` | `5^4`, the number of possible codes for a 4-rank chunk. |
+| `3125` | `5^5`, the number of possible codes for a 5-rank chunk. |
+| `24` | Low-bit width of the packed chunk index contribution. The high byte stores cards used. |
+| `0x0f` | Mask for a 4-rank field. |
+| `0x1f` | Mask for a 5-rank field. |
 
 ### Generator-time consistency check
 

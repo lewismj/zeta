@@ -8,6 +8,29 @@
 
 namespace zeta::holdem::lookup {
 
+    /*
+     * Numeric layout notes for the restricted-quinary indexer:
+     *
+     * 7      Hold'em evaluator input size; also the maximum remaining card count.
+     *        Tables indexed by remaining cards use size 8 so counts 0..7 are valid.
+     * 13     Number of ranks in the deck. Suit-rank masks are 13-bit values.
+     * 12     Highest rank index, used when converting a forward rank offset to the
+     *        "remaining ranks after this rank" dimension in the DP table.
+     * 4      Number of suits, maximum same-rank multiplicity, and the size of the
+     *        first two runtime quinary chunks.
+     * 5      Quinary radix: each rank count is one digit in 0..4. The final runtime
+     *        chunk covers 5 ranks.
+     * 625    5^4 possible quinary codes for a 4-rank chunk.
+     * 3125   5^5 possible quinary codes for a 5-rank chunk.
+     * 24     Packed chunk entries store the dense-index contribution in the low
+     *        24 bits and the number of cards consumed in the high byte.
+     * 0x0f   Mask for a 4-rank nibble.
+     * 0x1f   Mask for a 5-rank field.
+     *
+     * These values are intentionally left at their use sites instead of being
+     * replaced with named constants so the optimizer sees the same simple
+     * compile-time expressions in the hot path.
+     */
     inline constexpr std::size_t non_flush_quinary_table_size = 49205;
     inline constexpr uint32_t quinary_chunk_index_mask = 0x00ff'ffffu;
 

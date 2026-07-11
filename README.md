@@ -36,6 +36,24 @@ Recent release benchmark results for the chunked restricted-quinary evaluator:
 
 The evaluator uses a direct flush lookup plus a dense restricted-quinary non-flush table, avoiding 21-subset 5-card enumeration.
 
+Latest Google Benchmark summary from `zeta-bench-holdem-evaluator` on Release WSL Clang:
+
+| Benchmark | Throughput | CPU time | Purpose |
+|---|---:|---:|---|
+| `BM_DenseTableLookup` | ~674.6M/s | ~72.9 us / 49,205 slots | Full dense non-flush rank-table scan |
+| `BM_FullEvaluateRandom` | ~135.4M/s | ~7.38 ns/eval | Random 7-card evaluator path |
+| `BM_FullEvaluateAdversarial` | ~151.8M/s | ~6.59 ns/eval | Repeated adversarial 7-card patterns |
+| `BM_EvaluateFromMasksRandom` | ~132.9M/s | ~7.52 ns/eval | Evaluator from precomputed suit/rank masks |
+| `BM_IsolatedQuinaryIndex` | ~163.8M/s | ~6.11 ns/index | Non-flush quinary index from masks |
+| `BM_QuinaryIndexFromLayers` | ~206.3M/s | ~4.85 ns/index | Quinary index from precomputed rank layers |
+| `BM_MasksOnly` | ~663.0M/s | ~1.51 ns/hand | Card mask to suit/rank masks |
+| `BM_MasksFlushCheck` | ~454.7M/s | ~2.20 ns/hand | Mask construction plus flush detection |
+| `BM_MasksFlushIndex` | ~149.2M/s | ~6.70 ns/hand | Mask construction plus flush/non-flush indexing |
+| `BM_DenseLookupOnly` | ~653.0M/s | ~1.53 ns/lookup | Dense non-flush table lookup only |
+| `BM_EvaluateAllSevenCards` | ~152.4M/s | ~6.56 ns/eval | Exhaustive 52 choose 7 evaluator run |
+
+These numbers show the hot path is the non-flush restricted-quinary index, not the dense rank-table lookup.
+
 ## Build profiles
 
 Use the CLion CMake profiles for local builds:
