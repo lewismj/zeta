@@ -102,6 +102,29 @@ namespace zeta::holdem::lookup {
     inline constexpr auto quinary_weights4 = build_quinary_weights4();
     inline constexpr auto quinary_weights5 = build_quinary_weights5();
 
+    [[nodiscard]] constexpr std::array<uint16_t, 256> build_quinary_pair_weights4() noexcept {
+        std::array<uint16_t, 256> out{};
+        for (std::size_t a = 0; a < 16; ++a) {
+            for (std::size_t b = 0; b < 16; ++b) {
+                out[(a << 4) | b] = static_cast<uint16_t>(quinary_weights4[a] + quinary_weights4[b]);
+            }
+        }
+        return out;
+    }
+
+    [[nodiscard]] constexpr std::array<uint16_t, 1024> build_quinary_pair_weights5() noexcept {
+        std::array<uint16_t, 1024> out{};
+        for (std::size_t a = 0; a < 32; ++a) {
+            for (std::size_t b = 0; b < 32; ++b) {
+                out[(a << 5) | b] = static_cast<uint16_t>(quinary_weights5[a] + quinary_weights5[b]);
+            }
+        }
+        return out;
+    }
+
+    inline constexpr auto quinary_pair_weights4 = build_quinary_pair_weights4();
+    inline constexpr auto quinary_pair_weights5 = build_quinary_pair_weights5();
+
     [[nodiscard]] constexpr uint32_t pack_quinary_chunk(const uint32_t index, const uint32_t used) noexcept {
         return index | (used << 24);
     }
@@ -166,28 +189,22 @@ namespace zeta::holdem::lookup {
         const uint16_t fours
     ) noexcept {
         const auto code0 = static_cast<std::size_t>(
-            quinary_weights4[ones & 0x0f]
-            + quinary_weights4[twos & 0x0f]
-            + quinary_weights4[threes & 0x0f]
-            + quinary_weights4[fours & 0x0f]
+            quinary_pair_weights4[((ones & 0x0f) << 4) | (twos & 0x0f)]
+            + quinary_pair_weights4[((threes & 0x0f) << 4) | (fours & 0x0f)]
         );
         const auto chunk0 = quinary_chunk0[7][code0];
         const auto remaining1 = 7 - quinary_chunk_used(chunk0);
 
         const auto code1 = static_cast<std::size_t>(
-            quinary_weights4[(ones >> 4) & 0x0f]
-            + quinary_weights4[(twos >> 4) & 0x0f]
-            + quinary_weights4[(threes >> 4) & 0x0f]
-            + quinary_weights4[(fours >> 4) & 0x0f]
+            quinary_pair_weights4[(((ones >> 4) & 0x0f) << 4) | ((twos >> 4) & 0x0f)]
+            + quinary_pair_weights4[(((threes >> 4) & 0x0f) << 4) | ((fours >> 4) & 0x0f)]
         );
         const auto chunk1 = quinary_chunk1[remaining1][code1];
         const auto remaining2 = remaining1 - quinary_chunk_used(chunk1);
 
         const auto code2 = static_cast<std::size_t>(
-            quinary_weights5[(ones >> 8) & 0x1f]
-            + quinary_weights5[(twos >> 8) & 0x1f]
-            + quinary_weights5[(threes >> 8) & 0x1f]
-            + quinary_weights5[(fours >> 8) & 0x1f]
+            quinary_pair_weights5[(((ones >> 8) & 0x1f) << 5) | ((twos >> 8) & 0x1f)]
+            + quinary_pair_weights5[(((threes >> 8) & 0x1f) << 5) | ((fours >> 8) & 0x1f)]
         );
         const auto chunk2 = quinary_chunk2[remaining2][code2];
 

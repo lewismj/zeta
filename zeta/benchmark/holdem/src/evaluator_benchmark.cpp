@@ -1,6 +1,9 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <initializer_list>
 #include <iostream>
 #include <numeric>
@@ -16,6 +19,7 @@
 namespace {
     constexpr std::size_t evaluator_sample_hands = 200000;
     constexpr std::size_t corpus_permutations = 8;
+    constexpr int benchmark_repetitions = 5;
     constexpr std::int64_t all_seven_card_hands = 133784560;
 
     [[nodiscard]] std::vector<zeta::card_mask> build_random_hands(const std::size_t hand_count, const uint64_t seed) {
@@ -355,6 +359,180 @@ namespace {
         state.SetItemsProcessed(state.iterations() * all_seven_card_hands);
         add_common_counters(state, sink);
     }
+
+    struct summary_stats {
+        double mean_ns{};
+        double median_ns{};
+        double stddev_ns{};
+        std::size_t samples{};
+    };
+
+    [[nodiscard]] summary_stats summarize_samples(std::vector<double> samples) {
+        std::sort(samples.begin(), samples.end());
+        const auto n = samples.size();
+        const double mean = std::accumulate(samples.begin(), samples.end(), 0.0) / static_cast<double>(n);
+        const double median = (n % 2 == 0)
+            ? 0.5 * (samples[(n / 2) - 1] + samples[n / 2])
+            : samples[n / 2];
+        double variance = 0.0;
+        for (const auto sample : samples) {
+            const double delta = sample - mean;
+            variance += delta * delta;
+        }
+        variance /= static_cast<double>(n);
+        return summary_stats{
+            .mean_ns = mean,
+            .median_ns = median,
+            .stddev_ns = std::sqrt(variance),
+            .samples = n
+        };
+    }
+
+    template<typename Fn>
+    [[nodiscard]] summary_stats measure_summary_samples(const std::size_t operations, Fn&& run_sample) {
+        std::vector<double> samples;
+        samples.reserve(benchmark_repetitions);
+        std::uint64_t sink = 0;
+        for (int sample = 0; sample < benchmark_repetitions; ++sample) {
+            const auto start = std::chrono::steady_clock::now();
+            run_sample(sink, sample);
+            const auto stop = std::chrono::steady_clock::now();
+            benchmark::DoNotOptimize(sink);
+
+            const auto elapsed_ns = std::chrono::duration<double, std::nano>(stop - start).count();
+            samples.push_back(elapsed_ns / static_cast<double>(operations));
+        }
+        return summarize_samples(std::move(samples));
+    }
+
+    void print_summary_row(
+        const char* label,
+        const char* unit,
+        const summary_stats stats
+    ) {
+        if (stats.samples == 0) {
+            return;
+        }
+
+        const double throughput_m_per_s = stats.mean_ns > 0.0 ? 1000.0 / stats.mean_ns : 0.0;
+        std::cout << std::left << std::setw(28) << label
+                  << std::right << std::setw(10) << std::fixed << std::setprecision(3) << stats.mean_ns
+                  << " +/- " << std::setw(8) << stats.stddev_ns
+                  << " ns/" << std::left << std::setw(8) << unit
+                  << std::right << std::setw(10) << std::setprecision(3) << throughput_m_per_s
+                  << " M/s"
+                  << "  median " << std::setprecision(3) << stats.median_ns
+                  << "  n=" << stats.samples << "\n";
+    }
+
+    void print_benchmark_summary() {
+        const auto& d = data();
+        std::cout << "\nSummary (mean +/- stddev, "
+                  << benchmark_repetitions << " hidden samples):\n";
+        std::cout << std::left << std::setw(28) << "benchmark"
+                  << std::right << std::setw(10) << "mean"
+                  << " +/- " << std::setw(8) << "stddev"
+                  << " " << std::left << std::setw(11) << "unit"
+                  << std::right << std::setw(10) << "throughput"
+                  << "  median\n";
+
+        print_summary_row("random 7-card eval", "eval", measure_summary_samples(d.random_hands.size(), [&](std::uint64_t& sink, const int sample) {
+            const auto& hands = d.random_hand_corpora[static_cast<std::size_t>(sample) % d.random_hand_corpora.size()];
+            for (const auto hand : hands) {
+                benchmark::DoNotOptimize(sink += zeta::holdem::evaluate(hand).value);
+            }
+        }));
+        print_summary_row("adversarial 7-card eval", "eval", measure_summary_samples(d.adversarial_hands.size(), [&](std::uint64_t& sink, const int sample) {
+            const auto& hands = d.adversarial_corpora[static_cast<std::size_t>(sample) % d.adversarial_corpora.size()];
+            for (const auto hand : hands) {
+                benchmark::DoNotOptimize(sink += zeta::holdem::evaluate(hand).value);
+            }
+        }));
+        print_summary_row("precomputed masks eval", "eval", measure_summary_samples(d.random_masks.size(), [&](std::uint64_t& sink, const int) {
+            for (const auto& masks : d.random_masks) {
+                benchmark::DoNotOptimize(sink += zeta::holdem::evaluate(masks).value);
+            }
+        }));
+        print_summary_row("exhaustive 7-card eval", "eval", measure_summary_samples(static_cast<std::size_t>(all_seven_card_hands), [&](std::uint64_t& sink, const int) {
+            for (int c0 = 0; c0 < 46; ++c0) {
+                const auto b0 = zeta::card_mask{1} << c0;
+                for (int c1 = c0 + 1; c1 < 47; ++c1) {
+                    const auto b1 = b0 | (zeta::card_mask{1} << c1);
+                    for (int c2 = c1 + 1; c2 < 48; ++c2) {
+                        const auto b2 = b1 | (zeta::card_mask{1} << c2);
+                        for (int c3 = c2 + 1; c3 < 49; ++c3) {
+                            const auto b3 = b2 | (zeta::card_mask{1} << c3);
+                            for (int c4 = c3 + 1; c4 < 50; ++c4) {
+                                const auto b4 = b3 | (zeta::card_mask{1} << c4);
+                                for (int c5 = c4 + 1; c5 < 51; ++c5) {
+                                    const auto b5 = b4 | (zeta::card_mask{1} << c5);
+                                    for (int c6 = c5 + 1; c6 < 52; ++c6) {
+                                        const auto hand = b5 | (zeta::card_mask{1} << c6);
+                                        benchmark::DoNotOptimize(sink += zeta::holdem::evaluate(hand).value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }));
+        print_summary_row("isolated quinary index", "index", measure_summary_samples(d.non_flush_masks.size(), [&](std::uint64_t& sink, const int) {
+            for (const auto& masks : d.non_flush_masks) {
+                benchmark::DoNotOptimize(sink += zeta::holdem::non_flush_quinary_index(masks));
+            }
+        }));
+        print_summary_row("quinary index layers", "index", measure_summary_samples(d.non_flush_layers.size(), [&](std::uint64_t& sink, const int) {
+            for (const auto& layers : d.non_flush_layers) {
+                benchmark::DoNotOptimize(sink += zeta::holdem::lookup::quinary_index_from_layers(
+                    layers.ones,
+                    layers.twos,
+                    layers.threes,
+                    layers.fours
+                ));
+            }
+        }));
+        print_summary_row("masks only", "hand", measure_summary_samples(d.random_hands.size(), [&](std::uint64_t& sink, const int) {
+            for (const auto hand : d.random_hands) {
+                const auto masks = zeta::holdem::suit_rank_masks(hand);
+                benchmark::DoNotOptimize(sink += static_cast<std::uint64_t>(masks.spades ^ masks.hearts ^ masks.diamonds ^ masks.clubs));
+            }
+        }));
+        print_summary_row("masks + flush check", "hand", measure_summary_samples(d.random_hands.size(), [&](std::uint64_t& sink, const int) {
+            for (const auto hand : d.random_hands) {
+                const auto masks = zeta::holdem::suit_rank_masks(hand);
+                zeta::suit flush = zeta::suit::spades;
+                if (zeta::holdem::find_flush_suit(masks, flush)) {
+                    benchmark::DoNotOptimize(sink += zeta::holdem::flush_index(masks, flush));
+                } else {
+                    benchmark::DoNotOptimize(sink += static_cast<std::uint64_t>(masks.spades ^ masks.hearts ^ masks.diamonds ^ masks.clubs));
+                }
+            }
+        }));
+        print_summary_row("masks + flush/index", "hand", measure_summary_samples(d.random_hands.size(), [&](std::uint64_t& sink, const int) {
+            for (const auto hand : d.random_hands) {
+                const auto masks = zeta::holdem::suit_rank_masks(hand);
+                zeta::suit flush = zeta::suit::spades;
+                if (zeta::holdem::find_flush_suit(masks, flush)) {
+                    benchmark::DoNotOptimize(sink += zeta::holdem::flush_index(masks, flush));
+                } else {
+                    benchmark::DoNotOptimize(sink += zeta::holdem::non_flush_quinary_index(masks));
+                }
+            }
+        }));
+        print_summary_row("dense lookup only", "lookup", measure_summary_samples(d.non_flush_indices.size(), [&](std::uint64_t& sink, const int sample) {
+            const auto& indices = d.non_flush_index_corpora[static_cast<std::size_t>(sample) % d.non_flush_index_corpora.size()];
+            for (const auto index : indices) {
+                benchmark::DoNotOptimize(sink += d.runtime_table[index].value);
+            }
+        }));
+        print_summary_row("dense table scan", "lookup", measure_summary_samples(d.lookup_indices.size(), [&](std::uint64_t& sink, const int sample) {
+            const auto& indices = d.lookup_index_corpora[static_cast<std::size_t>(sample) % d.lookup_index_corpora.size()];
+            for (const auto index : indices) {
+                benchmark::DoNotOptimize(sink += d.runtime_table[index].value);
+            }
+        }));
+    }
 }
 
 BENCHMARK(BM_DenseTableLookup)->Unit(benchmark::kNanosecond);
@@ -391,6 +569,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     benchmark::RunSpecifiedBenchmarks();
+    print_benchmark_summary();
     benchmark::Shutdown();
     return 0;
 }
