@@ -19,6 +19,13 @@ namespace zeta::holdem {
         uint16_t clubs{};
     };
 
+    struct rank_count_layers {
+        uint16_t ones{};
+        uint16_t twos{};
+        uint16_t threes{};
+        uint16_t fours{};
+    };
+
     [[nodiscard]] inline_always hand_masks suit_rank_masks(const card_mask seven) noexcept {
         return hand_masks{
             .spades = ops::suit_ranks<default_deck>(seven, suit::spades),
@@ -58,38 +65,46 @@ namespace zeta::holdem {
         std::unreachable();
     }
 
-    [[nodiscard]] inline_always uint64_t non_flush_key(const hand_masks& masks) noexcept {
+    [[nodiscard]] inline_always rank_count_layers make_rank_count_layers(const hand_masks& masks) noexcept {
         const auto s0 = masks.spades;
         const auto s1 = masks.hearts;
         const auto s2 = masks.diamonds;
         const auto s3 = masks.clubs;
-        const auto ones = static_cast<uint16_t>(s0 | s1 | s2 | s3);
-        const auto twos = static_cast<uint16_t>((s0 & s1) | (s0 & s2) | (s0 & s3)
-                                                   | (s1 & s2) | (s1 & s3) | (s2 & s3));
-        const auto threes = static_cast<uint16_t>((s0 & s1 & s2) | (s0 & s1 & s3)
-                                                      | (s0 & s2 & s3) | (s1 & s2 & s3));
-        const auto fours = static_cast<uint16_t>(s0 & s1 & s2 & s3);
 
-        return static_cast<uint64_t>(ones)
-            | (static_cast<uint64_t>(twos) << 13)
-            | (static_cast<uint64_t>(threes) << 26)
-            | (static_cast<uint64_t>(fours) << 39);
+        const auto pair01_single = static_cast<uint16_t>(s0 ^ s1);
+        const auto pair23_single = static_cast<uint16_t>(s2 ^ s3);
+        const auto pair01_double = static_cast<uint16_t>(s0 & s1);
+        const auto pair23_double = static_cast<uint16_t>(s2 & s3);
+
+        const auto split_pairs = static_cast<uint16_t>(pair01_single & pair23_single);
+        const auto fours = static_cast<uint16_t>(pair01_double & pair23_double);
+        const auto twos = static_cast<uint16_t>(pair01_double | pair23_double | split_pairs);
+        const auto threes = static_cast<uint16_t>(
+            (pair01_double & pair23_single) | (pair23_double & pair01_single) | fours
+        );
+        const auto ones = static_cast<uint16_t>(pair01_single | pair23_single | twos);
+
+        return rank_count_layers{
+            .ones = ones,
+            .twos = twos,
+            .threes = threes,
+            .fours = fours
+        };
+    }
+
+    [[nodiscard]] inline_always uint64_t non_flush_key(const hand_masks& masks) noexcept {
+        const auto layers = make_rank_count_layers(masks);
+
+        return static_cast<uint64_t>(layers.ones)
+            | (static_cast<uint64_t>(layers.twos) << 13)
+            | (static_cast<uint64_t>(layers.threes) << 26)
+            | (static_cast<uint64_t>(layers.fours) << 39);
     }
 
     [[nodiscard]] inline_always std::size_t non_flush_quinary_index(const hand_masks& masks) noexcept {
-        const auto s0 = masks.spades;
-        const auto s1 = masks.hearts;
-        const auto s2 = masks.diamonds;
-        const auto s3 = masks.clubs;
+        const auto layers = make_rank_count_layers(masks);
 
-        const auto ones = static_cast<uint16_t>(s0 | s1 | s2 | s3);
-        const auto twos = static_cast<uint16_t>((s0 & s1) | (s0 & s2) | (s0 & s3)
-                                                   | (s1 & s2) | (s1 & s3) | (s2 & s3));
-        const auto threes = static_cast<uint16_t>((s0 & s1 & s2) | (s0 & s1 & s3)
-                                                      | (s0 & s2 & s3) | (s1 & s2 & s3));
-        const auto fours = static_cast<uint16_t>(s0 & s1 & s2 & s3);
-
-        return lookup::quinary_index_from_layers(ones, twos, threes, fours);
+        return lookup::quinary_index_from_layers(layers.ones, layers.twos, layers.threes, layers.fours);
     }
 
 

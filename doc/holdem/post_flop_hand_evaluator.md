@@ -86,13 +86,25 @@ const uint16_t s0 = masks.spades;
 const uint16_t s1 = masks.hearts;
 const uint16_t s2 = masks.diamonds;
 const uint16_t s3 = masks.clubs;
-const uint16_t ones   = s0 | s1 | s2 | s3;
-const uint16_t twos   = (s0 & s1) | (s0 & s2) | (s0 & s3)
-                      | (s1 & s2) | (s1 & s3) | (s2 & s3);
-const uint16_t threes = (s0 & s1 & s2) | (s0 & s1 & s3)
-                      | (s0 & s2 & s3) | (s1 & s2 & s3);
-const uint16_t fours  = s0 & s1 & s2 & s3;
+
+const uint16_t pair01_single = s0 ^ s1;
+const uint16_t pair23_single = s2 ^ s3;
+const uint16_t pair01_double = s0 & s1;
+const uint16_t pair23_double = s2 & s3;
+
+const uint16_t split_pairs = pair01_single & pair23_single;
+const uint16_t fours   = pair01_double & pair23_double;
+const uint16_t twos    = pair01_double | pair23_double | split_pairs;
+const uint16_t threes  = (pair01_double & pair23_single)
+                       | (pair23_double & pair01_single)
+                       | fours;
+const uint16_t ones    = pair01_single | pair23_single | twos;
 ```
+
+This is a carry-save-style threshold network over the four suit bitboards. It
+produces the same `>= 1`, `>= 2`, `>= 3`, and `>= 4` rank layers as the direct
+pairwise/triple/quad expressions, but with fewer wide Boolean terms in the
+runtime path.
 
 Pack to a canonical key:
 
@@ -186,6 +198,7 @@ left as literals, while the layout is documented here:
 | `5` | Quinary radix for rank counts `0..4`; also the final chunk width. |
 | `625` | `5^4`, the number of possible codes for a 4-rank chunk. |
 | `3125` | `5^5`, the number of possible codes for a 5-rank chunk. |
+| `2` | Pair width used by the carry-save layer builder and pair-weight tables. |
 | `256` | Pair-weight table entries for two 4-bit layer fields. |
 | `1024` | Pair-weight table entries for two 5-bit layer fields. |
 | `24` | Low-bit width of the packed chunk index contribution. The high byte stores cards used. |
