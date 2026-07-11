@@ -1,3 +1,4 @@
+#define BOOST_TEST_MODULE zeta_holdem_tests
 #include <boost/test/unit_test.hpp>
 
 #include <initializer_list>

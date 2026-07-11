@@ -132,22 +132,6 @@ namespace {
             && seen.size() == rank.size();
     }
 
-    [[nodiscard]] std::size_t quinary_index_from_key(const uint64_t key) noexcept {
-        std::array<uint8_t, 13> counts{};
-        const auto ones = static_cast<uint16_t>(key);
-        const auto twos = static_cast<uint16_t>(key >> 13);
-        const auto threes = static_cast<uint16_t>(key >> 26);
-        const auto fours = static_cast<uint16_t>(key >> 39);
-        for (std::size_t rank = 0; rank < counts.size(); ++rank) {
-            const auto bit = static_cast<uint16_t>(1u << rank);
-            counts[rank] = static_cast<uint8_t>(((ones & bit) != 0)
-                + ((twos & bit) != 0)
-                + ((threes & bit) != 0)
-                + ((fours & bit) != 0));
-        }
-        return zeta::holdem::lookup::quinary_index_from_counts(counts);
-    }
-
     template<typename Table>
     void emit_chunk_table(std::ofstream& os, const char* type_name, const char* table_name, const Table& table) {
         os << "const " << type_name << " " << table_name << " = {\n";
@@ -206,7 +190,7 @@ int main(int argc, char** argv) {
     std::array<zeta::holdem::hand_rank, zeta::holdem::lookup::non_flush_quinary_table_size> non_flush_dense{};
     std::vector<uint8_t> filled(non_flush_dense.size(), 0);
     for (const auto& entry : rank) {
-        const auto index = quinary_index_from_key(entry.key);
+        const auto index = zeta::holdem::lookup::quinary_index_from_key(entry.key);
         if (index >= non_flush_dense.size()) {
             std::cerr << "Quinary index out of range: " << index << "\n";
             return 3;

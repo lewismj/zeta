@@ -44,33 +44,34 @@ if(NOT Boost_FOUND)
     message(FATAL_ERROR "Boost not found.")
 endif()
 
-add_executable(zeta_core_test
-    src/test_repr.cpp
-    src/test_holdem.cpp
-)
-
-target_link_libraries(zeta_core_test
-    PRIVATE
-    zeta_core
-    zeta-holdem
-    Boost::unit_test_framework
-)
-
+add_executable(zeta_core_test src/test_repr.cpp)
+target_link_libraries(zeta_core_test PRIVATE zeta_core Boost::unit_test_framework)
 target_compile_definitions(zeta_core_test PRIVATE BOOST_TEST_DYN_LINK)
 target_compile_features(zeta_core_test PRIVATE cxx_std_23)
 
+add_executable(zeta_holdem_eval_test src/test_holdem.cpp)
+target_link_libraries(zeta_holdem_eval_test PRIVATE zeta_core zeta-holdem Boost::unit_test_framework)
+target_compile_definitions(zeta_holdem_eval_test PRIVATE BOOST_TEST_DYN_LINK)
+target_compile_features(zeta_holdem_eval_test PRIVATE cxx_std_23)
+
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta_core_test PRIVATE stdc++ m)
+    target_link_libraries(zeta_holdem_eval_test PRIVATE stdc++ m)
 endif()
 
 add_test(NAME zeta_core_test COMMAND zeta_core_test)
+add_test(NAME zeta_holdem_eval_test COMMAND zeta_holdem_eval_test)
 
 add_custom_target(zeta_test
     COMMAND ${CMAKE_CTEST_COMMAND} -C $<CONFIG> --output-on-failure --test-dir ${CMAKE_CURRENT_BINARY_DIR}
-    DEPENDS zeta_core_test
+    DEPENDS zeta_core_test zeta_holdem_eval_test
     USES_TERMINAL
     COMMENT "Running all tests in zeta/test"
 )
+
+if(TARGET zeta-check-holdem-tables)
+    add_dependencies(zeta_test zeta-check-holdem-tables)
+endif()
 
 if(WIN32)
     if(NOT DEFINED BOOST_ROOT)
@@ -96,11 +97,13 @@ if(WIN32)
     file(GLOB BOOST_TEST_DLL "${BOOST_DLL_PATH}/boost_unit_test_framework*.dll")
 
     foreach(dll IN LISTS BOOST_TEST_DLL)
-        add_custom_command(TARGET zeta_core_test POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${dll}"
-            $<TARGET_FILE_DIR:zeta_core_test>
-            COMMENT "Copying Boost.Test DLL to output directory"
-        )
+        foreach(test_target zeta_core_test zeta_holdem_eval_test)
+            add_custom_command(TARGET ${test_target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${dll}"
+                $<TARGET_FILE_DIR:${test_target}>
+                COMMENT "Copying Boost.Test DLL to output directory"
+            )
+        endforeach()
     endforeach()
 endif()

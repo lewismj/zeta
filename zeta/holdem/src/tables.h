@@ -3,9 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#ifdef ZETA_HOLDEM_ENABLE_RANK_TABLE
 #include <vector>
-#endif
 
 #include "eval.h"
 
@@ -97,6 +95,10 @@ namespace zeta::holdem::lookup {
     using quinary_chunk4_table = std::array<std::array<uint32_t, 625>, 8>;
     using quinary_chunk5_table = std::array<std::array<uint32_t, 3125>, 8>;
 
+    extern const quinary_chunk4_table quinary_chunk0;
+    extern const quinary_chunk4_table quinary_chunk1;
+    extern const quinary_chunk5_table quinary_chunk2;
+
     template<std::size_t StartRank, std::size_t Len>
     [[nodiscard]] constexpr std::array<std::array<uint32_t, (Len == 4 ? 625 : 3125)>, 8> build_quinary_chunk_table() noexcept {
         std::array<std::array<uint32_t, (Len == 4 ? 625 : 3125)>, 8> out{};
@@ -135,13 +137,53 @@ namespace zeta::holdem::lookup {
         return index;
     }
 
+    [[nodiscard]] inline_always std::size_t quinary_index_from_layers(
+        const uint16_t ones,
+        const uint16_t twos,
+        const uint16_t threes,
+        const uint16_t fours
+    ) noexcept {
+        const auto code0 = static_cast<std::size_t>(
+            quinary_weights4[ones & 0x0f]
+            + quinary_weights4[twos & 0x0f]
+            + quinary_weights4[threes & 0x0f]
+            + quinary_weights4[fours & 0x0f]
+        );
+        const auto chunk0 = quinary_chunk0[7][code0];
+        const auto remaining1 = 7 - quinary_chunk_used(chunk0);
+
+        const auto code1 = static_cast<std::size_t>(
+            quinary_weights4[(ones >> 4) & 0x0f]
+            + quinary_weights4[(twos >> 4) & 0x0f]
+            + quinary_weights4[(threes >> 4) & 0x0f]
+            + quinary_weights4[(fours >> 4) & 0x0f]
+        );
+        const auto chunk1 = quinary_chunk1[remaining1][code1];
+        const auto remaining2 = remaining1 - quinary_chunk_used(chunk1);
+
+        const auto code2 = static_cast<std::size_t>(
+            quinary_weights5[(ones >> 8) & 0x1f]
+            + quinary_weights5[(twos >> 8) & 0x1f]
+            + quinary_weights5[(threes >> 8) & 0x1f]
+            + quinary_weights5[(fours >> 8) & 0x1f]
+        );
+        const auto chunk2 = quinary_chunk2[remaining2][code2];
+
+        return quinary_chunk_index(chunk0)
+            + quinary_chunk_index(chunk1)
+            + quinary_chunk_index(chunk2);
+    }
+
+    [[nodiscard]] inline_always std::size_t quinary_index_from_key(const uint64_t key) noexcept {
+        const auto ones = static_cast<uint16_t>(key);
+        const auto twos = static_cast<uint16_t>(key >> 13);
+        const auto threes = static_cast<uint16_t>(key >> 26);
+        const auto fours = static_cast<uint16_t>(key >> 39);
+        return quinary_index_from_layers(ones, twos, threes, fours);
+    }
+
     extern const std::array<hand_rank, (1u << 13)> flush_table;
-    extern const quinary_chunk4_table quinary_chunk0;
-    extern const quinary_chunk4_table quinary_chunk1;
-    extern const quinary_chunk5_table quinary_chunk2;
-#ifdef ZETA_HOLDEM_ENABLE_RANK_TABLE
     const std::vector<non_flush_entry>& rank_table() noexcept;
-#endif
     extern const std::array<hand_rank, non_flush_quinary_table_size> non_flush_table;
 
 }

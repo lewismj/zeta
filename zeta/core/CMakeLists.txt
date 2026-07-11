@@ -20,11 +20,15 @@ target_sources(zeta-core
         src/repr.cpp
 )
 
-# BMI2/PEXT support check
-if(NOT MSVC)
+option(ZETA_USE_PEXT "Use BMI2 PEXT/PDEP intrinsics for card bit extraction/scatter" OFF)
+if(ZETA_USE_PEXT)
     include(CheckCXXSourceCompiles)
 
-    set(CMAKE_REQUIRED_FLAGS "-mbmi2")
+    if(MSVC)
+        set(CMAKE_REQUIRED_FLAGS "")
+    else()
+        set(CMAKE_REQUIRED_FLAGS "-mbmi2")
+    endif()
     set(CMAKE_CXX_SCAN_FOR_MODULES_OLD ${CMAKE_CXX_SCAN_FOR_MODULES})
     set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
@@ -33,20 +37,26 @@ if(NOT MSVC)
         int main() {
             unsigned long long src = 0b10101010, mask = 0b1111;
             unsigned long long res = _pext_u64(src, mask);
+            unsigned long long dep = _pdep_u64(res, mask);
             (void)res;
+            (void)dep;
             return 0;
         }" PEXT_SUPPORTED)
 
     set(CMAKE_CXX_SCAN_FOR_MODULES ${CMAKE_CXX_SCAN_FOR_MODULES_OLD})
 
     if(PEXT_SUPPORTED)
-        message(STATUS "PEXT instruction is supported.")
+        message(STATUS "PEXT/PDEP intrinsics enabled.")
         target_compile_definitions(zeta-core PUBLIC USE_PEXT)
-        target_compile_options(zeta-core PUBLIC "-mbmi2")
-        target_link_options(zeta-core PUBLIC "-mbmi2")
+        if(NOT MSVC)
+            target_compile_options(zeta-core PUBLIC "-mbmi2")
+            target_link_options(zeta-core PUBLIC "-mbmi2")
+        endif()
     else()
-        message(STATUS "PEXT instruction is not supported.")
+        message(FATAL_ERROR "ZETA_USE_PEXT=ON, but BMI2 PEXT/PDEP intrinsics are not available for this compiler configuration.")
     endif()
+else()
+    message(STATUS "PEXT/PDEP intrinsics disabled.")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

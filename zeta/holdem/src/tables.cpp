@@ -236,22 +236,6 @@ namespace zeta::holdem::lookup {
             return table;
         }
 
-        [[nodiscard]] std::size_t quinary_index_from_key(const uint64_t key) noexcept {
-            std::array<uint8_t, 13> counts{};
-            const auto ones = static_cast<uint16_t>(key);
-            const auto twos = static_cast<uint16_t>(key >> 13);
-            const auto threes = static_cast<uint16_t>(key >> 26);
-            const auto fours = static_cast<uint16_t>(key >> 39);
-            for (std::size_t rank = 0; rank < counts.size(); ++rank) {
-                const auto bit = static_cast<uint16_t>(1u << rank);
-                counts[rank] = static_cast<uint8_t>(((ones & bit) != 0)
-                    + ((twos & bit) != 0)
-                    + ((threes & bit) != 0)
-                    + ((fours & bit) != 0));
-            }
-            return quinary_index_from_counts(counts);
-        }
-
     }
 
     const std::array<hand_rank, (1u << 13)> flush_table = build_flush_table();

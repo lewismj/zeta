@@ -9,16 +9,12 @@
 #include <immintrin.h>
 #endif
 
-
-#ifdef __linux__
-#include <stdalign.h>
-
-
-#define align __attribute__((aligned(64)))
-
+#if defined(_MSC_VER)
+#define inline_always __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
 #define inline_always inline __attribute__((always_inline))
 #else
-#define inline_always __forceinline
+#define inline_always inline
 #endif
 
 /*
@@ -33,10 +29,12 @@
 #define inline_hint inline
 #endif
 
-#ifdef __clang__
+#if defined(_MSC_VER)
+#define cache_align __declspec(align(64))
+#elif defined(__GNUC__) || defined(__clang__)
 #define cache_align __attribute__((aligned(64)))
 #else
-#define cache_align __declspec(align(64))
+#define cache_align alignas(64)
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
