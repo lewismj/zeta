@@ -4,6 +4,8 @@ add_library(zeta-holdem STATIC
     src/board.h
     src/eval.h
     src/evaluator.h
+    src/range.h
+    src/range_parser.h
     src/tables.h
     src/tables.generated.cpp
 )

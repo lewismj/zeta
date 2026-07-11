@@ -104,6 +104,21 @@ set(_zeta_holdem_test_cases    holdem_detects_straight_flush
     holdem_combination_masks_do_not_overlap_sample_boards
     non_flush_quinary_table_integrity
     holdem_combination_masks_are_complete_and_ordered
+    holdem_full_range_initializes_all_combo_weights
+    holdem_range_fill_and_accessors_cover_storage
+    holdem_range_normalize_and_scale
+    holdem_range_normalize_empty_and_non_positive_is_noop
+    holdem_range_remove_dead_filters_blocked_combos
+    holdem_range_remove_dead_zero_preserves_weights
+    holdem_combination_mask_helper_matches_table
+    holdem_range_parser_direct_combo_index_matches_combination_table
+    holdem_range_parser_parses_basic_hand_classes
+    holdem_range_parser_parses_plus_notation
+    holdem_range_parser_parses_dash_ranges
+    holdem_range_parser_parses_exact_combos
+    holdem_range_parser_parses_unions_whitespace_and_weights
+    holdem_range_parser_overwrites_duplicate_weights
+    holdem_range_parser_reports_invalid_syntax
     non_flush_rank_classes_exhaustively_match_dense_table_and_evaluator
     flush_rank_patterns_match_flush_table_and_evaluator
     holdem_evaluator_release_perf_smoke

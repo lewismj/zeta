@@ -11,6 +11,8 @@
 
 #include "board.h"
 #include "evaluator.h"
+#include "range.h"
+#include "range_parser.h"
 
 namespace {
 
@@ -28,6 +30,12 @@ namespace {
 
     constexpr zeta::holdem::hand_category category_of(const zeta::holdem::hand_rank r) {
         return static_cast<zeta::holdem::hand_category>(r.value >> 24);
+    }
+
+    std::size_t non_zero_combo_count(const zeta::holdem::hand_range& range) {
+        return static_cast<std::size_t>(std::count_if(range.begin(), range.end(), [](const auto weight) {
+            return weight != 0.0f;
+        }));
     }
 
     std::array<uint8_t, 13> rank_counts_from_key(const uint64_t key) {
@@ -279,6 +287,221 @@ BOOST_AUTO_TEST_CASE(holdem_combination_masks_are_complete_and_ordered) {
 
     BOOST_CHECK_EQUAL(expected.size(), 1326u);
     BOOST_CHECK_EQUAL(actual.size(), expected.size());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_full_range_initializes_all_combo_weights) {
+    const auto r = zeta::holdem::full_range(0.5f);
+
+    BOOST_CHECK_EQUAL(r.weights.size(), zeta::holdem::combination_count);
+    BOOST_CHECK(!r.empty());
+    BOOST_CHECK_EQUAL(r[0], 0.5f);
+    BOOST_CHECK_EQUAL(r[zeta::holdem::combination_count - 1], 0.5f);
+    BOOST_CHECK_CLOSE(r.total_weight(), 663.0f, 0.001);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_fill_and_accessors_cover_storage) {
+    auto r = zeta::holdem::hand_range{};
+    r.fill(0.25f);
+
+    BOOST_CHECK_EQUAL(r.data(), r.weights.data());
+    BOOST_CHECK_EQUAL(std::distance(r.begin(), r.end()), static_cast<std::ptrdiff_t>(zeta::holdem::combination_count));
+    BOOST_CHECK_EQUAL(*r.begin(), 0.25f);
+    BOOST_CHECK_EQUAL(*(r.end() - 1), 0.25f);
+    BOOST_CHECK_CLOSE(r.total_weight(), 331.5f, 0.001);
+
+    const auto& const_range = r;
+    BOOST_CHECK_EQUAL(const_range.data(), r.weights.data());
+    BOOST_CHECK_EQUAL(std::distance(const_range.begin(), const_range.end()), static_cast<std::ptrdiff_t>(zeta::holdem::combination_count));
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_normalize_and_scale) {
+    auto r = zeta::holdem::hand_range{};
+    BOOST_CHECK(r.empty());
+
+    r[0] = 2.0f;
+    r[1] = 1.0f;
+
+    r.normalize();
+    BOOST_CHECK_CLOSE(r.total_weight(), 1.0f, 0.001);
+    BOOST_CHECK_CLOSE(r[0], 2.0f / 3.0f, 0.001);
+    BOOST_CHECK_CLOSE(r[1], 1.0f / 3.0f, 0.001);
+
+    r.scale(3.0f);
+    BOOST_CHECK_CLOSE(r.total_weight(), 3.0f, 0.001);
+
+    r.clear();
+    BOOST_CHECK(r.empty());
+    BOOST_CHECK_EQUAL(r.total_weight(), 0.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_normalize_empty_and_non_positive_is_noop) {
+    auto empty = zeta::holdem::hand_range{};
+    empty.normalize();
+    BOOST_CHECK(empty.empty());
+    BOOST_CHECK_EQUAL(empty.total_weight(), 0.0f);
+
+    auto negative = zeta::holdem::hand_range{};
+    negative[0] = -2.0f;
+    negative[1] = 1.0f;
+    negative.normalize();
+    BOOST_CHECK_EQUAL(negative[0], -2.0f);
+    BOOST_CHECK_EQUAL(negative[1], 1.0f);
+    BOOST_CHECK_EQUAL(negative.total_weight(), -1.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_remove_dead_filters_blocked_combos) {
+    auto r = zeta::holdem::full_range();
+    const auto flop = card(0, 12) | card(1, 11) | card(2, 10);
+
+    r.remove_dead(flop);
+
+    std::size_t live_count = 0;
+    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+        const bool live = zeta::holdem::is_live_combo(i, flop);
+        if (live) {
+            ++live_count;
+            BOOST_CHECK_EQUAL(r[i], 1.0f);
+        } else {
+            BOOST_CHECK_EQUAL(r[i], 0.0f);
+        }
+    }
+
+    BOOST_CHECK_EQUAL(live_count, 1176u);
+    BOOST_CHECK_EQUAL(r.total_weight(), 1176.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_remove_dead_zero_preserves_weights) {
+    auto r = zeta::holdem::full_range(0.25f);
+
+    r.remove_dead(0);
+
+    BOOST_CHECK(!r.empty());
+    BOOST_CHECK_EQUAL(r[0], 0.25f);
+    BOOST_CHECK_EQUAL(r[zeta::holdem::combination_count - 1], 0.25f);
+    BOOST_CHECK_CLOSE(r.total_weight(), 331.5f, 0.001);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_combination_mask_helper_matches_table) {
+    BOOST_CHECK_EQUAL(zeta::holdem::combination_mask(0), zeta::holdem::combination_masks.front());
+    BOOST_CHECK_EQUAL(
+        zeta::holdem::combination_mask(zeta::holdem::combination_count - 1),
+        zeta::holdem::combination_masks.back()
+    );
+    BOOST_CHECK_EQUAL(zeta::ops::popcount(zeta::holdem::combination_mask(17)), 2);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_direct_combo_index_matches_combination_table) {
+    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+        const auto mask = zeta::holdem::combination_mask(i);
+        std::array<uint8_t, 2> ranks{};
+        std::array<uint8_t, 2> suits{};
+        std::size_t card_count = 0;
+
+        for (uint8_t card_index = 0; card_index < 52; ++card_index) {
+            if ((mask & (zeta::card_mask{1} << card_index)) != 0) {
+                BOOST_REQUIRE_LT(card_count, ranks.size());
+                ranks[card_count] = static_cast<uint8_t>(card_index % 13);
+                suits[card_count] = static_cast<uint8_t>(card_index / 13);
+                ++card_count;
+            }
+        }
+
+        BOOST_REQUIRE_EQUAL(card_count, 2u);
+        BOOST_CHECK_EQUAL(zeta::holdem::detail::combo_index_from_cards(ranks[0], suits[0], ranks[1], suits[1]), i);
+        BOOST_CHECK_EQUAL(zeta::holdem::detail::combo_index_from_cards(ranks[1], suits[1], ranks[0], suits[0]), i);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_basic_hand_classes) {
+    const auto aa = zeta::holdem::parse_range("AA");
+    BOOST_REQUIRE(aa.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(aa.range), 6u);
+    BOOST_CHECK_EQUAL(aa.range.total_weight(), 6.0f);
+
+    const auto aks = zeta::holdem::parse_range("AKs");
+    BOOST_REQUIRE(aks.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(aks.range), 4u);
+    BOOST_CHECK_EQUAL(aks.range.total_weight(), 4.0f);
+
+    const auto ako = zeta::holdem::parse_range("AKo");
+    BOOST_REQUIRE(ako.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(ako.range), 12u);
+    BOOST_CHECK_EQUAL(ako.range.total_weight(), 12.0f);
+
+    const auto ak = zeta::holdem::parse_range("AK");
+    BOOST_REQUIRE(ak.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(ak.range), 16u);
+    BOOST_CHECK_EQUAL(ak.range.total_weight(), 16.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_plus_notation) {
+    const auto pairs = zeta::holdem::parse_range("22+");
+    BOOST_REQUIRE(pairs.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(pairs.range), 78u);
+    BOOST_CHECK_EQUAL(pairs.range.total_weight(), 78.0f);
+
+    const auto suited_aces = zeta::holdem::parse_range("A5s+");
+    BOOST_REQUIRE(suited_aces.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(suited_aces.range), 36u);
+    BOOST_CHECK_EQUAL(suited_aces.range.total_weight(), 36.0f);
+
+    const auto offsuit_aces = zeta::holdem::parse_range("AJo+");
+    BOOST_REQUIRE(offsuit_aces.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(offsuit_aces.range), 36u);
+    BOOST_CHECK_EQUAL(offsuit_aces.range.total_weight(), 36.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_dash_ranges) {
+    const auto pairs = zeta::holdem::parse_range("55-99");
+    BOOST_REQUIRE(pairs.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(pairs.range), 30u);
+    BOOST_CHECK_EQUAL(pairs.range.total_weight(), 30.0f);
+
+    const auto suited_aces = zeta::holdem::parse_range("A5s-A9s");
+    BOOST_REQUIRE(suited_aces.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(suited_aces.range), 20u);
+    BOOST_CHECK_EQUAL(suited_aces.range.total_weight(), 20.0f);
+
+    const auto suited_kings = zeta::holdem::parse_range("KTs-KQs");
+    BOOST_REQUIRE(suited_kings.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(suited_kings.range), 12u);
+    BOOST_CHECK_EQUAL(suited_kings.range.total_weight(), 12.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_exact_combos) {
+    const auto exact = zeta::holdem::parse_range("AsKh");
+    BOOST_REQUIRE(exact.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(exact.range), 1u);
+    BOOST_CHECK_EQUAL(exact.range.total_weight(), 1.0f);
+
+    const auto exact_mask = card(0, 12) | card(1, 11);
+    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+        BOOST_CHECK_EQUAL(exact.range[i], zeta::holdem::combination_mask(i) == exact_mask ? 1.0f : 0.0f);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_unions_whitespace_and_weights) {
+    const auto parsed = zeta::holdem::parse_range(" AA, AKs:0.5, 55-66 ");
+    BOOST_REQUIRE(parsed.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(parsed.range), 22u);
+    BOOST_CHECK_EQUAL(parsed.range.total_weight(), 20.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_overwrites_duplicate_weights) {
+    const auto parsed = zeta::holdem::parse_range("AKs:0.25,AKs:0.75");
+    BOOST_REQUIRE(parsed.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(parsed.range), 4u);
+    BOOST_CHECK_EQUAL(parsed.range.total_weight(), 3.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_reports_invalid_syntax) {
+    BOOST_CHECK(!zeta::holdem::parse_range("").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AsAs").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AsKh+").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("A5s-A9o").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AA:").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AA:0.5x").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AA,,KK").ok());
 }
 
 BOOST_AUTO_TEST_CASE(non_flush_rank_classes_exhaustively_match_dense_table_and_evaluator) {

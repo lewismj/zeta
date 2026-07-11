@@ -7,12 +7,14 @@ Zeta is a C++ card-game engine and solver project.
 The core library provides the generic card representation, deck traits, suit/rank types, and bit-mask operations used by higher-level games.
 
 - [Core structures](doc/core/core_structures.md)
+- [Glossary and math notes](doc/glossary.md)
 
 ## Texas Hold'em
 
 The Hold'em module currently includes a lookup-based native 7-card evaluator and supporting card/board structures.
 
 - [Lookup-based 7-card evaluator](doc/holdem/post_flop_hand_evaluator.md)
+- [PokerStove range parser](doc/holdem/range_parser.md)
 
 ### GTO postflop analyser
 

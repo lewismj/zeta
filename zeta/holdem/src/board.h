@@ -74,9 +74,10 @@ namespace zeta::holdem {
      *   1325	2d  2c
     */
     using combination_index = uint16_t;
+    inline constexpr std::size_t combination_count = 1326;
 
-    [[nodiscard]] constexpr std::array<card_mask, 1326> make_combination_masks() noexcept {
-        std::array<card_mask, 1326> masks{};
+    [[nodiscard]] constexpr std::array<card_mask, combination_count> make_combination_masks() noexcept {
+        std::array<card_mask, combination_count> masks{};
         std::size_t idx = 0;
 
         for (int first_rank = 12; first_rank >= 0; --first_rank) {
@@ -96,7 +97,7 @@ namespace zeta::holdem {
         return masks;
     }
 
-    inline constexpr std::array<card_mask, 1326> combination_masks = make_combination_masks();
+    inline constexpr std::array<card_mask, combination_count> combination_masks = make_combination_masks();
 
 
 }
