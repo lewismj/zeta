@@ -10,6 +10,10 @@
 
 #include "tables.h"
 
+namespace zeta::holdem::lookup {
+    const std::vector<non_flush_entry>& rank_table() noexcept;
+}
+
 namespace {
     [[nodiscard]] uint64_t key_from_counts(const std::array<uint8_t, 13>& counts) noexcept {
         uint16_t ones = 0;

@@ -14,12 +14,22 @@ elseif(MSVC)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/std:c++latest>")
 endif()
 
+
+option(ZETA_NATIVE_OPTIMIZATIONS "Build with CPU-native instruction selection/tuning for local benchmarks" OFF)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options("$<$<CONFIG:Release>:-O3>")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-mpopcnt>")
+endif()
+
+if(ZETA_NATIVE_OPTIMIZATIONS AND (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    add_compile_options(
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-march=native>"
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-mtune=native>"
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-fomit-frame-pointer>"
+    )
 endif()
 
 option(ZETA_BUILD_TESTS "Build Zeta test targets" ON)

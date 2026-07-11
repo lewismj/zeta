@@ -3,7 +3,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <vector>
 
 #include "eval.h"
 
@@ -99,6 +98,39 @@ namespace zeta::holdem::lookup {
     extern const quinary_chunk4_table quinary_chunk1;
     extern const quinary_chunk5_table quinary_chunk2;
 
+#define ZETA_HOLDEM_RETURN_QUINARY_INDEX_FROM_LAYERS(ONES, TWOS, THREES, FOURS) \
+    do { \
+        const auto zeta_ones = static_cast<uint16_t>(ONES); \
+        const auto zeta_twos = static_cast<uint16_t>(TWOS); \
+        const auto zeta_threes = static_cast<uint16_t>(THREES); \
+        const auto zeta_fours = static_cast<uint16_t>(FOURS); \
+        const auto zeta_code0 = static_cast<std::size_t>( \
+            ::zeta::holdem::lookup::quinary_weights4[zeta_ones & 0x0f] \
+            + ::zeta::holdem::lookup::quinary_weights4[zeta_twos & 0x0f] \
+            + ::zeta::holdem::lookup::quinary_weights4[zeta_threes & 0x0f] \
+            + ::zeta::holdem::lookup::quinary_weights4[zeta_fours & 0x0f] \
+        ); \
+        const auto zeta_chunk0 = ::zeta::holdem::lookup::quinary_chunk0[7][zeta_code0]; \
+        const auto zeta_remaining1 = 7 - ::zeta::holdem::lookup::quinary_chunk_used(zeta_chunk0); \
+        const auto zeta_code1 = static_cast<std::size_t>( \
+            ::zeta::holdem::lookup::quinary_weights4[(zeta_ones >> 4) & 0x0f] \
+            + ::zeta::holdem::lookup::quinary_weights4[(zeta_twos >> 4) & 0x0f] \
+            + ::zeta::holdem::lookup::quinary_weights4[(zeta_threes >> 4) & 0x0f] \
+            + ::zeta::holdem::lookup::quinary_weights4[(zeta_fours >> 4) & 0x0f] \
+        ); \
+        const auto zeta_chunk1 = ::zeta::holdem::lookup::quinary_chunk1[zeta_remaining1][zeta_code1]; \
+        const auto zeta_remaining2 = zeta_remaining1 - ::zeta::holdem::lookup::quinary_chunk_used(zeta_chunk1); \
+        const auto zeta_code2 = static_cast<std::size_t>( \
+            ::zeta::holdem::lookup::quinary_weights5[(zeta_ones >> 8) & 0x1f] \
+            + ::zeta::holdem::lookup::quinary_weights5[(zeta_twos >> 8) & 0x1f] \
+            + ::zeta::holdem::lookup::quinary_weights5[(zeta_threes >> 8) & 0x1f] \
+            + ::zeta::holdem::lookup::quinary_weights5[(zeta_fours >> 8) & 0x1f] \
+        ); \
+        const auto zeta_chunk2 = ::zeta::holdem::lookup::quinary_chunk2[zeta_remaining2][zeta_code2]; \
+        return ::zeta::holdem::lookup::quinary_chunk_index(zeta_chunk0) \
+            + ::zeta::holdem::lookup::quinary_chunk_index(zeta_chunk1) \
+            + ::zeta::holdem::lookup::quinary_chunk_index(zeta_chunk2); \
+    } while (false)
     template<std::size_t StartRank, std::size_t Len>
     [[nodiscard]] constexpr std::array<std::array<uint32_t, (Len == 4 ? 625 : 3125)>, 8> build_quinary_chunk_table() noexcept {
         std::array<std::array<uint32_t, (Len == 4 ? 625 : 3125)>, 8> out{};
@@ -143,35 +175,7 @@ namespace zeta::holdem::lookup {
         const uint16_t threes,
         const uint16_t fours
     ) noexcept {
-        const auto code0 = static_cast<std::size_t>(
-            quinary_weights4[ones & 0x0f]
-            + quinary_weights4[twos & 0x0f]
-            + quinary_weights4[threes & 0x0f]
-            + quinary_weights4[fours & 0x0f]
-        );
-        const auto chunk0 = quinary_chunk0[7][code0];
-        const auto remaining1 = 7 - quinary_chunk_used(chunk0);
-
-        const auto code1 = static_cast<std::size_t>(
-            quinary_weights4[(ones >> 4) & 0x0f]
-            + quinary_weights4[(twos >> 4) & 0x0f]
-            + quinary_weights4[(threes >> 4) & 0x0f]
-            + quinary_weights4[(fours >> 4) & 0x0f]
-        );
-        const auto chunk1 = quinary_chunk1[remaining1][code1];
-        const auto remaining2 = remaining1 - quinary_chunk_used(chunk1);
-
-        const auto code2 = static_cast<std::size_t>(
-            quinary_weights5[(ones >> 8) & 0x1f]
-            + quinary_weights5[(twos >> 8) & 0x1f]
-            + quinary_weights5[(threes >> 8) & 0x1f]
-            + quinary_weights5[(fours >> 8) & 0x1f]
-        );
-        const auto chunk2 = quinary_chunk2[remaining2][code2];
-
-        return quinary_chunk_index(chunk0)
-            + quinary_chunk_index(chunk1)
-            + quinary_chunk_index(chunk2);
+        ZETA_HOLDEM_RETURN_QUINARY_INDEX_FROM_LAYERS(ones, twos, threes, fours);
     }
 
     [[nodiscard]] inline_always std::size_t quinary_index_from_key(const uint64_t key) noexcept {
@@ -183,7 +187,6 @@ namespace zeta::holdem::lookup {
     }
 
     extern const std::array<hand_rank, (1u << 13)> flush_table;
-    const std::vector<non_flush_entry>& rank_table() noexcept;
     extern const std::array<hand_rank, non_flush_quinary_table_size> non_flush_table;
 
 }

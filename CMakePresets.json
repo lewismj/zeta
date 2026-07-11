@@ -26,12 +26,13 @@
     {
       "name": "wsl-clang-release",
       "displayName": "WSL Clang Release",
-      "generator": "Unix Makefiles",
+      "generator": "Ninja",
       "binaryDir": "${sourceDir}/cmake-build-wsl-clang-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_COMPILER": "clang++",
         "ZETA_USE_PEXT": "OFF",
+        "ZETA_NATIVE_OPTIMIZATIONS": "ON",
         "ZETA_BUILD_TESTS": "ON",
         "ZETA_BUILD_TOOLS": "ON",
         "ZETA_BUILD_BENCHMARKS": "ON"

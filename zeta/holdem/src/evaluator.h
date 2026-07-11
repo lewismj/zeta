@@ -89,35 +89,7 @@ namespace zeta::holdem {
                                                       | (s0 & s2 & s3) | (s1 & s2 & s3));
         const auto fours = static_cast<uint16_t>(s0 & s1 & s2 & s3);
 
-        const auto code0 = static_cast<std::size_t>(
-            lookup::quinary_weights4[ones & 0x0f]
-            + lookup::quinary_weights4[twos & 0x0f]
-            + lookup::quinary_weights4[threes & 0x0f]
-            + lookup::quinary_weights4[fours & 0x0f]
-        );
-        const auto chunk0 = lookup::quinary_chunk0[7][code0];
-        const auto remaining1 = 7 - lookup::quinary_chunk_used(chunk0);
-
-        const auto code1 = static_cast<std::size_t>(
-            lookup::quinary_weights4[(ones >> 4) & 0x0f]
-            + lookup::quinary_weights4[(twos >> 4) & 0x0f]
-            + lookup::quinary_weights4[(threes >> 4) & 0x0f]
-            + lookup::quinary_weights4[(fours >> 4) & 0x0f]
-        );
-        const auto chunk1 = lookup::quinary_chunk1[remaining1][code1];
-        const auto remaining2 = remaining1 - lookup::quinary_chunk_used(chunk1);
-
-        const auto code2 = static_cast<std::size_t>(
-            lookup::quinary_weights5[(ones >> 8) & 0x1f]
-            + lookup::quinary_weights5[(twos >> 8) & 0x1f]
-            + lookup::quinary_weights5[(threes >> 8) & 0x1f]
-            + lookup::quinary_weights5[(fours >> 8) & 0x1f]
-        );
-        const auto chunk2 = lookup::quinary_chunk2[remaining2][code2];
-
-        return lookup::quinary_chunk_index(chunk0)
-            + lookup::quinary_chunk_index(chunk1)
-            + lookup::quinary_chunk_index(chunk2);
+        ZETA_HOLDEM_RETURN_QUINARY_INDEX_FROM_LAYERS(ones, twos, threes, fours);
     }
 
 
