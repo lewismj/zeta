@@ -98,6 +98,69 @@ namespace {
         return corpora;
     }
 
+
+    struct benchmark_options {
+        std::chrono::milliseconds min_benchmark_time{2000};
+        std::chrono::milliseconds stage_time{500};
+        std::size_t benchmark_samples = 7;
+        std::size_t evaluator_sample_hands = 200000;
+        double max_random_ns = 0.0;
+        double max_adversarial_ns = 0.0;
+        double max_index_ns = 0.0;
+    };
+
+    [[nodiscard]] bool parse_double_arg(
+        const int argc,
+        char** argv,
+        int& index,
+        const char* option,
+        double& out
+    ) {
+        if (index + 1 >= argc) {
+            std::cerr << "Missing value for " << option << "\n";
+            return false;
+        }
+        out = std::stod(argv[++index]);
+        return true;
+    }
+
+    [[nodiscard]] benchmark_options parse_options(const int argc, char** argv) {
+        benchmark_options options{};
+        for (int i = 1; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if (arg == "--quick") {
+                options.min_benchmark_time = std::chrono::milliseconds{100};
+                options.stage_time = std::chrono::milliseconds{50};
+                options.benchmark_samples = 3;
+                options.evaluator_sample_hands = 20000;
+            } else if (arg == "--max-random-ns") {
+                if (!parse_double_arg(argc, argv, i, "--max-random-ns", options.max_random_ns)) {
+                    std::exit(2);
+                }
+            } else if (arg == "--max-adversarial-ns") {
+                if (!parse_double_arg(argc, argv, i, "--max-adversarial-ns", options.max_adversarial_ns)) {
+                    std::exit(2);
+                }
+            } else if (arg == "--max-index-ns") {
+                if (!parse_double_arg(argc, argv, i, "--max-index-ns", options.max_index_ns)) {
+                    std::exit(2);
+                }
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                std::exit(2);
+            }
+        }
+        return options;
+    }
+
+    [[nodiscard]] bool threshold_failed(const char* name, const double measured, const double threshold) {
+        if (threshold <= 0.0 || measured <= threshold) {
+            return false;
+        }
+        std::cerr << "Benchmark regression: " << name << " measured " << measured
+                  << " ns, threshold " << threshold << " ns\n";
+        return true;
+    }
     struct summary_stats {
         double min{};
         double median{};
@@ -207,11 +270,12 @@ namespace {
     }
 }
 
-int main() {
+int main(const int argc, char** argv) {
+    const auto options = parse_options(argc, argv);
     const auto& runtime_table = zeta::holdem::lookup::non_flush_table;
 
-    constexpr std::chrono::seconds min_benchmark_time{2};
-    constexpr std::size_t benchmark_samples = 7;
+    const auto min_benchmark_time = options.min_benchmark_time;
+    const auto benchmark_samples = options.benchmark_samples;
     constexpr std::size_t corpus_permutations = 8;
 
     std::size_t zero_rank_count = 0;
@@ -251,7 +315,7 @@ int main() {
 
     std::cout << "lookup benchmark (dense table, shuffled index corpus):\n";
     std::cout << "samples               : " << benchmark_samples << "\n";
-    std::cout << "min time/sample (s)   : " << min_benchmark_time.count() << "\n";
+    std::cout << "min time/sample (ms)  : " << min_benchmark_time.count() << "\n";
     std::cout << "ns per lookup (median): " << lookup_series.ns_stats.median << "\n";
     std::cout << "ns per lookup (min)   : " << lookup_series.ns_stats.min << "\n";
     std::cout << "ns per lookup (stddev): " << lookup_series.ns_stats.stddev << "\n";
@@ -260,7 +324,7 @@ int main() {
     std::cout << "sink                  : " << lookup_series.sink << "\n";
     std::cout << "\n";
 
-    constexpr std::size_t evaluator_sample_hands = 200000;
+    const auto evaluator_sample_hands = options.evaluator_sample_hands;
     const auto random_hands = build_random_hands(evaluator_sample_hands, 0xC0FFEE1234ULL);
     const auto random_hand_corpora = build_shuffled_corpora(random_hands, 4, 0x51F7EDULL);
     std::size_t random_corpus_index = 0;
@@ -299,7 +363,7 @@ int main() {
     std::cout << "full evaluator benchmark (random corpus):\n";
     std::cout << "sample hands            : " << random_hands.size() << "\n";
     std::cout << "samples                 : " << benchmark_samples << "\n";
-    std::cout << "min time/sample (s)     : " << min_benchmark_time.count() << "\n";
+    std::cout << "min time/sample (ms)    : " << min_benchmark_time.count() << "\n";
     std::cout << "ns per evaluate (median): " << random_eval_series.ns_stats.median << "\n";
     std::cout << "ns per evaluate (min)   : " << random_eval_series.ns_stats.min << "\n";
     std::cout << "ns per evaluate (stddev): " << random_eval_series.ns_stats.stddev << "\n";
@@ -312,7 +376,7 @@ int main() {
     std::cout << "sample hands            : " << adversarial_hands.size() << "\n";
     std::cout << "patterns                : " << adversarial_base.size() << "\n";
     std::cout << "samples                 : " << benchmark_samples << "\n";
-    std::cout << "min time/sample (s)     : " << min_benchmark_time.count() << "\n";
+    std::cout << "min time/sample (ms)    : " << min_benchmark_time.count() << "\n";
     std::cout << "ns per evaluate (median): " << adversarial_eval_series.ns_stats.median << "\n";
     std::cout << "ns per evaluate (min)   : " << adversarial_eval_series.ns_stats.min << "\n";
     std::cout << "ns per evaluate (stddev): " << adversarial_eval_series.ns_stats.stddev << "\n";
@@ -321,8 +385,7 @@ int main() {
     std::cout << "sink                    : " << adversarial_eval_series.sink << "\n";
     std::cout << "\n";
 
-    // Diagnostic stage decomposition. "first-load" is intentionally a lower bound and
-    // does not include key compare / probe loop branch behavior.
+    // Diagnostic stage decomposition for the evaluator hot path.
     std::vector<zeta::holdem::hand_masks> non_flush_masks;
     non_flush_masks.reserve(random_hands.size());
     for (const auto hand : random_hands) {
@@ -342,7 +405,7 @@ int main() {
     auto non_flush_index_corpora = build_shuffled_corpora(non_flush_indices, 4, 0xD15EA5EULL);
     std::size_t stage_index_corpus_index = 0;
 
-    constexpr std::chrono::milliseconds stage_time{500};
+    const auto stage_time = options.stage_time;
 
     auto index_only_round = [&](std::uint64_t& sink) {
         for (const auto& masks : non_flush_masks) {
@@ -385,14 +448,6 @@ int main() {
     };
     const auto stage_index_sample = run_benchmark_sample(random_hands.size(), stage_time, stage_index_round);
 
-    auto stage_first_load_round = [&](std::uint64_t& sink) {
-        const auto& indices = non_flush_index_corpora[stage_index_corpus_index % non_flush_index_corpora.size()];
-        ++stage_index_corpus_index;
-        for (const auto index : indices) {
-            sink += runtime_table[index].value;
-        }
-    };
-    const auto stage_first_load_sample = run_benchmark_sample(non_flush_indices.size(), stage_time, stage_first_load_round);
 
     auto stage_dense_lookup_round = [&](std::uint64_t& sink) {
         const auto& indices = non_flush_index_corpora[stage_index_corpus_index % non_flush_index_corpora.size()];
@@ -411,12 +466,15 @@ int main() {
     std::cout << "masks-only ns          : " << stage_masks_sample.ns_per_op << " (sink " << stage_masks_sample.sink << ")\n";
     std::cout << "masks+flush-check ns   : " << stage_flush_sample.ns_per_op << " (sink " << stage_flush_sample.sink << ")\n";
     std::cout << "masks+flush+index ns   : " << stage_index_sample.ns_per_op << " (sink " << stage_index_sample.sink << ")\n";
-    std::cout << "dense-load lower-bound : " << stage_first_load_sample.ns_per_op << " (sink " << stage_first_load_sample.sink << ")\n";
     std::cout << "dense-lookup-only ns   : " << stage_dense_lookup_sample.ns_per_op << " (sink " << stage_dense_lookup_sample.sink << ")\n";
     std::cout << "full evaluate ns (med) : " << random_eval_series.ns_stats.median << " (sink " << random_eval_series.sink << ")\n";
     std::cout << "delta flush-check      : " << (stage_flush_sample.ns_per_op - stage_masks_sample.ns_per_op) << "\n";
     std::cout << "delta index            : " << (stage_index_sample.ns_per_op - stage_flush_sample.ns_per_op) << "\n";
     std::cout << "delta remainder        : " << (random_eval_series.ns_stats.median - stage_index_sample.ns_per_op) << "\n";
 
-    return 0;
+    const bool failed = threshold_failed("random full evaluate", random_eval_series.ns_stats.median, options.max_random_ns)
+        || threshold_failed("adversarial full evaluate", adversarial_eval_series.ns_stats.median, options.max_adversarial_ns)
+        || threshold_failed("isolated quinary index", index_only_sample.ns_per_op, options.max_index_ns);
+
+    return failed ? 1 : 0;
 }

@@ -1,4 +1,3 @@
-#define BOOST_TEST_MODULE zeta_core_tests
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>

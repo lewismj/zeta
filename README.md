@@ -36,16 +36,11 @@ Recent release benchmark results for the chunked restricted-quinary evaluator:
 
 The evaluator uses a direct flush lookup plus a dense restricted-quinary non-flush table, avoiding 21-subset 5-card enumeration.
 
-## Build presets
+## Build profiles
 
-The project includes CMake presets for MSVC and WSL/Clang release builds, with PEXT/PDEP variants for benchmarking:
+Use the CLion CMake profiles for local builds:
 
-```bash
-cmake --preset msvc-release
-cmake --build --preset msvc-release --target zeta-bench-holdem-probes
-
-cmake --preset msvc-release-pext
-cmake --build --preset msvc-release-pext --target zeta-bench-holdem-probes
-```
-
-The equivalent WSL/Clang presets are `wsl-clang-release` and `wsl-clang-release-pext`.
+- `Debug-WSL (Clang)`
+- `Release-WSL (Clang)`
+- `Debug-Visual Studio`
+- `Release-Visual Studio`

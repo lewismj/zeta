@@ -1,4 +1,3 @@
-#define BOOST_TEST_MODULE zeta_holdem_tests
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
@@ -187,6 +186,49 @@ BOOST_AUTO_TEST_CASE(holdem_ranking_ordering_is_monotonic) {
     BOOST_TEST(quads > full_house);
 }
 
+
+BOOST_AUTO_TEST_CASE(holdem_board_tracks_streets_and_mutations) {
+    zeta::holdem::board b{};
+    BOOST_CHECK(b.empty());
+    BOOST_CHECK_EQUAL(b.size(), 0);
+    BOOST_CHECK_EQUAL(static_cast<int>(b.board_street()), static_cast<int>(zeta::holdem::street::preflop));
+
+    const auto flop = card(0, 12) | card(1, 11) | card(2, 10);
+    b.add(flop);
+    BOOST_CHECK(!b.empty());
+    BOOST_CHECK_EQUAL(b.size(), 3);
+    BOOST_CHECK_EQUAL(static_cast<int>(b.board_street()), static_cast<int>(zeta::holdem::street::flop));
+    BOOST_CHECK(b.contains(12));
+    BOOST_CHECK(b.contains(24));
+    BOOST_CHECK(b.contains(36));
+
+    const auto turn = card(3, 9);
+    b.add(turn);
+    BOOST_CHECK_EQUAL(b.size(), 4);
+    BOOST_CHECK_EQUAL(static_cast<int>(b.board_street()), static_cast<int>(zeta::holdem::street::turn));
+
+    const auto river = card(0, 0);
+    b.add(river);
+    BOOST_CHECK_EQUAL(b.size(), 5);
+    BOOST_CHECK_EQUAL(static_cast<int>(b.board_street()), static_cast<int>(zeta::holdem::street::river));
+
+    b.remove(turn);
+    BOOST_CHECK_EQUAL(b.size(), 4);
+    BOOST_CHECK_EQUAL(static_cast<int>(b.board_street()), static_cast<int>(zeta::holdem::street::turn));
+    BOOST_CHECK(!b.contains(48));
+}
+
+BOOST_AUTO_TEST_CASE(holdem_combination_masks_do_not_overlap_sample_boards) {
+    const zeta::holdem::board flop{card(0, 12) | card(1, 11) | card(2, 10)};
+    std::size_t live_combos = 0;
+    for (const auto combo : zeta::holdem::combination_masks) {
+        if ((combo & flop.mask) == 0) {
+            ++live_combos;
+        }
+    }
+
+    BOOST_CHECK_EQUAL(live_combos, 1176u);
+}
 BOOST_AUTO_TEST_CASE(non_flush_quinary_table_integrity) {
     const auto& dense = zeta::holdem::lookup::non_flush_table;
     BOOST_CHECK_EQUAL(dense.size(), zeta::holdem::lookup::non_flush_quinary_table_size);

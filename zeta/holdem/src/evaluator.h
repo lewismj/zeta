@@ -89,7 +89,7 @@ namespace zeta::holdem {
                                                       | (s0 & s2 & s3) | (s1 & s2 & s3));
         const auto fours = static_cast<uint16_t>(s0 & s1 & s2 & s3);
 
-        ZETA_HOLDEM_RETURN_QUINARY_INDEX_FROM_LAYERS(ones, twos, threes, fours);
+        return lookup::quinary_index_from_layers(ones, twos, threes, fours);
     }
 
 
