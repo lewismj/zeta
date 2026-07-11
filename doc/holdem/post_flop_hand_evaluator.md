@@ -140,6 +140,11 @@ chunk tables, avoiding a 13-step dependent DP loop in the hot path. The rank
 table is therefore a dense array, with no hash, stored key, empty slots, or
 probe loop.
 
+Within each chunk, the runtime path maps the four layer masks to a quinary chunk
+code with small precomputed pair-weight tables. `ones/twos` and `threes/fours`
+are each combined as one table lookup, replacing four separate weight lookups
+with two pair lookups plus one addition per chunk.
+
 ```mermaid
 flowchart LR
     M["hand_masks<br/>spades, hearts, diamonds, clubs<br/>13 bits each"]
@@ -181,6 +186,8 @@ left as literals, while the layout is documented here:
 | `5` | Quinary radix for rank counts `0..4`; also the final chunk width. |
 | `625` | `5^4`, the number of possible codes for a 4-rank chunk. |
 | `3125` | `5^5`, the number of possible codes for a 5-rank chunk. |
+| `256` | Pair-weight table entries for two 4-bit layer fields. |
+| `1024` | Pair-weight table entries for two 5-bit layer fields. |
 | `24` | Low-bit width of the packed chunk index contribution. The high byte stores cards used. |
 | `0x0f` | Mask for a 4-rank field. |
 | `0x1f` | Mask for a 5-rank field. |
