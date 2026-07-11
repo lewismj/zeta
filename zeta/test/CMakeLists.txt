@@ -113,12 +113,20 @@ set(_zeta_holdem_test_cases    holdem_detects_straight_flush
     holdem_combination_mask_helper_matches_table
     holdem_range_parser_direct_combo_index_matches_combination_table
     holdem_range_parser_parses_basic_hand_classes
+    holdem_range_parser_all_hand_class_forms_have_expected_counts
+    holdem_range_parser_all_exact_combos_map_to_one_combo
     holdem_range_parser_parses_plus_notation
+    holdem_range_parser_parses_plus_boundaries
     holdem_range_parser_parses_dash_ranges
+    holdem_range_parser_parses_descending_and_both_suitedness_ranges
     holdem_range_parser_parses_exact_combos
     holdem_range_parser_parses_unions_whitespace_and_weights
+    holdem_range_parser_accepts_case_insensitive_input_and_decimal_weight_forms
     holdem_range_parser_overwrites_duplicate_weights
+    holdem_range_parser_overwrites_overlapping_classes
     holdem_range_parser_reports_invalid_syntax
+    holdem_range_parser_rejects_unsupported_extensions
+    holdem_range_parser_reports_expected_error_codes
     non_flush_rank_classes_exhaustively_match_dense_table_and_evaluator
     flush_rank_patterns_match_flush_table_and_evaluator
     holdem_evaluator_release_perf_smoke

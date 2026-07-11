@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <initializer_list>
+#include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -36,6 +37,40 @@ namespace {
         return static_cast<std::size_t>(std::count_if(range.begin(), range.end(), [](const auto weight) {
             return weight != 0.0f;
         }));
+    }
+
+    constexpr char rank_char(const uint8_t rank) {
+        constexpr std::array<char, 13> chars{'2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A'};
+        return chars[rank];
+    }
+
+    constexpr char suit_char(const uint8_t suit) {
+        constexpr std::array<char, 4> chars{'s', 'h', 'd', 'c'};
+        return chars[suit];
+    }
+
+    std::string hand_class_text(const uint8_t high_rank, const uint8_t low_rank, const char mode = '\0') {
+        std::string text;
+        text.push_back(rank_char(high_rank));
+        text.push_back(rank_char(low_rank));
+        if (mode != '\0') {
+            text.push_back(mode);
+        }
+        return text;
+    }
+
+    std::string exact_combo_text(
+        const uint8_t first_rank,
+        const uint8_t first_suit,
+        const uint8_t second_rank,
+        const uint8_t second_suit
+    ) {
+        std::string text;
+        text.push_back(rank_char(first_rank));
+        text.push_back(suit_char(first_suit));
+        text.push_back(rank_char(second_rank));
+        text.push_back(suit_char(second_suit));
+        return text;
     }
 
     std::array<uint8_t, 13> rank_counts_from_key(const uint64_t key) {
@@ -434,6 +469,64 @@ BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_basic_hand_classes) {
     BOOST_CHECK_EQUAL(ak.range.total_weight(), 16.0f);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_range_parser_all_hand_class_forms_have_expected_counts) {
+    for (uint8_t rank = 0; rank < 13; ++rank) {
+        const auto parsed = zeta::holdem::parse_range(hand_class_text(rank, rank));
+        BOOST_REQUIRE_MESSAGE(parsed.ok(), hand_class_text(rank, rank));
+        BOOST_CHECK_EQUAL(non_zero_combo_count(parsed.range), 6u);
+        BOOST_CHECK_EQUAL(parsed.range.total_weight(), 6.0f);
+    }
+
+    for (uint8_t high = 1; high < 13; ++high) {
+        for (uint8_t low = 0; low < high; ++low) {
+            const auto both = zeta::holdem::parse_range(hand_class_text(high, low));
+            BOOST_REQUIRE_MESSAGE(both.ok(), hand_class_text(high, low));
+            BOOST_CHECK_EQUAL(non_zero_combo_count(both.range), 16u);
+            BOOST_CHECK_EQUAL(both.range.total_weight(), 16.0f);
+
+            const auto suited = zeta::holdem::parse_range(hand_class_text(high, low, 's'));
+            BOOST_REQUIRE_MESSAGE(suited.ok(), hand_class_text(high, low, 's'));
+            BOOST_CHECK_EQUAL(non_zero_combo_count(suited.range), 4u);
+            BOOST_CHECK_EQUAL(suited.range.total_weight(), 4.0f);
+
+            const auto offsuit = zeta::holdem::parse_range(hand_class_text(high, low, 'o'));
+            BOOST_REQUIRE_MESSAGE(offsuit.ok(), hand_class_text(high, low, 'o'));
+            BOOST_CHECK_EQUAL(non_zero_combo_count(offsuit.range), 12u);
+            BOOST_CHECK_EQUAL(offsuit.range.total_weight(), 12.0f);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_all_exact_combos_map_to_one_combo) {
+    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+        const auto mask = zeta::holdem::combination_mask(i);
+        std::array<uint8_t, 2> ranks{};
+        std::array<uint8_t, 2> suits{};
+        std::size_t card_count = 0;
+
+        for (uint8_t card_index = 0; card_index < 52; ++card_index) {
+            if ((mask & (zeta::card_mask{1} << card_index)) != 0) {
+                BOOST_REQUIRE_LT(card_count, ranks.size());
+                ranks[card_count] = static_cast<uint8_t>(card_index % 13);
+                suits[card_count] = static_cast<uint8_t>(card_index / 13);
+                ++card_count;
+            }
+        }
+
+        BOOST_REQUIRE_EQUAL(card_count, 2u);
+
+        const auto forward = zeta::holdem::parse_range(exact_combo_text(ranks[0], suits[0], ranks[1], suits[1]));
+        BOOST_REQUIRE(forward.ok());
+        BOOST_CHECK_EQUAL(non_zero_combo_count(forward.range), 1u);
+        BOOST_CHECK_EQUAL(forward.range[i], 1.0f);
+
+        const auto reverse = zeta::holdem::parse_range(exact_combo_text(ranks[1], suits[1], ranks[0], suits[0]));
+        BOOST_REQUIRE(reverse.ok());
+        BOOST_CHECK_EQUAL(non_zero_combo_count(reverse.range), 1u);
+        BOOST_CHECK_EQUAL(reverse.range[i], 1.0f);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_plus_notation) {
     const auto pairs = zeta::holdem::parse_range("22+");
     BOOST_REQUIRE(pairs.ok());
@@ -451,6 +544,28 @@ BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_plus_notation) {
     BOOST_CHECK_EQUAL(offsuit_aces.range.total_weight(), 36.0f);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_plus_boundaries) {
+    const auto aces = zeta::holdem::parse_range("AA+");
+    BOOST_REQUIRE(aces.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(aces.range), 6u);
+    BOOST_CHECK_EQUAL(aces.range.total_weight(), 6.0f);
+
+    const auto ace_king_suited = zeta::holdem::parse_range("AKs+");
+    BOOST_REQUIRE(ace_king_suited.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(ace_king_suited.range), 4u);
+    BOOST_CHECK_EQUAL(ace_king_suited.range.total_weight(), 4.0f);
+
+    const auto ace_king_offsuit = zeta::holdem::parse_range("AKo+");
+    BOOST_REQUIRE(ace_king_offsuit.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(ace_king_offsuit.range), 12u);
+    BOOST_CHECK_EQUAL(ace_king_offsuit.range.total_weight(), 12.0f);
+
+    const auto ace_king_both = zeta::holdem::parse_range("AK+");
+    BOOST_REQUIRE(ace_king_both.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(ace_king_both.range), 16u);
+    BOOST_CHECK_EQUAL(ace_king_both.range.total_weight(), 16.0f);
+}
+
 BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_dash_ranges) {
     const auto pairs = zeta::holdem::parse_range("55-99");
     BOOST_REQUIRE(pairs.ok());
@@ -466,6 +581,28 @@ BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_dash_ranges) {
     BOOST_REQUIRE(suited_kings.ok());
     BOOST_CHECK_EQUAL(non_zero_combo_count(suited_kings.range), 12u);
     BOOST_CHECK_EQUAL(suited_kings.range.total_weight(), 12.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_descending_and_both_suitedness_ranges) {
+    const auto descending_pairs = zeta::holdem::parse_range("99-55");
+    BOOST_REQUIRE(descending_pairs.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(descending_pairs.range), 30u);
+    BOOST_CHECK_EQUAL(descending_pairs.range.total_weight(), 30.0f);
+
+    const auto descending_suited = zeta::holdem::parse_range("A9s-A5s");
+    BOOST_REQUIRE(descending_suited.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(descending_suited.range), 20u);
+    BOOST_CHECK_EQUAL(descending_suited.range.total_weight(), 20.0f);
+
+    const auto both = zeta::holdem::parse_range("A5-A9");
+    BOOST_REQUIRE(both.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(both.range), 80u);
+    BOOST_CHECK_EQUAL(both.range.total_weight(), 80.0f);
+
+    const auto single_pair = zeta::holdem::parse_range("QQ-QQ");
+    BOOST_REQUIRE(single_pair.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(single_pair.range), 6u);
+    BOOST_CHECK_EQUAL(single_pair.range.total_weight(), 6.0f);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_exact_combos) {
@@ -487,11 +624,35 @@ BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_unions_whitespace_and_weights) {
     BOOST_CHECK_EQUAL(parsed.range.total_weight(), 20.0f);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_range_parser_accepts_case_insensitive_input_and_decimal_weight_forms) {
+    const auto parsed = zeta::holdem::parse_range(" aa, aKs:.5, Kk:1. ");
+    BOOST_REQUIRE(parsed.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(parsed.range), 16u);
+    BOOST_CHECK_CLOSE(parsed.range.total_weight(), 14.0f, 0.001);
+}
+
 BOOST_AUTO_TEST_CASE(holdem_range_parser_overwrites_duplicate_weights) {
     const auto parsed = zeta::holdem::parse_range("AKs:0.25,AKs:0.75");
     BOOST_REQUIRE(parsed.ok());
     BOOST_CHECK_EQUAL(non_zero_combo_count(parsed.range), 4u);
     BOOST_CHECK_EQUAL(parsed.range.total_weight(), 3.0f);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_overwrites_overlapping_classes) {
+    const auto suited_later = zeta::holdem::parse_range("AK,AKs:0.25");
+    BOOST_REQUIRE(suited_later.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(suited_later.range), 16u);
+    BOOST_CHECK_CLOSE(suited_later.range.total_weight(), 13.0f, 0.001);
+
+    const auto both_later = zeta::holdem::parse_range("AKs:0.25,AK");
+    BOOST_REQUIRE(both_later.ok());
+    BOOST_CHECK_EQUAL(non_zero_combo_count(both_later.range), 16u);
+    BOOST_CHECK_EQUAL(both_later.range.total_weight(), 16.0f);
+
+    const auto zero_weight = zeta::holdem::parse_range("AA:0");
+    BOOST_REQUIRE(zero_weight.ok());
+    BOOST_CHECK(zero_weight.range.empty());
+    BOOST_CHECK_EQUAL(zero_weight.range.total_weight(), 0.0f);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_range_parser_reports_invalid_syntax) {
@@ -502,6 +663,33 @@ BOOST_AUTO_TEST_CASE(holdem_range_parser_reports_invalid_syntax) {
     BOOST_CHECK(!zeta::holdem::parse_range("AA:").ok());
     BOOST_CHECK(!zeta::holdem::parse_range("AA:0.5x").ok());
     BOOST_CHECK(!zeta::holdem::parse_range("AA,,KK").ok());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_rejects_unsupported_extensions) {
+    BOOST_CHECK(!zeta::holdem::parse_range("(AA,KK)").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AA&KK").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AA|KK").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AA!KK").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("!AsKh").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AA=0.5").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AA:50%").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("AsKx").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("BTN").ok());
+    BOOST_CHECK(!zeta::holdem::parse_range("top pair").ok());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_range_parser_reports_expected_error_codes) {
+    using enum zeta::holdem::range_parse_error_code;
+
+    BOOST_CHECK(zeta::holdem::parse_range("").error.code == expected_term);
+    BOOST_CHECK(zeta::holdem::parse_range("Z").error.code == expected_rank);
+    BOOST_CHECK(zeta::holdem::parse_range("AsA").error.code == expected_suit);
+    BOOST_CHECK(zeta::holdem::parse_range("AA,").error.code == expected_term);
+    BOOST_CHECK(zeta::holdem::parse_range("AA KK").error.code == expected_comma);
+    BOOST_CHECK(zeta::holdem::parse_range("AsAs").error.code == invalid_exact_combo);
+    BOOST_CHECK(zeta::holdem::parse_range("AsKh+").error.code == invalid_plus);
+    BOOST_CHECK(zeta::holdem::parse_range("A5s-A9o").error.code == invalid_range);
+    BOOST_CHECK(zeta::holdem::parse_range("AA:").error.code == invalid_weight);
 }
 
 BOOST_AUTO_TEST_CASE(non_flush_rank_classes_exhaustively_match_dense_table_and_evaluator) {
