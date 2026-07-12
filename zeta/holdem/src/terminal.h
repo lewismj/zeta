@@ -203,7 +203,7 @@ namespace zeta::holdem {
         }
     };
 
-    [[nodiscard]] inline reach_vector make_reach_vector(const hand_range& range) noexcept {
+    [[nodiscard]] inline_always reach_vector make_reach_vector(const hand_range& range) noexcept {
         reach_vector reach{};
         reach.weights = range.weights;
         return reach;
@@ -265,7 +265,7 @@ namespace zeta::holdem {
         bits[idx / 64u] |= uint64_t{1} << (idx % 64u);
     }
 
-    [[nodiscard]] inline combo_cards extract_combo_cards(card_mask mask) noexcept {
+    [[nodiscard]] inline_always combo_cards extract_combo_cards(card_mask mask) noexcept {
         const auto first_bit = ops::pop_lsb(mask);
         const auto second_bit = ops::pop_lsb(mask);
         assert(mask == 0);
@@ -316,7 +316,7 @@ namespace zeta::holdem {
         uint16_t bucket_card_mass_count = 0;
     };
 
-    [[nodiscard]] inline river_terminal_cache make_river_terminal_cache(const board river) noexcept {
+    [[nodiscard]] inline_always river_terminal_cache make_river_terminal_cache(const board river) noexcept {
         assert(river.board_street() == street::river);
         assert(ops::popcount(river.mask) == 5);
 
@@ -379,7 +379,7 @@ namespace zeta::holdem {
         return cache;
     }
 
-    [[nodiscard]] inline accumulator clamp_compatible_mass(const accumulator mass) noexcept {
+    [[nodiscard]] inline_always accumulator clamp_compatible_mass(const accumulator mass) noexcept {
         if (mass < 0.0 && mass > -1.0e-3) {
             return 0.0;
         }
@@ -387,7 +387,7 @@ namespace zeta::holdem {
         return mass;
     }
 
-    [[nodiscard]] inline accumulator compatible_mass_from_bucket(
+    [[nodiscard]] inline_always accumulator compatible_mass_from_bucket(
         const accumulator total,
         const accumulator first_card_mass,
         const accumulator second_card_mass,
@@ -396,7 +396,7 @@ namespace zeta::holdem {
         return clamp_compatible_mass(total - first_card_mass - second_card_mass + exact_same_combo_weight);
     }
 
-    [[nodiscard]] inline accumulator bucket_card_mass(
+    [[nodiscard]] inline_always accumulator bucket_card_mass(
         const river_reach_index& index,
         const river_rank_bucket& bucket,
         const uint8_t card
@@ -410,7 +410,7 @@ namespace zeta::holdem {
         return index.bucket_card_masses[entry_index].mass;
     }
 
-    inline void add_bucket_cards(
+    inline_always void add_bucket_cards(
         std::array<accumulator, 52>& out,
         const river_reach_index& index,
         const river_rank_bucket& bucket
@@ -421,7 +421,7 @@ namespace zeta::holdem {
         }
     }
 
-    [[nodiscard]] inline accumulator compatible_reach_mass(
+    [[nodiscard]] inline_always accumulator compatible_reach_mass(
         const river_terminal_cache& cache,
         const river_reach_index& opponent,
         const combination_index hero_combo
@@ -436,7 +436,7 @@ namespace zeta::holdem {
         );
     }
 
-    [[nodiscard]] inline accumulator compatible_mass(
+    [[nodiscard]] inline_always accumulator compatible_mass(
         const river_terminal_cache& cache,
         const river_reach_index& opponent,
         const combination_index hero_combo
@@ -444,7 +444,7 @@ namespace zeta::holdem {
         return compatible_reach_mass(cache, opponent, hero_combo);
     }
 
-    [[nodiscard]] inline river_reach_index make_river_reach_index(
+    [[nodiscard]] inline_always river_reach_index make_river_reach_index(
         const river_terminal_cache& cache,
         const reach_vector& reach
     ) noexcept {
@@ -519,7 +519,35 @@ namespace zeta::holdem {
         return index;
     }
 
-    inline void accumulate_showdown_bucket_values(
+    // Terminal evaluation workspace: owns the materialized reach indices for all active players.
+    // This is a reusable scratch object for thread-local use in CFR traversal.
+    //
+    // Architecture:
+    // - workspace owns the reach_index array (large: ~129 KB per player)
+    // - caller provides ranges (immutable input)
+    // - cache remains immutable (shared read-only)
+    // - workspace materializes ranges -> reach_index on evaluation
+    // - kernel evaluates using workspace's reach indices
+    // - workspace is reused across many node evaluations (thread-local)
+    //
+    // This avoids per-node allocations and makes lifetime/ownership explicit.
+    template <std::size_t N>
+    struct terminal_workspace {
+        std::array<river_reach_index, N> reach{};
+
+        // Materialize ranges into reach indices for the given board.
+        // Call this once per board before evaluating multiple nodes on that board.
+        void materialize(
+            const river_terminal_cache& cache,
+            const std::array<reach_vector, N>& ranges
+        ) noexcept {
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                reach[seat] = make_river_reach_index(cache, ranges[seat]);
+            }
+        }
+    };
+
+    inline_always void accumulate_showdown_bucket_values(
         terminal_result<2>& result,
         const river_terminal_cache& cache,
         const heads_up_player hero_player,
@@ -587,7 +615,7 @@ namespace zeta::holdem {
     // Heads-up (2-player) exact showdown kernel: a two-stream rank-bucket merge.
     // This is the hand-tuned fast path; the generic evaluate_showdown<N> dispatches
     // here for N == 2. reach[0] == oop, reach[1] == ip.
-    [[nodiscard]] inline terminal_result<2> evaluate_showdown_heads_up(
+    [[nodiscard]] inline_always terminal_result<2> evaluate_showdown_heads_up(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
@@ -689,7 +717,7 @@ namespace zeta::holdem {
 
     // Heads-up convenience overload: forwards a pair of reach indices to the
     // two-stream kernel (keeps existing call sites working).
-    [[nodiscard]] inline terminal_result<2> evaluate_showdown(
+    [[nodiscard]] inline_always terminal_result<2> evaluate_showdown(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
@@ -698,7 +726,7 @@ namespace zeta::holdem {
         return evaluate_showdown_heads_up(cache, oop_index, ip_index, context);
     }
 
-    [[nodiscard]] inline terminal_result<2> evaluate_showdown(
+    [[nodiscard]] inline_always terminal_result<2> evaluate_showdown(
         const river_terminal_cache& cache,
         const reach_vector& oop_reach,
         const reach_vector& ip_reach,
@@ -709,7 +737,7 @@ namespace zeta::holdem {
         return evaluate_showdown(cache, oop_index, ip_index, context);
     }
 
-    [[nodiscard]] inline terminal_values<2> evaluate_showdown_values(
+    [[nodiscard]] inline_always terminal_values<2> evaluate_showdown_values(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
@@ -718,7 +746,7 @@ namespace zeta::holdem {
         return evaluate_showdown(cache, oop_index, ip_index, context).values;
     }
 
-    [[nodiscard]] inline terminal_values<2> evaluate_showdown_values(
+    [[nodiscard]] inline_always terminal_values<2> evaluate_showdown_values(
         const river_terminal_cache& cache,
         const reach_vector& oop_reach,
         const reach_vector& ip_reach,
@@ -727,7 +755,7 @@ namespace zeta::holdem {
         return evaluate_showdown(cache, oop_reach, ip_reach, context).values;
     }
 
-    [[nodiscard]] inline terminal_summary<2> summarize_showdown(
+    [[nodiscard]] inline_always terminal_summary<2> summarize_showdown(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
@@ -736,13 +764,62 @@ namespace zeta::holdem {
         return evaluate_showdown(cache, oop_index, ip_index, context).summary;
     }
 
-    [[nodiscard]] inline terminal_summary<2> summarize_showdown(
+    [[nodiscard]] inline_always terminal_summary<2> summarize_showdown(
         const river_terminal_cache& cache,
         const reach_vector& oop_reach,
         const reach_vector& ip_reach,
         const terminal_context<2>& context
     ) noexcept {
         return evaluate_showdown(cache, oop_reach, ip_reach, context).summary;
+    }
+
+    // Workspace-based API (preferred for CFR): caller provides ranges, workspace owns reach indices.
+    // The workspace materializes ranges on first call, then reuses for subsequent evaluations.
+    template <std::size_t N>
+    [[nodiscard]] terminal_result<N> evaluate_showdown(
+       terminal_workspace<N>& workspace,
+       const river_terminal_cache& cache,
+       const std::array<reach_vector, N>& ranges,
+       const terminal_context<N>& context
+    ) noexcept {
+       // Materialize ranges into workspace reach indices
+       workspace.materialize(cache, ranges);
+        
+       // Evaluate using the materialized indices
+       return evaluate_showdown(cache, workspace.reach, context);
+    }
+
+    // Workspace-based showdown values (convenience wrapper)
+    template <std::size_t N>
+    [[nodiscard]] terminal_values<N> evaluate_showdown_values(
+       terminal_workspace<N>& workspace,
+       const river_terminal_cache& cache,
+       const std::array<reach_vector, N>& ranges,
+       const terminal_context<N>& context
+    ) noexcept {
+       return evaluate_showdown(workspace, cache, ranges, context).values;
+    }
+
+    // Workspace-based showdown summary (convenience wrapper)
+    template <std::size_t N>
+    [[nodiscard]] terminal_summary<N> summarize_showdown(
+       terminal_workspace<N>& workspace,
+       const river_terminal_cache& cache,
+       const std::array<reach_vector, N>& ranges,
+       const terminal_context<N>& context
+    ) noexcept {
+       return evaluate_showdown(workspace, cache, ranges, context).summary;
+    }
+
+    // Heads-up workspace specialization (overload for convenience)
+    [[nodiscard]] inline_always terminal_result<2> evaluate_showdown(
+       terminal_workspace<2>& workspace,
+       const river_terminal_cache& cache,
+       const reach_vector& oop_reach,
+       const reach_vector& ip_reach,
+       const terminal_context<2>& context
+    ) noexcept {
+       return evaluate_showdown(workspace, cache, std::array<reach_vector, 2>{oop_reach, ip_reach}, context);
     }
 
     // Generic N-way fold kernel: for each active player, accumulate compatible mass
@@ -761,7 +838,7 @@ namespace zeta::holdem {
     //
     // For heads-up: this reduces exactly to the current two-stream kernel.
     template <std::size_t N>
-    [[nodiscard]] inline terminal_values<N> evaluate_fold_values_generic(
+    [[nodiscard]] inline_always terminal_values<N> evaluate_fold_values_generic(
         const river_terminal_cache& cache,
         const std::array<river_reach_index, N>& reach,
         const terminal_context<N>& context,
@@ -799,7 +876,7 @@ namespace zeta::holdem {
     }
 
     // Heads-up (2-player) fold kernel: compatible opponent mass × constant payoff.
-    [[nodiscard]] inline terminal_values<2> evaluate_fold_values_heads_up(
+    [[nodiscard]] inline_always terminal_values<2> evaluate_fold_values_heads_up(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
@@ -862,7 +939,7 @@ namespace zeta::holdem {
         }
     }
 
-    [[nodiscard]] inline terminal_values<2> evaluate_fold_values(
+    [[nodiscard]] inline_always terminal_values<2> evaluate_fold_values(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
@@ -872,7 +949,7 @@ namespace zeta::holdem {
         return evaluate_fold_values_heads_up(cache, oop_index, ip_index, context, folded);
     }
 
-    [[nodiscard]] inline terminal_values<2> evaluate_fold_values(
+    [[nodiscard]] inline_always terminal_values<2> evaluate_fold_values(
         const river_terminal_cache& cache,
         const reach_vector& oop_reach,
         const reach_vector& ip_reach,
@@ -882,6 +959,34 @@ namespace zeta::holdem {
         const auto oop_index = make_river_reach_index(cache, oop_reach);
         const auto ip_index = make_river_reach_index(cache, ip_reach);
         return evaluate_fold_values(cache, oop_index, ip_index, context, folded);
+    }
+
+    // Workspace-based fold API (preferred for CFR): caller provides ranges, workspace owns reach indices.
+    template <std::size_t N>
+    [[nodiscard]] terminal_values<N> evaluate_fold_values(
+        terminal_workspace<N>& workspace,
+        const river_terminal_cache& cache,
+        const std::array<reach_vector, N>& ranges,
+        const terminal_context<N>& context,
+        const folded_mask<N>& folded
+    ) noexcept {
+        // Materialize ranges into workspace reach indices
+        workspace.materialize(cache, ranges);
+        
+        // Evaluate using the materialized indices
+        return evaluate_fold_values(cache, workspace.reach, context, folded);
+    }
+
+    // Heads-up workspace specialization (overload for convenience)
+    [[nodiscard]] inline_always terminal_values<2> evaluate_fold_values(
+        terminal_workspace<2>& workspace,
+        const river_terminal_cache& cache,
+        const reach_vector& oop_reach,
+        const reach_vector& ip_reach,
+        const terminal_context<2>& context,
+        const heads_up_player folded
+    ) noexcept {
+        return evaluate_fold_values(workspace, cache, std::array<reach_vector, 2>{oop_reach, ip_reach}, context, folded_mask<2>::from_folded_player(folded));
     }
 
 }
