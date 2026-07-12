@@ -773,16 +773,21 @@ Steps 1–6 above (complete).
     generic fold routing. Added parity tests and dedicated benchmark
     (`BM_TerminalEngineShowdownDense`).
 
-11. **Current multiplayer kernel (sampled)** — Monte Carlo evaluation with built-in variance reduction:
+11. **Initial multiplayer kernel — variance-reduced Monte Carlo.**
     - sample opponent combos according to reach distribution
     - apply **stratified sampling** across range strata (premium / middle / air)
     - apply **importance weighting** (unbiased correction by sampling probability)
     - evaluate showdown
     - accumulate EV
 
-    This is the **current** multiplayer algorithm under the multiplayer kernel
-    family. Future implementations may be sampled, partially exact, hybrid, or
-    accelerator-backed without changing caller-facing dispatch.
+    The first multiplayer implementation uses Monte Carlo evaluation with
+    stratified and importance sampling. Future kernels may provide exact,
+    hybrid, or accelerator-backed evaluation while preserving the same
+    caller-facing dispatch interface.
+
+    **✅ Done** — implemented in `terminal_engine<N>` for `N > 2` via
+    importance-weighted stratified sampling (`evaluate_showdown_values`),
+    with multiplayer tests and terminal benchmark coverage.
 
 12. **`range_data` split views** (optional refinement for Step 15) — introduce 
     `sampling_view` (`alias_table` / CDF / strata) as a *separate* structure 
@@ -948,7 +953,7 @@ additive and shares Layers 1–2.
 - All 69 tests passing; no regression.
 - Payoff distribution (`distribute_pots`) deferred to Phase 3; structure itself is production-ready.
 
-**Next immediate step: Phase 3, Step 11 (Implement current multiplayer sampled kernel)**
+**Next immediate step: Phase 3, Step 12 (`range_data` split views, optional refinement)**
 
 ### Deferred (do not implement yet)
 

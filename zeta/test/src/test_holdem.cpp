@@ -1350,6 +1350,192 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_heads_up_fold_matches_direct_api) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_single_combo_is_exact) {
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+
+    zeta::holdem::combination_index c0 = 0;
+    zeta::holdem::combination_index c1 = 0;
+    zeta::holdem::combination_index c2 = 0;
+    bool found = false;
+    for (std::size_t i = 0; i < cache.rank_order_count && !found; ++i) {
+        c0 = cache.rank_order[i];
+        for (std::size_t j = i + 1; j < cache.rank_order_count && !found; ++j) {
+            c1 = cache.rank_order[j];
+            if ((cache.masks[c0] & cache.masks[c1]) != 0) {
+                continue;
+            }
+            for (std::size_t k = j + 1; k < cache.rank_order_count; ++k) {
+                c2 = cache.rank_order[k];
+                if ((cache.masks[c0] & cache.masks[c2]) != 0 || (cache.masks[c1] & cache.masks[c2]) != 0) {
+                    continue;
+                }
+                found = true;
+                break;
+            }
+        }
+    }
+    BOOST_REQUIRE(found);
+
+    std::array<zeta::holdem::reach_vector, 3> ranges{};
+    ranges[0][c0] = 1.0f;
+    ranges[1][c1] = 1.0f;
+    ranges[2][c2] = 1.0f;
+
+    std::array<zeta::holdem::river_reach_index, 3> reach{
+        zeta::holdem::make_river_reach_index(cache, ranges[0]),
+        zeta::holdem::make_river_reach_index(cache, ranges[1]),
+        zeta::holdem::make_river_reach_index(cache, ranges[2])
+    };
+
+    const zeta::holdem::terminal_context<3> context{
+        .gross_pot = 450.0,
+        .rake = 0.0,
+        .contribution = {150.0, 150.0, 150.0}
+    };
+
+    zeta::holdem::terminal_engine<3> engine{};
+    const auto actual = engine.evaluate_showdown_values(cache, reach, context);
+
+    const auto distributed = context.gross_pot - context.rake;
+    const std::array<zeta::holdem::rank_key, 3> ranks{
+        cache.rank_keys[c0],
+        cache.rank_keys[c1],
+        cache.rank_keys[c2]
+    };
+    auto best_rank = ranks[0];
+    for (std::size_t seat = 1; seat < 3; ++seat) {
+        if (ranks[seat] > best_rank) {
+            best_rank = ranks[seat];
+        }
+    }
+    std::size_t winners = 0;
+    for (const auto rank : ranks) {
+        if (rank == best_rank) {
+            ++winners;
+        }
+    }
+
+    const std::array<zeta::holdem::combination_index, 3> combos{c0, c1, c2};
+    for (std::size_t seat = 0; seat < 3; ++seat) {
+        const auto expected = (ranks[seat] == best_rank)
+            ? (distributed / static_cast<double>(winners)) - context.contribution[seat]
+            : -context.contribution[seat];
+        BOOST_CHECK_CLOSE(actual[seat][combos[seat]], static_cast<float>(expected), 0.001);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_stratified_importance_matches_exact_small_case) {
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+
+    zeta::holdem::combination_index hero_combo = 0;
+    zeta::holdem::combination_index opp_a = 0;
+    zeta::holdem::combination_index opp_b = 0;
+    zeta::holdem::combination_index p2_combo = 0;
+    bool found = false;
+    for (std::size_t i = 0; i < cache.rank_order_count && !found; ++i) {
+        hero_combo = cache.rank_order[i];
+        for (std::size_t j = 0; j < cache.rank_order_count && !found; ++j) {
+            opp_a = cache.rank_order[j];
+            if (opp_a == hero_combo || (cache.masks[hero_combo] & cache.masks[opp_a]) != 0) {
+                continue;
+            }
+            for (std::size_t k = j + 1; k < cache.rank_order_count && !found; ++k) {
+                opp_b = cache.rank_order[k];
+                if (opp_b == hero_combo
+                    || (cache.masks[hero_combo] & cache.masks[opp_b]) != 0
+                    || (cache.masks[opp_a] & cache.masks[opp_b]) != 0) {
+                    continue;
+                }
+                for (std::size_t m = 0; m < cache.rank_order_count; ++m) {
+                    p2_combo = cache.rank_order[m];
+                    if (p2_combo == hero_combo || p2_combo == opp_a || p2_combo == opp_b) {
+                        continue;
+                    }
+                    if ((cache.masks[p2_combo] & cache.masks[hero_combo]) != 0
+                        || (cache.masks[p2_combo] & cache.masks[opp_a]) != 0
+                        || (cache.masks[p2_combo] & cache.masks[opp_b]) != 0) {
+                        continue;
+                    }
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    BOOST_REQUIRE(found);
+
+    std::array<zeta::holdem::reach_vector, 3> ranges{};
+    ranges[0][hero_combo] = 1.0f;
+    ranges[1][opp_a] = 0.25f;
+    ranges[1][opp_b] = 0.75f;
+    ranges[2][p2_combo] = 1.0f;
+
+    std::array<zeta::holdem::river_reach_index, 3> reach{
+        zeta::holdem::make_river_reach_index(cache, ranges[0]),
+        zeta::holdem::make_river_reach_index(cache, ranges[1]),
+        zeta::holdem::make_river_reach_index(cache, ranges[2])
+    };
+
+    const zeta::holdem::terminal_context<3> context{
+        .gross_pot = 360.0,
+        .rake = 0.0,
+        .contribution = {120.0, 120.0, 120.0}
+    };
+
+    auto exact = zeta::holdem::terminal_values<3>{};
+    for (zeta::holdem::combination_index a = 0; a < zeta::holdem::combination_count; ++a) {
+        const auto wa = ranges[0][a];
+        if (wa <= 0.0f) {
+            continue;
+        }
+        for (zeta::holdem::combination_index b = 0; b < zeta::holdem::combination_count; ++b) {
+            const auto wb = ranges[1][b];
+            if (wb <= 0.0f || (cache.masks[a] & cache.masks[b]) != 0) {
+                continue;
+            }
+            for (zeta::holdem::combination_index c = 0; c < zeta::holdem::combination_count; ++c) {
+                const auto wc = ranges[2][c];
+                if (wc <= 0.0f || (cache.masks[a] & cache.masks[c]) != 0 || (cache.masks[b] & cache.masks[c]) != 0) {
+                    continue;
+                }
+
+                const std::array<zeta::holdem::rank_key, 3> ranks{cache.rank_keys[a], cache.rank_keys[b], cache.rank_keys[c]};
+                auto best_rank = ranks[0];
+                for (std::size_t seat = 1; seat < 3; ++seat) {
+                    if (ranks[seat] > best_rank) {
+                        best_rank = ranks[seat];
+                    }
+                }
+                std::size_t winners = 0;
+                for (const auto rank : ranks) {
+                    if (rank == best_rank) {
+                        ++winners;
+                    }
+                }
+
+                const auto distributed = context.gross_pot - context.rake;
+                const std::array<double, 3> payoff{
+                    (ranks[0] == best_rank) ? (distributed / static_cast<double>(winners)) - context.contribution[0] : -context.contribution[0],
+                    (ranks[1] == best_rank) ? (distributed / static_cast<double>(winners)) - context.contribution[1] : -context.contribution[1],
+                    (ranks[2] == best_rank) ? (distributed / static_cast<double>(winners)) - context.contribution[2] : -context.contribution[2]
+                };
+
+                exact[0][a] += static_cast<float>(wb * wc * payoff[0]);
+                exact[1][b] += static_cast<float>(wa * wc * payoff[1]);
+                exact[2][c] += static_cast<float>(wa * wb * payoff[2]);
+            }
+        }
+    }
+
+    zeta::holdem::terminal_engine<3> engine{};
+    const auto sampled = engine.evaluate_showdown_values(cache, reach, context, 1024);
+
+    BOOST_CHECK_CLOSE(sampled[0][hero_combo], exact[0][hero_combo], 0.5);
+    BOOST_CHECK_CLOSE(sampled[1][opp_a], exact[1][opp_a], 0.5);
+    BOOST_CHECK_CLOSE(sampled[1][opp_b], exact[1][opp_b], 0.5);
+    BOOST_CHECK_CLOSE(sampled[2][p2_combo], exact[2][p2_combo], 0.5);
+}
+
 BOOST_AUTO_TEST_CASE(holdem_combination_mask_helper_matches_table) {
     BOOST_CHECK_EQUAL(zeta::holdem::combination_mask(0), zeta::holdem::combination_masks.front());
     BOOST_CHECK_EQUAL(

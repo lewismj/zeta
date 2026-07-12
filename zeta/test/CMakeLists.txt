@@ -124,6 +124,8 @@ set(_zeta_holdem_test_cases    holdem_detects_straight_flush
     holdem_terminal_engine_dispatch_selects_kernel_family_by_player_count
     holdem_terminal_engine_heads_up_showdown_matches_direct_api
     holdem_terminal_engine_heads_up_fold_matches_direct_api
+    holdem_terminal_engine_multiplayer_single_combo_is_exact
+    holdem_terminal_engine_multiplayer_stratified_importance_matches_exact_small_case
     holdem_combination_mask_helper_matches_table
     holdem_range_parser_direct_combo_index_matches_combination_table
     holdem_range_parser_parses_basic_hand_classes

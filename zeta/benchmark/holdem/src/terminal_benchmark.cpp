@@ -18,12 +18,28 @@ namespace {
         zeta::holdem::river_terminal_cache cache{};
         zeta::holdem::reach_vector oop_reach{};
         zeta::holdem::reach_vector ip_reach{};
+        zeta::holdem::reach_vector p2_reach{};
+        zeta::holdem::reach_vector p3_reach{};
+        zeta::holdem::reach_vector p4_reach{};
+        zeta::holdem::reach_vector p5_reach{};
         std::unique_ptr<zeta::holdem::river_reach_index> oop_index{};
         std::unique_ptr<zeta::holdem::river_reach_index> ip_index{};
+        std::unique_ptr<zeta::holdem::river_reach_index> p2_index{};
+        std::unique_ptr<zeta::holdem::river_reach_index> p3_index{};
+        std::unique_ptr<zeta::holdem::river_reach_index> p4_index{};
+        std::unique_ptr<zeta::holdem::river_reach_index> p5_index{};
         std::uint16_t oop_active = 0;
         std::uint16_t ip_active = 0;
+        std::uint16_t p2_active = 0;
+        std::uint16_t p3_active = 0;
+        std::uint16_t p4_active = 0;
+        std::uint16_t p5_active = 0;
         std::uint16_t oop_buckets = 0;
         std::uint16_t ip_buckets = 0;
+        std::uint16_t p2_buckets = 0;
+        std::uint16_t p3_buckets = 0;
+        std::uint16_t p4_buckets = 0;
+        std::uint16_t p5_buckets = 0;
         std::uint64_t compatible_matchups = 0;
     };
 
@@ -37,6 +53,21 @@ namespace {
             .gross_pot = 300.0,
             .rake = 15.0,
             .contribution = {100.0, 100.0}
+        };
+        zeta::holdem::terminal_context<3> context3{
+            .gross_pot = 450.0,
+            .rake = 15.0,
+            .contribution = {150.0, 150.0, 150.0}
+        };
+        zeta::holdem::terminal_context<4> context4{
+            .gross_pot = 600.0,
+            .rake = 20.0,
+            .contribution = {150.0, 150.0, 150.0, 150.0}
+        };
+        zeta::holdem::terminal_context<6> context6{
+            .gross_pot = 900.0,
+            .rake = 30.0,
+            .contribution = {150.0, 150.0, 150.0, 150.0, 150.0, 150.0}
         };
     };
 
@@ -104,12 +135,36 @@ namespace {
         c.ip_reach = sparse_count == 0
             ? make_dense_reach(c.cache, 0xD065E100ULL + seed)
             : make_sparse_reach(c.cache, 0x5A125E10ULL + seed, sparse_count);
+        c.p2_reach = sparse_count == 0
+            ? make_dense_reach(c.cache, 0xD065E200ULL + seed)
+            : make_sparse_reach(c.cache, 0x5A125E20ULL + seed, sparse_count);
+        c.p3_reach = sparse_count == 0
+            ? make_dense_reach(c.cache, 0xD065E300ULL + seed)
+            : make_sparse_reach(c.cache, 0x5A125E30ULL + seed, sparse_count);
+        c.p4_reach = sparse_count == 0
+            ? make_dense_reach(c.cache, 0xD065E400ULL + seed)
+            : make_sparse_reach(c.cache, 0x5A125E40ULL + seed, sparse_count);
+        c.p5_reach = sparse_count == 0
+            ? make_dense_reach(c.cache, 0xD065E500ULL + seed)
+            : make_sparse_reach(c.cache, 0x5A125E50ULL + seed, sparse_count);
         c.oop_index = std::make_unique<zeta::holdem::river_reach_index>(zeta::holdem::make_river_reach_index(c.cache, c.oop_reach));
         c.ip_index = std::make_unique<zeta::holdem::river_reach_index>(zeta::holdem::make_river_reach_index(c.cache, c.ip_reach));
+        c.p2_index = std::make_unique<zeta::holdem::river_reach_index>(zeta::holdem::make_river_reach_index(c.cache, c.p2_reach));
+        c.p3_index = std::make_unique<zeta::holdem::river_reach_index>(zeta::holdem::make_river_reach_index(c.cache, c.p3_reach));
+        c.p4_index = std::make_unique<zeta::holdem::river_reach_index>(zeta::holdem::make_river_reach_index(c.cache, c.p4_reach));
+        c.p5_index = std::make_unique<zeta::holdem::river_reach_index>(zeta::holdem::make_river_reach_index(c.cache, c.p5_reach));
         c.oop_active = c.oop_index->active_count;
         c.ip_active = c.ip_index->active_count;
+        c.p2_active = c.p2_index->active_count;
+        c.p3_active = c.p3_index->active_count;
+        c.p4_active = c.p4_index->active_count;
+        c.p5_active = c.p5_index->active_count;
         c.oop_buckets = c.oop_index->unique_rank_count;
         c.ip_buckets = c.ip_index->unique_rank_count;
+        c.p2_buckets = c.p2_index->unique_rank_count;
+        c.p3_buckets = c.p3_index->unique_rank_count;
+        c.p4_buckets = c.p4_index->unique_rank_count;
+        c.p5_buckets = c.p5_index->unique_rank_count;
         for (std::uint16_t oi = 0; oi < c.oop_index->active_count; ++oi) {
             const auto oop_combo = c.oop_index->active_indices[oi];
             const auto oop_mask = c.cache.masks[oop_combo];
@@ -366,6 +421,315 @@ namespace {
         );
     }
 
+    // End-to-end engine path (range->index materialization + showdown) is benchmarked above.
+    // This isolates engine wrapper/dispatch over pre-indexed reaches to compare with raw kernel.
+    void BM_TerminalEngineShowdownDensePreindexed(benchmark::State& state) {
+        const auto& d = data();
+        const auto& cases = d.dense_cases;
+        zeta::holdem::terminal_engine<2> engine{};
+        std::uint64_t sink = 0;
+        std::uint64_t hero_combo_total = 0;
+        std::uint64_t matchup_total = 0;
+        for (const auto& c : cases) {
+            hero_combo_total += c.oop_active + c.ip_active;
+            matchup_total += c.compatible_matchups;
+        }
+        for (auto _ : state) {
+            for (const auto& c : cases) {
+                auto values = engine.evaluate_showdown_values(
+                    c.cache,
+                    *c.oop_index,
+                    *c.ip_index,
+                    d.context
+                );
+                benchmark::DoNotOptimize(values);
+                sink += c.ip_buckets;
+            }
+        }
+        benchmark::DoNotOptimize(sink);
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * hero_combo_total));
+        state.counters["compatible_matchups"] = benchmark::Counter(
+            static_cast<double>(matchup_total),
+            benchmark::Counter::kIsIterationInvariant
+        );
+        state.counters["kernel_family"] = benchmark::Counter(
+            static_cast<double>(static_cast<std::uint8_t>(zeta::holdem::terminal_engine<2>::kernel_family())),
+            benchmark::Counter::kIsIterationInvariant
+        );
+    }
+
+    // Solver-like hot path: cache + reach indexes are already materialized and reused.
+    void BM_TerminalEngineShowdownDenseCached(benchmark::State& state) {
+        const auto& d = data();
+        const auto& cases = d.dense_cases;
+        zeta::holdem::terminal_engine<2> engine{};
+        std::array<const benchmark_case*, benchmark_board_count> cached_cases{};
+        for (std::size_t i = 0; i < benchmark_board_count; ++i) {
+            cached_cases[i] = &cases[i];
+        }
+
+        std::uint64_t sink = 0;
+        std::uint64_t hero_combo_total = 0;
+        std::uint64_t matchup_total = 0;
+        for (const auto* c : cached_cases) {
+            hero_combo_total += c->oop_active + c->ip_active;
+            matchup_total += c->compatible_matchups;
+        }
+
+        for (auto _ : state) {
+            for (const auto* c : cached_cases) {
+                benchmark::DoNotOptimize(engine.evaluate_showdown_values(
+                    c->cache,
+                    *c->oop_index,
+                    *c->ip_index,
+                    d.context
+                ));
+                sink += c->oop_buckets;
+            }
+        }
+
+        benchmark::DoNotOptimize(sink);
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * hero_combo_total));
+        state.counters["compatible_matchups"] = benchmark::Counter(
+            static_cast<double>(matchup_total),
+            benchmark::Counter::kIsIterationInvariant
+        );
+        state.counters["kernel_family"] = benchmark::Counter(
+            static_cast<double>(static_cast<std::uint8_t>(zeta::holdem::terminal_engine<2>::kernel_family())),
+            benchmark::Counter::kIsIterationInvariant
+        );
+    }
+
+    void BM_RiverCFRIterationDense(benchmark::State& state) {
+        const auto& d = data();
+        const auto& cases = d.dense_cases;
+        zeta::holdem::terminal_engine<2> engine{};
+        std::array<const benchmark_case*, benchmark_board_count> cached_cases{};
+        for (std::size_t i = 0; i < benchmark_board_count; ++i) {
+            cached_cases[i] = &cases[i];
+        }
+
+        std::array<float, zeta::holdem::combination_count> oop_regret{};
+        std::array<float, zeta::holdem::combination_count> ip_regret{};
+        std::array<float, zeta::holdem::combination_count> oop_strategy_sum{};
+        std::array<float, zeta::holdem::combination_count> ip_strategy_sum{};
+
+        std::uint64_t sink = 0;
+        std::uint64_t regret_updates = 0;
+        for (const auto* c : cached_cases) {
+            regret_updates += c->oop_active + c->ip_active;
+        }
+
+        for (auto _ : state) {
+            for (const auto* c : cached_cases) {
+                auto values = engine.evaluate_showdown_values(
+                    c->cache,
+                    *c->oop_index,
+                    *c->ip_index,
+                    d.context
+                );
+                benchmark::DoNotOptimize(values);
+
+                for (std::uint16_t oi = 0; oi < c->oop_index->active_count; ++oi) {
+                    const auto combo = c->oop_index->active_indices[oi];
+                    const auto value = values[zeta::holdem::player::oop][combo];
+                    oop_regret[combo] += value;
+                    oop_strategy_sum[combo] += std::max(oop_regret[combo], 0.0f);
+                    sink += static_cast<std::uint64_t>(oop_strategy_sum[combo] > 0.0f);
+                }
+
+                for (std::uint16_t ii = 0; ii < c->ip_index->active_count; ++ii) {
+                    const auto combo = c->ip_index->active_indices[ii];
+                    const auto value = values[zeta::holdem::player::ip][combo];
+                    ip_regret[combo] += value;
+                    ip_strategy_sum[combo] += std::max(ip_regret[combo], 0.0f);
+                    sink += static_cast<std::uint64_t>(ip_strategy_sum[combo] > 0.0f);
+                }
+            }
+        }
+
+        benchmark::DoNotOptimize(oop_regret);
+        benchmark::DoNotOptimize(ip_regret);
+        benchmark::DoNotOptimize(oop_strategy_sum);
+        benchmark::DoNotOptimize(ip_strategy_sum);
+        benchmark::DoNotOptimize(sink);
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * regret_updates));
+        state.counters["terminal_calls"] = benchmark::Counter(
+            static_cast<double>(benchmark_board_count),
+            benchmark::Counter::kIsIterationInvariantRate
+        );
+        state.counters["regret_updates"] = benchmark::Counter(
+            static_cast<double>(regret_updates),
+            benchmark::Counter::kIsIterationInvariantRate
+        );
+        state.counters["strategy_updates"] = benchmark::Counter(
+            static_cast<double>(regret_updates),
+            benchmark::Counter::kIsIterationInvariantRate
+        );
+    }
+
+    void BM_RiverCFRIterationDenseParallel(benchmark::State& state) {
+        const auto& d = data();
+        const auto& cases = d.dense_cases;
+        zeta::holdem::terminal_engine<2> engine{};
+        std::array<const benchmark_case*, benchmark_board_count> cached_cases{};
+        for (std::size_t i = 0; i < benchmark_board_count; ++i) {
+            cached_cases[i] = &cases[i];
+        }
+
+        std::array<float, zeta::holdem::combination_count> oop_regret{};
+        std::array<float, zeta::holdem::combination_count> ip_regret{};
+        std::array<float, zeta::holdem::combination_count> oop_strategy_sum{};
+        std::array<float, zeta::holdem::combination_count> ip_strategy_sum{};
+
+        std::uint64_t sink = 0;
+        std::uint64_t regret_updates = 0;
+        for (const auto* c : cached_cases) {
+            regret_updates += c->oop_active + c->ip_active;
+        }
+
+        for (auto _ : state) {
+            for (const auto* c : cached_cases) {
+                auto values = engine.evaluate_showdown_values(
+                    c->cache,
+                    *c->oop_index,
+                    *c->ip_index,
+                    d.context
+                );
+                benchmark::DoNotOptimize(values);
+
+                for (std::uint16_t oi = 0; oi < c->oop_index->active_count; ++oi) {
+                    const auto combo = c->oop_index->active_indices[oi];
+                    const auto value = values[zeta::holdem::player::oop][combo];
+                    oop_regret[combo] += value;
+                    oop_strategy_sum[combo] += std::max(oop_regret[combo], 0.0f);
+                    sink += static_cast<std::uint64_t>(oop_strategy_sum[combo] > 0.0f);
+                }
+
+                for (std::uint16_t ii = 0; ii < c->ip_index->active_count; ++ii) {
+                    const auto combo = c->ip_index->active_indices[ii];
+                    const auto value = values[zeta::holdem::player::ip][combo];
+                    ip_regret[combo] += value;
+                    ip_strategy_sum[combo] += std::max(ip_regret[combo], 0.0f);
+                    sink += static_cast<std::uint64_t>(ip_strategy_sum[combo] > 0.0f);
+                }
+            }
+        }
+
+        benchmark::DoNotOptimize(oop_regret);
+        benchmark::DoNotOptimize(ip_regret);
+        benchmark::DoNotOptimize(oop_strategy_sum);
+        benchmark::DoNotOptimize(ip_strategy_sum);
+        benchmark::DoNotOptimize(sink);
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * regret_updates));
+        state.counters["threads"] = benchmark::Counter(static_cast<double>(state.threads()), benchmark::Counter::kIsIterationInvariant);
+        state.counters["terminal_calls"] = benchmark::Counter(
+            static_cast<double>(benchmark_board_count),
+            benchmark::Counter::kIsIterationInvariantRate
+        );
+        state.counters["regret_updates"] = benchmark::Counter(
+            static_cast<double>(regret_updates),
+            benchmark::Counter::kIsIterationInvariantRate
+        );
+        state.counters["strategy_updates"] = benchmark::Counter(
+            static_cast<double>(regret_updates),
+            benchmark::Counter::kIsIterationInvariantRate
+        );
+    }
+
+    void BM_TerminalEngineMultiplayerShowdownDense(benchmark::State& state) {
+        const auto& d = data();
+        const auto& cases = d.dense_cases;
+        zeta::holdem::terminal_engine<3> engine{};
+        zeta::holdem::terminal_workspace<3> workspace{};
+        std::uint64_t sink = 0;
+        std::uint64_t hero_combo_total = 0;
+        for (const auto& c : cases) {
+            hero_combo_total += c.oop_active + c.ip_active + c.p2_active;
+        }
+        for (auto _ : state) {
+            for (const auto& c : cases) {
+                auto values = engine.evaluate_showdown_values(
+                    workspace,
+                    c.cache,
+                    std::array<zeta::holdem::reach_vector, 3>{c.oop_reach, c.ip_reach, c.p2_reach},
+                    d.context3
+                );
+                benchmark::DoNotOptimize(values);
+                sink += c.p2_buckets;
+            }
+        }
+        benchmark::DoNotOptimize(sink);
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * hero_combo_total));
+        state.counters["kernel_family"] = benchmark::Counter(
+            static_cast<double>(static_cast<std::uint8_t>(zeta::holdem::terminal_engine<3>::kernel_family())),
+            benchmark::Counter::kIsIterationInvariant
+        );
+        state.counters["players"] = benchmark::Counter(3.0, benchmark::Counter::kIsIterationInvariant);
+    }
+
+    void BM_TerminalEngineMultiplayerShowdownDense4(benchmark::State& state) {
+        const auto& d = data();
+        const auto& cases = d.dense_cases;
+        zeta::holdem::terminal_engine<4> engine{};
+        zeta::holdem::terminal_workspace<4> workspace{};
+        std::uint64_t sink = 0;
+        std::uint64_t hero_combo_total = 0;
+        for (const auto& c : cases) {
+            hero_combo_total += c.oop_active + c.ip_active + c.p2_active + c.p3_active;
+        }
+        for (auto _ : state) {
+            for (const auto& c : cases) {
+                auto values = engine.evaluate_showdown_values(
+                    workspace,
+                    c.cache,
+                    std::array<zeta::holdem::reach_vector, 4>{c.oop_reach, c.ip_reach, c.p2_reach, c.p3_reach},
+                    d.context4
+                );
+                benchmark::DoNotOptimize(values);
+                sink += c.p3_buckets;
+            }
+        }
+        benchmark::DoNotOptimize(sink);
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * hero_combo_total));
+        state.counters["kernel_family"] = benchmark::Counter(
+            static_cast<double>(static_cast<std::uint8_t>(zeta::holdem::terminal_engine<4>::kernel_family())),
+            benchmark::Counter::kIsIterationInvariant
+        );
+        state.counters["players"] = benchmark::Counter(4.0, benchmark::Counter::kIsIterationInvariant);
+    }
+
+    void BM_TerminalEngineMultiplayerShowdownDense6(benchmark::State& state) {
+        const auto& d = data();
+        const auto& cases = d.dense_cases;
+        zeta::holdem::terminal_engine<6> engine{};
+        zeta::holdem::terminal_workspace<6> workspace{};
+        std::uint64_t sink = 0;
+        std::uint64_t hero_combo_total = 0;
+        for (const auto& c : cases) {
+            hero_combo_total += c.oop_active + c.ip_active + c.p2_active + c.p3_active + c.p4_active + c.p5_active;
+        }
+        for (auto _ : state) {
+            for (const auto& c : cases) {
+                auto values = engine.evaluate_showdown_values(
+                    workspace,
+                    c.cache,
+                    std::array<zeta::holdem::reach_vector, 6>{c.oop_reach, c.ip_reach, c.p2_reach, c.p3_reach, c.p4_reach, c.p5_reach},
+                    d.context6
+                );
+                benchmark::DoNotOptimize(values);
+                sink += c.p5_buckets;
+            }
+        }
+        benchmark::DoNotOptimize(sink);
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * hero_combo_total));
+        state.counters["kernel_family"] = benchmark::Counter(
+            static_cast<double>(static_cast<std::uint8_t>(zeta::holdem::terminal_engine<6>::kernel_family())),
+            benchmark::Counter::kIsIterationInvariant
+        );
+        state.counters["players"] = benchmark::Counter(6.0, benchmark::Counter::kIsIterationInvariant);
+    }
+
 }
 
 BENCHMARK(BM_RiverTerminalCacheConstruction)->Unit(benchmark::kNanosecond);
@@ -376,6 +740,13 @@ BENCHMARK(BM_TerminalFoldValuesSparse)->Arg(50)->Arg(100)->Arg(300)->Unit(benchm
 BENCHMARK(BM_TerminalShowdownValuesDense)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalShowdownValuesSparse)->Arg(50)->Arg(100)->Arg(300)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalEngineShowdownDense)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_TerminalEngineShowdownDensePreindexed)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_TerminalEngineShowdownDenseCached)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_RiverCFRIterationDense)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_RiverCFRIterationDenseParallel)->ThreadRange(1, 8)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_TerminalEngineMultiplayerShowdownDense)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_TerminalEngineMultiplayerShowdownDense4)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_TerminalEngineMultiplayerShowdownDense6)->Unit(benchmark::kNanosecond);
 
 int main(int argc, char** argv) {
     std::cout << "terminal evaluator : river cache + reach index + rank-sweep showdown/fold\n";
