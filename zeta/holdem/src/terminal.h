@@ -620,6 +620,8 @@ namespace zeta::holdem {
         index.board_hash = cache.board_hash;
 
         std::array<accumulator, 52> bucket_card_accumulator{};
+        std::array<uint8_t, 52> bucket_touched_cards{};
+        uint8_t bucket_touched_count = 0;
         bool have_bucket = false;
         uint16_t current_bucket = 0;
 
@@ -631,9 +633,11 @@ namespace zeta::holdem {
             auto& bucket = index.rank_buckets[current_bucket];
             bucket.end = index.active_count;
             bucket.card_mass_begin = index.bucket_card_mass_count;
-            for (uint8_t card = 0; card < bucket_card_accumulator.size(); ++card) {
+            for (uint8_t touched_idx = 0; touched_idx < bucket_touched_count; ++touched_idx) {
+                const auto card = bucket_touched_cards[touched_idx];
                 const auto mass = bucket_card_accumulator[card];
                 if (mass <= 0.0) {
+                    bucket_card_accumulator[card] = 0.0;
                     continue;
                 }
                 assert(index.bucket_card_mass_count < index.bucket_card_masses.size());
@@ -643,9 +647,10 @@ namespace zeta::holdem {
                     .card = card,
                     .mass = static_cast<combo_weight>(mass)
                 };
+                bucket_card_accumulator[card] = 0.0;
             }
             bucket.card_mass_end = index.bucket_card_mass_count;
-            bucket_card_accumulator.fill(0.0);
+            bucket_touched_count = 0;
         };
 
         for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
@@ -678,6 +683,13 @@ namespace zeta::holdem {
             const auto [first, second] = cache.cards[combo_idx];
             index.mass_by_card[first] += weight;
             index.mass_by_card[second] += weight;
+
+            if (bucket_card_accumulator[first] == 0.0) {
+                bucket_touched_cards[bucket_touched_count++] = first;
+            }
+            if (bucket_card_accumulator[second] == 0.0) {
+                bucket_touched_cards[bucket_touched_count++] = second;
+            }
             bucket_card_accumulator[first] += weight;
             bucket_card_accumulator[second] += weight;
         }

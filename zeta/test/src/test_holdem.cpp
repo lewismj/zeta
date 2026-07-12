@@ -1303,11 +1303,13 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_heads_up_showdown_matches_direct_api
     BOOST_REQUIRE(assigned > 0);
 
     const auto context = zeta::holdem::make_heads_up_context(300.0, 15.0, 100.0, 100.0);
-    const auto expected = zeta::holdem::evaluate_showdown(cache, oop, ip, context);
+    auto reach = std::make_unique<std::array<zeta::holdem::river_reach_index, 2>>();
+    (*reach)[0] = zeta::holdem::make_river_reach_index(cache, oop);
+    (*reach)[1] = zeta::holdem::make_river_reach_index(cache, ip);
+    const auto expected = zeta::holdem::evaluate_showdown(cache, (*reach)[0], (*reach)[1], context);
 
     zeta::holdem::terminal_engine<2> engine{};
-    auto workspace = std::make_unique<zeta::holdem::terminal_workspace<2>>();
-    const auto actual = engine.evaluate_showdown(*workspace, cache, oop, ip, context);
+    const auto actual = engine.evaluate_showdown(cache, *reach, context);
 
     for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
         BOOST_CHECK_EQUAL(actual.values[zeta::holdem::player::oop][i], expected.values[zeta::holdem::player::oop][i]);
@@ -1333,13 +1335,14 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_heads_up_fold_matches_direct_api) {
 
     const auto context = zeta::holdem::make_heads_up_context(100.0, 0.0, 50.0, 50.0);
     const auto expected = zeta::holdem::evaluate_fold_values(cache, oop, ip, context, zeta::holdem::heads_up_player::ip);
+    auto reach = std::make_unique<std::array<zeta::holdem::river_reach_index, 2>>();
+    (*reach)[0] = zeta::holdem::make_river_reach_index(cache, oop);
+    (*reach)[1] = zeta::holdem::make_river_reach_index(cache, ip);
 
     zeta::holdem::terminal_engine<2> engine{};
-    auto workspace = std::make_unique<zeta::holdem::terminal_workspace<2>>();
     zeta::holdem::folded_mask<2> folded{};
     folded.ip_folded = true;
-    const std::array<zeta::holdem::reach_vector, 2> ranges{oop, ip};
-    const auto actual = engine.evaluate_fold_values(*workspace, cache, ranges, context, folded);
+    const auto actual = engine.evaluate_fold_values(cache, *reach, context, folded);
 
     for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
         BOOST_CHECK_EQUAL(actual[zeta::holdem::player::oop][i], expected[zeta::holdem::player::oop][i]);
