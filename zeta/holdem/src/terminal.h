@@ -12,10 +12,15 @@
 
 namespace zeta::holdem {
 
-    enum class player : uint8_t {
+    // Heads-up seat identity. Only meaningful for 2-player terminals; N-way
+    // kernels address seats by index (0..N-1). `player` is retained as a
+    // back-compat alias so existing call sites compile unchanged.
+    enum class heads_up_player : uint8_t {
         oop,
         ip
     };
+
+    using player = heads_up_player;
 
     using terminal_value = float;
     using accumulator = double;
@@ -37,6 +42,11 @@ namespace zeta::holdem {
         utility rake = 0.0;
         std::array<utility, N> contribution{};
     };
+
+    // Zero-cost clarity alias: heads-up accounting is exactly terminal_context<2>
+    // (contribution[0]=oop, contribution[1]=ip). No separate type is needed; this
+    // keeps the single templated context boundary while naming the heads-up intent.
+    using heads_up_context = terminal_context<2>;
 
     struct terminal_payoff {
         utility oop = 0.0;
@@ -72,8 +82,8 @@ namespace zeta::holdem {
         };
     }
 
-    [[nodiscard]] constexpr std::size_t player_index(const player p) noexcept {
-        return p == player::oop ? 0u : 1u;
+    [[nodiscard]] constexpr std::size_t player_index(const heads_up_player p) noexcept {
+        return p == heads_up_player::oop ? 0u : 1u;
     }
 
     using value_array = std::array<terminal_value, combination_count>;
@@ -86,12 +96,12 @@ namespace zeta::holdem {
     struct terminal_values {
         std::array<value_array, N> player_values{};
 
-        // Heads-up ergonomic access by player enum (valid while N >= 2).
-        [[nodiscard]] constexpr const value_array& operator[](const player p) const noexcept {
+        // Heads-up ergonomic access by seat enum (valid while N >= 2).
+        [[nodiscard]] constexpr const value_array& operator[](const heads_up_player p) const noexcept {
             return player_values[player_index(p)];
         }
 
-        [[nodiscard]] constexpr value_array& operator[](const player p) noexcept {
+        [[nodiscard]] constexpr value_array& operator[](const heads_up_player p) noexcept {
             return player_values[player_index(p)];
         }
 
@@ -185,8 +195,8 @@ namespace zeta::holdem {
         };
     }
 
-    [[nodiscard]] constexpr terminal_payoff payoff_for_fold(const terminal_pot pot, const player folded) noexcept {
-        return folded == player::oop ? payoff_for_ip_win(pot) : payoff_for_oop_win(pot);
+    [[nodiscard]] constexpr terminal_payoff payoff_for_fold(const terminal_pot pot, const heads_up_player folded) noexcept {
+        return folded == heads_up_player::oop ? payoff_for_ip_win(pot) : payoff_for_oop_win(pot);
     }
 
     using combo_bitset = std::array<uint64_t, (combination_count + 63) / 64>;
@@ -464,7 +474,7 @@ namespace zeta::holdem {
     inline void accumulate_showdown_bucket_values(
         terminal_result<2>& result,
         const river_terminal_cache& cache,
-        const player hero_player,
+        const heads_up_player hero_player,
         const river_reach_index& hero_index,
         const river_reach_index& opponent_index,
         const river_rank_bucket& hero_bucket,
@@ -567,7 +577,7 @@ namespace zeta::holdem {
                 accumulate_showdown_bucket_values(
                     result,
                     cache,
-                    player::oop,
+                    heads_up_player::oop,
                     oop_index,
                     ip_index,
                     *oop_equal,
@@ -585,7 +595,7 @@ namespace zeta::holdem {
                 accumulate_showdown_bucket_values(
                     result,
                     cache,
-                    player::ip,
+                    heads_up_player::ip,
                     ip_index,
                     oop_index,
                     *ip_equal,
@@ -693,7 +703,7 @@ namespace zeta::holdem {
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
         const terminal_context<2>& context,
-        const player folded
+        const heads_up_player folded
     ) noexcept {
         assert(cache.board_hash == oop_index.board_hash);
         assert(cache.board_hash == ip_index.board_hash);
@@ -704,13 +714,13 @@ namespace zeta::holdem {
         for (uint16_t offset = 0; offset < oop_index.active_count; ++offset) {
             const auto combo = oop_index.active_indices[offset];
             const auto compatible = compatible_mass(cache, ip_index, combo);
-            values[player::oop][combo] = static_cast<terminal_value>(compatible * payoff.oop);
+            values[heads_up_player::oop][combo] = static_cast<terminal_value>(compatible * payoff.oop);
         }
 
         for (uint16_t offset = 0; offset < ip_index.active_count; ++offset) {
             const auto combo = ip_index.active_indices[offset];
             const auto compatible = compatible_mass(cache, oop_index, combo);
-            values[player::ip][combo] = static_cast<terminal_value>(compatible * payoff.ip);
+            values[heads_up_player::ip][combo] = static_cast<terminal_value>(compatible * payoff.ip);
         }
 
         return values;
@@ -723,7 +733,7 @@ namespace zeta::holdem {
         const river_terminal_cache& cache,
         const std::array<river_reach_index, N>& reach,
         const terminal_context<N>& context,
-        const player folded
+        const heads_up_player folded
     ) noexcept {
         static_assert(N == 2, "N-way fold evaluator not implemented");
         if constexpr (N == 2) {
@@ -736,7 +746,7 @@ namespace zeta::holdem {
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
         const terminal_context<2>& context,
-        const player folded
+        const heads_up_player folded
     ) noexcept {
         return evaluate_fold_values_heads_up(cache, oop_index, ip_index, context, folded);
     }
@@ -746,7 +756,7 @@ namespace zeta::holdem {
         const reach_vector& oop_reach,
         const reach_vector& ip_reach,
         const terminal_context<2>& context,
-        const player folded
+        const heads_up_player folded
     ) noexcept {
         const auto oop_index = make_river_reach_index(cache, oop_reach);
         const auto ip_index = make_river_reach_index(cache, ip_reach);
