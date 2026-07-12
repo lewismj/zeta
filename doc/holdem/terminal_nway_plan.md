@@ -896,9 +896,9 @@ additive and shares Layers 1–2.
 
 ## Status
 
-### Completed (Steps 1–6)
+### Completed (Steps 1–8)
 
-✅ **API migration & heads-up preservation complete.**
+✅ **API migration & heads-up preservation complete (Steps 1–6).**
 
 - `terminal_context<N>` templated on player count with `std::array<utility, N> 
   contribution`; heads-up context helpers for compatibility.
@@ -913,9 +913,31 @@ additive and shares Layers 1–2.
   specialization noted; sections retitled; generic API shape documented; no performance 
   change.
 
-**Next immediate step: Phase 2, Step 7 (`terminal_workspace<N>`)**
+✅ **Generic fold kernel complete (Phase 2, Step 8).**
 
-The fold evaluator can be implemented alongside this (low risk, high validation).
+- Implemented `evaluate_fold_values<N>(cache, reach[], context, folded_mask<N>)` generic entry 
+  point replacing heads-up-only `heads_up_player folded` parameter.
+- Added `folded_mask<N>` struct template: generic wraps `std::bitset<N>`; specialized `folded_mask<2>` 
+  uses direct `bool oop_folded, ip_folded` fields (no bitset overhead in fast path).
+- Implemented `evaluate_fold_values_generic<N>()` kernel: for each active player, accumulates 
+  compatible mass from all other active opponents.
+- Added validation test confirming generic heads-up fold matches specialized fold exactly 
+  (bit-identical results).
+- All 69 tests passing; no regression.
+
+✅ **Terminal workspace complete (Phase 2, Step 7 reordered).**
+
+- Implemented `terminal_workspace<N>` struct holding `std::array<river_reach_index, N> reach`.
+- Added `materialize(const std::array<reach_vector, N>&)` method to build reach indices from ranges.
+- New overloads: `evaluate_showdown<N>(workspace&, cache, ranges[], context)` and 
+  `evaluate_fold_values<N>(workspace&, cache, ranges[], context, folded_mask<N>)`.
+- Architecture: Caller owns ranges, workspace owns reach indices, cache is read-only.
+- Data flow: ranges → materialize → workspace.reach → kernel → result.
+- Thread-local workspace pattern enables CFR to reuse across nodes without per-node allocation.
+- Backward compatibility: Original reach-index APIs still work for existing code.
+- All 69 tests passing; no regression.
+
+**Next immediate step: Phase 2, Step 9 (Implement `pot_structure<N>` and finalize payoff kernel)**
 
 ### Deferred (do not implement yet)
 
@@ -928,6 +950,14 @@ only needed by the 3-player exact kernel (Phase 3, step 11). Keep the cache at 2
 ❌ **Do not rename `terminal_context<N>` to `pot_context<N>` yet.** Rename when the 
 active-set / folded-player information is actually needed (Phase 2, step 9+). Current 
 naming is clean; early renaming creates churn.
+
+### In Progress (Phase 2, Step 9)
+
+🔄 **Implement `pot_structure<N>` and finalize payoff kernel.** This will:
+- Define side-pot representation for N-way pots
+- Finalize fold kernel payoff multiplier (currently accumulates compatible mass only)
+- Add pot distribution logic separate from hand ranking
+- Prepare for sampling kernel to consume pot_structure results
 
 ---
 
