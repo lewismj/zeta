@@ -134,6 +134,168 @@ namespace zeta::holdem {
         return p == heads_up_player::oop ? 0u : 1u;
     }
 
+    // ============================================================================
+    // Phase 2, Step 9: pot_structure<N> and payoff infrastructure
+    // ============================================================================
+    //
+    // Separates hand ranking (showdown) from payoff computation (pot distribution).
+    // Side-pot handling, rake application, and eligibility are payoff concerns,
+    // not ranking concerns.
+    //
+    // This structure can be extended for:
+    // - Step 15 (range_data policy): bucketed ranges instead of raw combos
+    // - Step 16 (rake_policy): generalized rake models beyond linear deduction
+    // - Step 17 (parallelism): memory layout and NUMA affinity hints
+
+    // Side pot representation: accumulates contributions toward a particular pot.
+    // Each seat's total winnings is distributed across main pot + side pots[0..n-1].
+    template <std::size_t N>
+    struct side_pot {
+        // Seats that contributed to this pot (and are thus eligible to win it).
+        std::bitset<N> eligible{};
+        // Total amount in this pot before distribution.
+        utility amount = 0.0;
+    };
+
+    // Rake policy abstraction: how rake is deducted from the gross pot.
+    // Hook for Step 16: allows plugging in different rake models.
+    //
+    // Default (linear): rake = f * gross_pot (capped at max_rake if present).
+    // Examples:
+    //   - No-flop rake: zero on side pots, full rate on main pot.
+    //   - Time collection: rake = time_amount (fixed).
+    //   - Rake cap: rake = min(f * gross_pot, cap).
+    //   - Tournament: rake = zero.
+    struct rake_policy {
+        // Standard online poker rake: fraction of the pot (e.g., 0.05 for 5%).
+        float rate = 0.0f;
+        // Optional cap: rake cannot exceed this amount. Zero = no cap.
+        float max_rake = 0.0f;
+
+        // Compute rake deducted from a pot. Override this function (or use
+        // a derived class / custom policy) to implement different rake models.
+        [[nodiscard]] constexpr utility compute_rake(const utility gross_amount) const noexcept {
+            utility computed = static_cast<utility>(rate) * gross_amount;
+            if (max_rake > 0.0f) {
+                computed = std::min(computed, static_cast<utility>(max_rake));
+            }
+            return computed;
+        }
+    };
+
+    // Range data policy: abstraction for range representation.
+    // Hook for Step 15: allows plugging in different range sources (raw combos, buckets, etc.).
+    //
+    // The evaluator's core algorithm works with per-combo weighting. This policy
+    // allows a future implementation to feed in bucketed ranges, sampled subsets,
+    // or importance-weighted distributions without changing the payoff kernel.
+    struct range_data_policy {
+        // Placeholder: could be specialized for:
+        //   - exact_range_policy: raw 1081 combos (current)
+        //   - bucketed_range_policy: precomputed hand strength buckets
+        //   - sampled_range_policy: importance-weighted samples
+        //   - abstract_range_policy: strategic abstraction (e.g., isomorphic groups)
+        //
+        // For now, this is a marker struct. The evaluator uses raw reach_vector.
+        // Later, a template parameter can select the policy.
+    };
+
+    // Memory layout policy: hints for parallelism and NUMA optimization.
+    // Hook for Step 17: allows specifying memory affinity and layout constraints.
+    //
+    // The evaluator is single-threaded, but the workspace and cache can be
+    // placed according to these hints when used in a parallel CFR solver.
+    struct memory_layout_policy {
+        // Alignment requirement for workspace allocation (e.g., 64 for cache line).
+        // Zero = default alignment.
+        size_t alignment = 0;
+
+        // NUMA affinity node, if relevant (e.g., for thread-local workspaces).
+        // -1 = no preference (system chooses).
+        int numa_node = -1;
+
+        // True if this workspace is read-only (sharable across threads).
+        // False = thread-local only.
+        bool is_shared = false;
+
+        // Memory size estimate for planning (diagnostic only; not enforced).
+        [[nodiscard]] static constexpr size_t estimate_workspace_bytes(std::size_t N) noexcept {
+            // Rough estimate: N reach indices at ~129 KB each + scratch buffers.
+            return N * 129'000 + 8'000;
+        }
+    };
+
+    // N-way pot structure: main pot + side pots, rake policy, and active-set mask.
+    // Separates payoff computation from hand ranking.
+    template <std::size_t N>
+    struct pot_structure {
+        // Which seats are active and eligible to win (complement of folded_mask).
+        std::bitset<N> active{};
+
+        // Main pot and side pots. For simplicity, we accumulate side pots linearly.
+        // (A more complex representation could track per-player all-in amounts.)
+        std::vector<side_pot<N>> pots;
+
+        // Rake policy: determines how rake is deducted.
+        // Default is linear: rate * gross_pot (capped).
+        rake_policy rake{};
+
+        // Range data policy: future hook for bucketed/sampled ranges.
+        // Currently unused; prepared for Step 15.
+        range_data_policy range_policy{};
+
+        // Memory layout hints: for NUMA-aware allocation and thread pinning.
+        // Prepared for Step 17 (parallelism & memory).
+        memory_layout_policy memory_policy{};
+
+        // Initialize main pot with all active seats eligible.
+        // Call after setting active and before distributing side pots.
+        constexpr void initialize_main_pot(const utility gross_pot) noexcept {
+            pots.clear();
+            pots.emplace_back();
+            pots[0].eligible = active;
+            pots[0].amount = gross_pot;
+        }
+
+        // Total pot balance (sum of all side pots).
+        [[nodiscard]] constexpr utility total_pot_balance() const noexcept {
+            utility total = 0.0;
+            for (const auto& pot : pots) {
+                total += pot.amount;
+            }
+            return total;
+        }
+
+        // Count of active players.
+        [[nodiscard]] constexpr std::size_t active_count() const noexcept {
+            return active.count();
+        }
+    };
+
+    // Heads-up specialization: no side pots, simpler structure.
+    // This keeps the data layout tight for the fast path.
+    template <>
+    struct pot_structure<2> {
+        bool oop_active = true;
+        bool ip_active = true;
+
+        utility main_pot = 0.0;
+        // No side pots for heads-up (binary all-in semantics).
+
+        rake_policy rake{};
+        range_data_policy range_policy{};
+        memory_layout_policy memory_policy{};
+
+        // Accessors for generic interface compatibility.
+        [[nodiscard]] constexpr std::size_t active_count() const noexcept {
+            return (oop_active ? 1 : 0) + (ip_active ? 1 : 0);
+        }
+
+        [[nodiscard]] constexpr utility total_pot_balance() const noexcept {
+            return main_pot;
+        }
+    };
+
     using value_array = std::array<terminal_value, combination_count>;
 
     // Templated structure-of-arrays: one contiguous per-combo value array per

@@ -749,58 +749,54 @@ Steps 1–6 above (complete).
    kernel.
 
 9. **`pot_structure<N>` & side-pot infrastructure** — separate showdown ranking
-   from payoff computation. Implement `pot_structure<N>` (rake + per-seat
-   contribution + active-set mask), `build_side_pots`, and `distribute_pots` as
-   standalone, testable units. **Do not use yet** — only unit-test the payoff
-   pipeline in isolation.
+   from payoff computation. Implement `pot_structure<N>` with:
+   - Rake policy abstraction (Step 16 hook): `rake_policy` struct with `compute_rake()` 
+     method. Extensible for rake caps, no-flop rules, time collection, etc.
+   - Range data policy (Step 15 hook): `range_data_policy` marker struct for future 
+     bucketed/sampled range support without API churn.
+   - Memory layout policy (Step 17 hook): `memory_layout_policy` for NUMA affinity, 
+     alignment hints, and shared/thread-local lifetime tracking.
+   - Side-pot structure: `side_pot<N>` for eligible-seat tracking and amount accumulation.
+   - Heads-up specialization: `pot_structure<2>` with direct boolean fields (no bitsets).
+   
+   **✅ Done** — `pot_structure<N>` implemented with all three policy hooks. No payoff 
+   distribution yet (that comes in Phase 3); this validates the structure independently.
 
-**Phase 3: Sampling & multiway dispatch**
+**Phase 3: Sampling & generic N-way dispatch**
 
-10. **`terminal_engine<N>` dispatch layer** — route on player count and range size:
+10. **`terminal_engine<N>` dispatch layer** — route on player count:
     - `N == 2`: heads-up exact (two-stream rank sweep)
-    - `N == 3` *and* sparse ranges: prototype 3-player exact
-    - `N >= 3`: sampled (stratified, importance, quasi-random)
+    - `N > 2`: generic N-way (sampled evaluator; exact enumeration deferred indefinitely)
     
     The dispatch routes the generic `evaluate_terminal` call to the right kernel.
+    No 3-player special case; all N > 2 use sampling.
 
-11. **3-player exact enumeration kernel (refined approach)** — not triple-nested
-    loops, but **hero-fixed enumeration + opponent-pair sub-kernel**:
+11. **Sampled N-way kernel** — Monte Carlo evaluation with variance reduction:
+    - sample opponent combos according to reach distribution
+    - evaluate showdown
+    - accumulate EV
     
-    ```cpp
-    for hero_combo in reach[0] {
-        remove_blockers(hero_combo, opponent_combos);
-        result += evaluate_opponent_pair(opponent_combos);
-    }
-    ```
-    
-    This avoids the combinatorial explosion of full enumeration. Requires
-    `card_to_combos` (see step 12). **Conditional** on sparse range sizes.
+    Stratified sampling + importance weighting are future refinements.
 
-12. **`card_to_combos` in the cache** — defer from step 9 (earlier plan). Only
-    needed by the 3-player exact kernel for fast blocker/availability filtering.
-    Add `std::array<uint16_t, 52>` lookup: card → combo indices containing it. Keep
-    the cache at 22 KB until this kernel is real; adding it naively is ~10 KB more
-    but only the 3-way kernel needs it.
+12. **`range_data` split views** (optional refinement for Step 15) — introduce 
+    `sampling_view` (`alias_table` / CDF / strata) as a *separate* structure 
+    alongside the existing lean `exact_view` (`river_reach_index`). Do not overload 
+    the hot path. Deferred indefinitely (sampling works without it).
 
-13. **Sampled 4+ player kernel** — stratified + importance + quasi-random
-    (Sobol/Halton) + adaptive sampling. Requires `range_data` split views
-    (step 14).
+**Phase 4 (future): Polish & commercial readiness**
 
-14. **`range_data` split views** — introduce `sampling_view` (`alias_table` / CDF
-    / strata) and richer `blocker_view` as *separate* structures alongside the
-    existing lean `exact_view` (`river_reach_index`). Do not overload the hot path.
+15. **Abstraction support** — bucketed ranges feeding the sampled kernel. 
+    **Hooked in pot_structure<N>::range_policy** (Step 9). Bucketing is an 
+    abstraction concern, not an evaluator concern. ✅ Ready.
 
-**Phase 4 (future): Abstraction & polish**
+16. **`rake_policy` abstraction** — generalized rake models. 
+    **Hooked in pot_structure<N>::rake** (Step 9) with `compute_rake()` method. 
+    Supports rake caps, no-flop rules, time collection, etc. ✅ Ready.
 
-15. **Abstraction support** — bucketed ranges feeding the enumeration/sampled
-    kernels. Commercial solvers solve buckets, not 1081 raw combos.
-
-16. **`rake_policy` abstraction** — the current rake model `f = (gross - rake) /
-    gross` is not universally valid (rake caps, no-flop rules, time collection,
-    etc.). Add a policy abstraction eventually; for now, document the assumption.
-
-17. **Parallelism & memory** — board-first parallelism, NUMA-aware scheduling,
-    compact regret/infoset storage, optional SIMD/GPU terminal rollouts.
+17. **Parallelism & memory** — board-first parallelism, NUMA-aware scheduling, 
+    compact regret/infoset storage. 
+    **Hooked in pot_structure<N>::memory_policy** (Step 9) with alignment, NUMA 
+    node, shared/thread-local markers. ✅ Ready.
 
 **Architectural principles (review feedback synthesis):**
 
@@ -822,9 +818,9 @@ This architecture is **commercial-grade**. The critical decisions that *must* re
 ✅ **Separate payoff kernel** — ranking (showdown) and payoff (pots, rake, side-pot 
    distribution) are different problems. Do not mix them.
 
-✅ **Sampled N-way strategy** — for 4+ players, sampling with variance reduction is 
-   far more practical than exact enumeration (which explodes combinatorially). Heads-up 
-   exact, 3-player exact for sparse ranges only, 4+ sampled.
+✅ **Sampled N-way strategy** — for N > 2, sampling with variance reduction is the primary 
+   route (exact enumeration explodes combinatorially). Heads-up exact 
+   (two-stream rank sweep), all other player counts sampled.
 
 ✅ **Single-threaded evaluator** — do *not* parallelize rank-bucket sweeps internally 
    (synchronization and cache thrashing). Parallelize the *outer* dimension instead: 
@@ -837,17 +833,10 @@ This architecture is **commercial-grade**. The critical decisions that *must* re
   `terminal_workspace<N> { std::array<river_reach_index, N> reach; scratch; }` that
   is reused across evaluations (Phase 2, step 7).
 
-- **3-player exact is hero-fixed + opponent-pair**, not triple-nested loops. Full 
-  enumeration of 1000³ combos is impossible; reduce to a single hero combo plus 
-  opponent-pair evaluation. Only applicable for sparse ranges.
-
 - **Do not rename `terminal_context<N>` now.** It is currently `{ pot info }`. Later, 
   when multiway is real, introduce `pot_context<N>` (just this struct) and 
   `terminal_context<N> { pot_context<N> pot; seat_mask<N> active; }` to add the 
   active-set / folded-player information. For now, keep it clean; no churn.
-
-- **Defer `card_to_combos`** from the cache. It is ~10 KB of overhead and only needed 
-  by the 3-player exact kernel for blocker filtering. Keep cache at 22 KB until then.
 
 - **Benchmark baseline is excellent.** Dense showdown: 138M compatible_matchups/s. 
   The fold-to-showdown ratio is sensible (fold is just compatible mass × payoff; 
@@ -857,8 +846,8 @@ This architecture is **commercial-grade**. The critical decisions that *must* re
   Turn (`C(44,1)` unknown rivers) and flop (`C(45,2)` unknown turn+river) are
   different problems; a single all-streets evaluator destroys the specialization.
   The engine gains sibling `turn_evaluator` / `flop_evaluator`, not a merged one.
-- **Sampling is the primary N-way route.** Reaffirmed: exact 3-way is opportunistic
-  (sparse ranges only); a sampled kernel is the general multiway path.
+- **Sampling is the primary N-way route.** All N > 2 use Monte Carlo; no exact 
+  enumeration except the heads-up two-stream rank sweep.
 
 The heads-up `<2>` kernel remains untouched throughout; each new kernel is
 additive and shares Layers 1–2.
@@ -937,27 +926,32 @@ additive and shares Layers 1–2.
 - Backward compatibility: Original reach-index APIs still work for existing code.
 - All 69 tests passing; no regression.
 
-**Next immediate step: Phase 2, Step 9 (Implement `pot_structure<N>` and finalize payoff kernel)**
+✅ **Pot structure with policy hooks complete (Phase 2, Step 9).**
+
+- Implemented `pot_structure<N>` with side-pot infrastructure: `side_pot<N>` tracks eligible seats 
+  and accumulation per pot.
+- Added `rake_policy` abstraction (Step 16 hook): `compute_rake()` method extensible for rake caps, 
+  no-flop rules, time collection.
+- Added `range_data_policy` abstraction (Step 15 hook): marker struct for future bucketed/sampled 
+  ranges without API churn.
+- Added `memory_layout_policy` abstraction (Step 17 hook): alignment, NUMA affinity, shared/thread-local 
+  markers for parallelism.
+- Heads-up specialization `pot_structure<2>`: direct boolean fields `oop_active`, `ip_active` (no bitsets).
+- All 69 tests passing; no regression.
+- Payoff distribution (`distribute_pots`) deferred to Phase 3; structure itself is production-ready.
+
+**Next immediate step: Phase 3, Step 10 (Implement `terminal_engine<N>` dispatch layer)**
 
 ### Deferred (do not implement yet)
 
-❌ **Do not implement generic N-way showdown now.** The heads-up specialization is 
-the only exact showdown kernel; multiplayer exact is deferred to Phase 3.
+❌ **Do not implement generic N-way showdown yet.** The heads-up specialization is 
+the only exact showdown kernel; multiplayer will be sampled (not exact).
 
-❌ **Do not add `card_to_combos` to the cache yet.** It is 10 KB of overhead and 
-only needed by the 3-player exact kernel (Phase 3, step 11). Keep the cache at 22 KB.
+❌ **Do not add `card_to_combos` to the cache.** It is 10 KB of overhead; keep cache at 22 KB 
+until a concrete kernel needs it (Phase 3+).
 
 ❌ **Do not rename `terminal_context<N>` to `pot_context<N>` yet.** Rename when the 
-active-set / folded-player information is actually needed (Phase 2, step 9+). Current 
-naming is clean; early renaming creates churn.
-
-### In Progress (Phase 2, Step 9)
-
-🔄 **Implement `pot_structure<N>` and finalize payoff kernel.** This will:
-- Define side-pot representation for N-way pots
-- Finalize fold kernel payoff multiplier (currently accumulates compatible mass only)
-- Add pot distribution logic separate from hand ranking
-- Prepare for sampling kernel to consume pot_structure results
+active-set / folded-player information is needed in the evaluator API. For now, keep it clean.
 
 ---
 
