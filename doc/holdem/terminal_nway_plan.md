@@ -182,7 +182,8 @@ template <std::size_t Players>
 terminal_result<Players> evaluate_terminal(
     const river_terminal_cache&           cache,
     const std::array<range_data, Players>& ranges,
-    const terminal_context<Players>&      context,   // carries pot_structure
+    const terminal_context<Players>&      context,   // lean: gross_pot, rake, contribution
+    const pot_structure<Players>&         pots,      // side pots + active-set (payoff kernel)
     terminal_options                      options) noexcept;
 ```
 
@@ -305,36 +306,142 @@ Where commercial solvers differentiate — a serious sampling engine, not naive
 - **Adaptive sampling** — spend more samples where per-board EV confidence is low;
   stop early on high-confidence boards.
 
-### Layer 5b — Payoff kernel (separate from hand evaluation)
+### Layer 5b — Payoff kernel: active-set & `pot_structure` (design)
 
 Multiway pots make payoff computation a **distinct concern** from ranking hands.
-Keep the pipeline layered:
+Heads-up has a single pot and a single opponent, so ranking *is* payoff. Multiway
+does not: unequal all-in stacks create **side pots**, and folded players leave
+**dead money** they can never win. The pipeline must be layered so the hot ranking
+kernels never learn about pots:
 
 ```
-showdown evaluator          // who wins / ties (rank comparison)
+showdown ranking            // per-seat hand strength (rank_key) or mass decomposition
         |
         v
-hand outcome generator      // per-player win/tie/loss classification
+active-set + side-pot build // who is eligible for which pot layer
         |
         v
-payoff calculator           // side pots, folded players, rake, splits
+payoff calculator           // distribute each layer, net vs contribution, rake
 ```
 
-The hand evaluator must **not** own pot logic. Multiway introduces side pots from
-unequal all-in contributions — e.g. A all-in 100, B all-in 50, C all-in 200 →
-main pot + two side pots. Model this in the context, not the evaluator:
+#### Concepts
+
+- **Contribution** `c_i` — total chips seat `i` committed to the pot this hand.
+- **Active-set (contested seats)** — the seats that reached showdown *without
+  folding*. A folded seat's chips stay in the pots (dead money) but it is never
+  eligible to win any layer. This is the "who folded" information that was
+  deliberately kept **out** of the lean showdown `terminal_context<N>` — it belongs
+  here, in the payoff input, not on the ranking hot path.
+- **Side-pot layer** — a slice of the pot defined by an all-in level. Layer `k`
+  spans contribution band `(level_{k-1}, level_k]` and is contestable only by seats
+  that committed at least `level_k`.
+
+#### Input type — `pot_structure<N>`
+
+`pot_structure<N>` is the payoff-kernel input (separate from the showdown context),
+templated on the compile-time seat count:
 
 ```cpp
+// Compact seat set: N <= 8 fits a byte; keep it a value type, no allocation.
 template <std::size_t N>
-struct terminal_context {
-    utility               rake;
-    std::array<utility,N> contribution;
-    pot_structure         pots;        // main + side pots
+using seat_set = std::bitset<N>;            // or a uint8_t mask for N <= 8
+
+template <std::size_t N>
+struct pot_structure {
+    utility               rake         = 0.0;   // raked off the gross pot
+    std::array<utility,N> contribution{};        // c_i per seat (folded seats included)
+    seat_set<N>           contested{};           // active-set: seats still eligible to win
 };
 ```
 
-Heads-up degenerates to a single pot, so `terminal_context<2>` stays trivially
-cheap; the payoff kernel only does real work for multiway.
+`sum(contribution)` is the gross pot; folded seats appear in `contribution` (their
+dead money) but are cleared in `contested`.
+
+#### Derived type — side-pot layers
+
+Layers are *derived* from `pot_structure`, not stored on it (keep the input
+minimal). At most `N` distinct all-in levels ⇒ at most `N` layers:
+
+```cpp
+struct side_pot {
+    utility     amount   = 0.0;   // chips in this layer (gross, pre-rake-scale)
+    seat_set<N> eligible{};        // contributed >= level AND contested
+};
+
+template <std::size_t N>
+struct side_pot_layers {
+    std::array<side_pot, N> layer{};
+    std::size_t             count = 0;
+};
+```
+
+**Build algorithm** (`build_side_pots`, `O(N^2)` — trivial for N <= 6):
+
+1. Collect the distinct positive contribution levels, ascending: `L_1 < ... < L_m`.
+2. For each level `L_k`, let `prev = L_{k-1}` (0 for `k = 1`). The band width is
+   `w_k = L_k - prev`. Let `S_k` = seats with `c_i >= L_k`.
+   - `amount_k = w_k * |S_k|` (every seat still in at this level pays the band).
+   - `eligible_k = S_k ∩ contested` (folded seats fund the layer but cannot win).
+3. Emit only layers with `amount_k > 0`.
+
+A layer whose `eligible` set is a single seat (everyone else at that depth folded)
+is simply **returned** to that seat — a degenerate "uncontested overflow" award,
+which is how a deep stack gets change back when opponents were all-in shorter.
+
+#### Payoff kernel — `distribute_pots`
+
+The ranking kernels supply concrete per-seat hand strengths (for exact/sampled
+N-way you draw concrete combos and read `cache.hand_rank`); the payoff kernel is
+pure chip arithmetic and knows nothing about cards:
+
+```cpp
+template <std::size_t N>
+struct showdown_ranks {
+    std::array<rank_key, N> rank{};   // higher = stronger; only contested seats read
+};
+
+template <std::size_t N>
+[[nodiscard]] std::array<utility, N> distribute_pots(
+    const pot_structure<N>&    pots,
+    const showdown_ranks<N>&   ranks) noexcept;
+```
+
+Algorithm:
+
+1. `layers = build_side_pots(pots)`.
+2. `net_i = -contribution_i` for all seats (everyone starts down their commitment).
+3. Rake scale: `f = (gross - rake) / gross` (the same net factor as the heads-up
+   `distributed_pot`); apply `f` to each layer amount so the only chip leak is the
+   rake. (Alternative conventions — rake only the main pot, capped rake — are a
+   config knob; the zero-sum-minus-rake invariant must hold whichever is chosen.)
+4. For each layer: among `eligible`, find the max `rank`; the winners (ties share)
+   split `f * amount` equally; add to their `net`.
+5. Return `net`. Invariant: `sum(net) == -rake` (exact zero-sum when `rake == 0`).
+
+#### Heads-up reduction (correctness anchor)
+
+For `N == 2`, `pot_structure<2>` with `contribution = {oop_c, ip_c}` and both seats
+contested reproduces today's model exactly:
+
+- Equal contributions → one layer, winner takes `f * (oop_c + ip_c)` = `distributed_pot`; tie splits it — identical to `payoff_for_oop_win` / `payoff_for_tie`.
+- A fold → the folded seat is cleared from `contested`; the single eligible seat
+  wins every layer — identical to `payoff_for_fold`.
+- Unequal contributions (one all-in short) → the overflow band has a single
+  eligible seat and is returned to it — a case the current single-pot heads-up
+  helpers do **not** model, and the reason even heads-up eventually wants the
+  layered engine once all-in-for-less is supported.
+
+The existing `evaluate_showdown_heads_up` mass-decomposition kernel stays as the
+fast path for the common equal-contribution case; `distribute_pots` is only invoked
+by the enumeration/sampled kernels (and, later, by a heads-up all-in-for-less path)
+that already work with concrete ranks rather than mass streams.
+
+#### Why this stays off the hot path
+
+`pot_structure<N>` and `distribute_pots` are touched **once per evaluated terminal
+combo tuple**, not per mass-bucket. Heads-up equal-pot traversal never constructs
+them. This preserves the sacred two-stream kernel while giving multiway a correct,
+allocation-free, compile-time-sized side-pot engine.
 
 ### Layer 6 — Parallel execution priority
 
@@ -617,7 +724,12 @@ Beyond the near-term refactor, the tiered `terminal_engine` grows in this order:
    existing lean `exact_view` (`river_reach_index`). Do not overload the hot path.
 9. **`card_to_combos`** in the cache for fast blocker/availability queries.
 10. **Payoff kernel + `pot_structure`** — separate showdown ranking from side-pot
-    payoff computation; add `pot_structure` to `terminal_context<N>`.
+    payoff computation. `pot_structure<N>` (rake + per-seat contribution +
+    contested active-set) is the payoff input; `build_side_pots` derives layers and
+    `distribute_pots` awards them. Kept **off** the lean showdown `terminal_context<N>`
+    and only invoked by ranking-based (enumeration/sampled) kernels. See
+    *Layer 5b — Payoff kernel: active-set & `pot_structure`* above for the full
+    design and heads-up reduction.
 11. **3-player narrow-range exact enumeration kernel** with card-availability
     pruning, range ordering, and incremental `used_cards` blockers.
 12. **Sampled 4+ player kernel**: stratified + importance + quasi-random
