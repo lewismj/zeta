@@ -153,25 +153,22 @@ cache/range layer. The heads-up evaluator becomes the fastest special case.
 enumeration cost explodes. Heads-up is `~1000 × 1000 = 10^6` comparisons; three
 players is `~1000^3 ≈ 10^9` and six players `~1000^6`, which is intractable. So
 exact enumeration is only viable for very small player counts **and** sparse
-ranges. Do **not** promise "3–4 exact" as a general capability — sampling is the
-primary N-way route. Realistic regimes:
+ranges. Do **not** promise fixed intermediate exact tiers as a general capability.
+Use kernel families:
 
-- **2 players** → exact rank sweep (current kernel)
-- **3 players, sparse ranges** → limited exact enumeration (opportunistic only)
-- **3–6 players (general)** → sampled evaluator (the main multiway path)
-- **6+ players** → stratified / quasi-random Monte Carlo
+- **2 players** → exact kernel family (current rank sweep)
+- **N > 2** → multiplayer kernel family (current implementation: sampled)
 
 The kernel is selected explicitly, not by an ad-hoc chain of `if`s:
 
 ```cpp
-enum class terminal_kernel { heads_up_exact, sparse_exact, sampled };
+enum class terminal_kernel_family { heads_up_exact, multiplayer };
 ```
 
 Dispatch decision inputs:
-- number of players
-- range sizes (active combo counts / total range mass)
-- requested accuracy
-- CFR iteration mode (exact vs sampled)
+- number of players (family selection)
+- accuracy/performance settings (algorithm selection within multiplayer family)
+- runtime capabilities (CPU/GPU availability)
 
 A possible top-level API:
 
@@ -190,9 +187,8 @@ terminal_result<Players> evaluate_terminal(
 Internal routing:
 
 ```
-Players == 2                         -> heads_up_exact (current kernel)
-Players == 3 && range_mass < thresh  -> sparse_exact (opportunistic)
-otherwise                            -> sampled evaluator
+Players == 2   -> heads_up_exact kernel family
+Players > 2    -> multiplayer kernel family (current implementation: sampled)
 ```
 
 ### Layer 1 — Shared board-specialized infrastructure
@@ -762,21 +758,31 @@ Steps 1–6 above (complete).
    **✅ Done** — `pot_structure<N>` implemented with all three policy hooks. No payoff 
    distribution yet (that comes in Phase 3); this validates the structure independently.
 
-**Phase 3: Sampling & generic N-way dispatch**
+**Phase 3: Multiplayer kernel dispatch & implementation**
 
 10. **`terminal_engine<N>` dispatch layer** — route on player count:
     - `N == 2`: heads-up exact (two-stream rank sweep)
-    - `N > 2`: generic N-way (sampled evaluator; exact enumeration deferred indefinitely)
+    - `N > 2`: multiplayer kernel family
     
-    The dispatch routes the generic `evaluate_terminal` call to the right kernel.
-    No 3-player special case; all N > 2 use sampling.
+    The dispatch routes the generic `evaluate_terminal` call to the right kernel
+    family. No 3-player special case. The initial multiplayer implementation is
+    sampled, but the dispatch contract stays algorithm-agnostic.
+    
+    **✅ Done** — `terminal_engine<N>` implemented with compile-time kernel-family
+    dispatch (`heads_up_exact` vs `multiplayer`), heads-up showdown routing, and
+    generic fold routing. Added parity tests and dedicated benchmark
+    (`BM_TerminalEngineShowdownDense`).
 
-11. **Sampled N-way kernel** — Monte Carlo evaluation with variance reduction:
+11. **Current multiplayer kernel (sampled)** — Monte Carlo evaluation with built-in variance reduction:
     - sample opponent combos according to reach distribution
+    - apply **stratified sampling** across range strata (premium / middle / air)
+    - apply **importance weighting** (unbiased correction by sampling probability)
     - evaluate showdown
     - accumulate EV
-    
-    Stratified sampling + importance weighting are future refinements.
+
+    This is the **current** multiplayer algorithm under the multiplayer kernel
+    family. Future implementations may be sampled, partially exact, hybrid, or
+    accelerator-backed without changing caller-facing dispatch.
 
 12. **`range_data` split views** (optional refinement for Step 15) — introduce 
     `sampling_view` (`alias_table` / CDF / strata) as a *separate* structure 
@@ -818,9 +824,10 @@ This architecture is **commercial-grade**. The critical decisions that *must* re
 ✅ **Separate payoff kernel** — ranking (showdown) and payoff (pots, rake, side-pot 
    distribution) are different problems. Do not mix them.
 
-✅ **Sampled N-way strategy** — for N > 2, sampling with variance reduction is the primary 
-   route (exact enumeration explodes combinatorially). Heads-up exact 
-   (two-stream rank sweep), all other player counts sampled.
+✅ **Kernel-family dispatch strategy** — heads-up stays a dedicated exact kernel
+   family (`N == 2`), while all `N > 2` routes through a multiplayer kernel
+   family. Today that family is sampled with variance reduction; the contract
+   remains algorithm-agnostic for future evolution.
 
 ✅ **Single-threaded evaluator** — do *not* parallelize rank-bucket sweeps internally 
    (synchronization and cache thrashing). Parallelize the *outer* dimension instead: 
@@ -846,8 +853,9 @@ This architecture is **commercial-grade**. The critical decisions that *must* re
   Turn (`C(44,1)` unknown rivers) and flop (`C(45,2)` unknown turn+river) are
   different problems; a single all-streets evaluator destroys the specialization.
   The engine gains sibling `turn_evaluator` / `flop_evaluator`, not a merged one.
-- **Sampling is the primary N-way route.** All N > 2 use Monte Carlo; no exact 
-  enumeration except the heads-up two-stream rank sweep.
+- **Current multiplayer implementation is sampled.** All N > 2 currently use
+  sampling, but this is an implementation choice inside the multiplayer kernel
+  family, not a permanent API/dispatch contract.
 
 The heads-up `<2>` kernel remains untouched throughout; each new kernel is
 additive and shares Layers 1–2.
@@ -940,7 +948,7 @@ additive and shares Layers 1–2.
 - All 69 tests passing; no regression.
 - Payoff distribution (`distribute_pots`) deferred to Phase 3; structure itself is production-ready.
 
-**Next immediate step: Phase 3, Step 10 (Implement `terminal_engine<N>` dispatch layer)**
+**Next immediate step: Phase 3, Step 11 (Implement current multiplayer sampled kernel)**
 
 ### Deferred (do not implement yet)
 

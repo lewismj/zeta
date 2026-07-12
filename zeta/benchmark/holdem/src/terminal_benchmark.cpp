@@ -329,6 +329,43 @@ namespace {
         );
     }
 
+    void BM_TerminalEngineShowdownDense(benchmark::State& state) {
+        const auto& d = data();
+        const auto& cases = d.dense_cases;
+        zeta::holdem::terminal_engine<2> engine{};
+        zeta::holdem::terminal_workspace<2> workspace{};
+        std::uint64_t sink = 0;
+        std::uint64_t hero_combo_total = 0;
+        std::uint64_t matchup_total = 0;
+        for (const auto& c : cases) {
+            hero_combo_total += c.oop_active + c.ip_active;
+            matchup_total += c.compatible_matchups;
+        }
+        for (auto _ : state) {
+            for (const auto& c : cases) {
+                auto values = engine.evaluate_showdown_values(
+                    workspace,
+                    c.cache,
+                    c.oop_reach,
+                    c.ip_reach,
+                    d.context
+                );
+                benchmark::DoNotOptimize(values);
+                sink += c.oop_buckets;
+            }
+        }
+        benchmark::DoNotOptimize(sink);
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * hero_combo_total));
+        state.counters["compatible_matchups"] = benchmark::Counter(
+            static_cast<double>(matchup_total),
+            benchmark::Counter::kIsIterationInvariant
+        );
+        state.counters["kernel_family"] = benchmark::Counter(
+            static_cast<double>(static_cast<std::uint8_t>(zeta::holdem::terminal_engine<2>::kernel_family())),
+            benchmark::Counter::kIsIterationInvariant
+        );
+    }
+
 }
 
 BENCHMARK(BM_RiverTerminalCacheConstruction)->Unit(benchmark::kNanosecond);
@@ -338,6 +375,7 @@ BENCHMARK(BM_TerminalFoldValuesDense)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalFoldValuesSparse)->Arg(50)->Arg(100)->Arg(300)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalShowdownValuesDense)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalShowdownValuesSparse)->Arg(50)->Arg(100)->Arg(300)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_TerminalEngineShowdownDense)->Unit(benchmark::kNanosecond);
 
 int main(int argc, char** argv) {
     std::cout << "terminal evaluator : river cache + reach index + rank-sweep showdown/fold\n";

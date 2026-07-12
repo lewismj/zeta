@@ -1276,6 +1276,77 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_generic_kernel_matches_heads_up) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(holdem_terminal_engine_dispatch_selects_kernel_family_by_player_count) {
+    BOOST_CHECK(
+        zeta::holdem::terminal_engine<2>::kernel_family()
+        == zeta::holdem::terminal_kernel_family::heads_up_exact
+    );
+    BOOST_CHECK(
+        zeta::holdem::terminal_engine<3>::kernel_family()
+        == zeta::holdem::terminal_kernel_family::multiplayer
+    );
+    BOOST_CHECK(zeta::holdem::terminal_engine<2>::is_heads_up_exact());
+    BOOST_CHECK(!zeta::holdem::terminal_engine<4>::is_heads_up_exact());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_terminal_engine_heads_up_showdown_matches_direct_api) {
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    auto oop = zeta::holdem::reach_vector{};
+    auto ip = zeta::holdem::reach_vector{};
+    std::size_t assigned = 0;
+    for (std::size_t order = 0; order < cache.rank_order_count && assigned < 24; ++order) {
+        const auto combo = cache.rank_order[order];
+        oop[combo] = static_cast<float>((order % 3) + 1) * 0.5f;
+        ip[combo] = static_cast<float>((order % 4) + 1) * 0.25f;
+        ++assigned;
+    }
+    BOOST_REQUIRE(assigned > 0);
+
+    const auto context = zeta::holdem::make_heads_up_context(300.0, 15.0, 100.0, 100.0);
+    const auto expected = zeta::holdem::evaluate_showdown(cache, oop, ip, context);
+
+    zeta::holdem::terminal_engine<2> engine{};
+    auto workspace = std::make_unique<zeta::holdem::terminal_workspace<2>>();
+    const auto actual = engine.evaluate_showdown(*workspace, cache, oop, ip, context);
+
+    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+        BOOST_CHECK_EQUAL(actual.values[zeta::holdem::player::oop][i], expected.values[zeta::holdem::player::oop][i]);
+        BOOST_CHECK_EQUAL(actual.values[zeta::holdem::player::ip][i], expected.values[zeta::holdem::player::ip][i]);
+    }
+    BOOST_CHECK_EQUAL(actual.summary.oop_ev, expected.summary.oop_ev);
+    BOOST_CHECK_EQUAL(actual.summary.ip_ev, expected.summary.ip_ev);
+    BOOST_CHECK_EQUAL(actual.summary.matchup_weight, expected.summary.matchup_weight);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_terminal_engine_heads_up_fold_matches_direct_api) {
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    auto oop = zeta::holdem::reach_vector{};
+    auto ip = zeta::holdem::reach_vector{};
+    std::size_t assigned = 0;
+    for (std::size_t order = 0; order < cache.rank_order_count && assigned < 24; ++order) {
+        const auto combo = cache.rank_order[order];
+        oop[combo] = static_cast<float>((order % 3) + 1) * 0.5f;
+        ip[combo] = static_cast<float>((order % 4) + 1) * 0.25f;
+        ++assigned;
+    }
+    BOOST_REQUIRE(assigned > 0);
+
+    const auto context = zeta::holdem::make_heads_up_context(100.0, 0.0, 50.0, 50.0);
+    const auto expected = zeta::holdem::evaluate_fold_values(cache, oop, ip, context, zeta::holdem::heads_up_player::ip);
+
+    zeta::holdem::terminal_engine<2> engine{};
+    auto workspace = std::make_unique<zeta::holdem::terminal_workspace<2>>();
+    zeta::holdem::folded_mask<2> folded{};
+    folded.ip_folded = true;
+    const std::array<zeta::holdem::reach_vector, 2> ranges{oop, ip};
+    const auto actual = engine.evaluate_fold_values(*workspace, cache, ranges, context, folded);
+
+    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+        BOOST_CHECK_EQUAL(actual[zeta::holdem::player::oop][i], expected[zeta::holdem::player::oop][i]);
+        BOOST_CHECK_EQUAL(actual[zeta::holdem::player::ip][i], expected[zeta::holdem::player::ip][i]);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(holdem_combination_mask_helper_matches_table) {
     BOOST_CHECK_EQUAL(zeta::holdem::combination_mask(0), zeta::holdem::combination_masks.front());
     BOOST_CHECK_EQUAL(

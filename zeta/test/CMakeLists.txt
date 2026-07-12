@@ -120,6 +120,10 @@ set(_zeta_holdem_test_cases    holdem_detects_straight_flush
     holdem_terminal_showdown_matches_reference_oracle
     holdem_terminal_showdown_array_api_matches_index_api
     holdem_terminal_fold_array_api_matches_index_api
+    holdem_terminal_fold_generic_kernel_matches_heads_up
+    holdem_terminal_engine_dispatch_selects_kernel_family_by_player_count
+    holdem_terminal_engine_heads_up_showdown_matches_direct_api
+    holdem_terminal_engine_heads_up_fold_matches_direct_api
     holdem_combination_mask_helper_matches_table
     holdem_range_parser_direct_combo_index_matches_combination_table
     holdem_range_parser_parses_basic_hand_classes
