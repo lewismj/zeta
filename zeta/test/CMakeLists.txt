@@ -118,6 +118,8 @@ set(_zeta_holdem_test_cases    holdem_detects_straight_flush
     holdem_terminal_fold_values_respect_card_removal
     holdem_terminal_fold_values_handle_board_blockers_and_both_folded_players
     holdem_terminal_showdown_matches_reference_oracle
+    holdem_terminal_showdown_array_api_matches_index_api
+    holdem_terminal_fold_array_api_matches_index_api
     holdem_combination_mask_helper_matches_table
     holdem_range_parser_direct_combo_index_matches_combination_table
     holdem_range_parser_parses_basic_hand_classes

@@ -15,17 +15,86 @@ The Hold'em module currently includes a lookup-based native 7-card evaluator and
 
 - [Lookup-based 7-card evaluator](doc/holdem/post_flop_hand_evaluator.md)
 - [PokerStove range parser](doc/holdem/range_parser.md)
+- [River terminal evaluator](doc/holdem/terminal_evaluator.md)
 
-### GTO postflop analyser
+### GTO postflop analyser (multi-player capable)
 
-The intended direction is a TexasSolver-style postflop GTO analyser. The next major layer is a full postflop game model with river-first CFR execution:
+Zeta is a **multi-player capable** postflop GTO analyser, evolving beyond the
+heads-up-only TexasSolver model to support 2–6 player games. The architecture is
+built to scale from fast heads-up evaluation to general N-way sampling without
+compromising either performance tier.
 
-- range and combo representation
-- postflop action tree
-- board-specialized showdown evaluation
-- CFR/CFR+ regret and average-strategy storage
-- exploitability / best-response measurement
-- turn and flop chance-node rollout after the river path is correct
+#### Implemented (river terminal evaluator)
+
+- ✅ **Board-specialized cache layer** (`river_terminal_cache`) — immutable,
+  shared, zero allocation, built once per river
+- ✅ **Player-neutral data structures** — templated on `N` (compile-time constant):
+  `terminal_context<N>`, `terminal_values<N>`, `terminal_result<N>`
+- ✅ **Generic compile-time dispatch** — `evaluate_showdown<N>`, `evaluate_fold_values<N>`
+  with `static_assert(N == 2)` guard (hard error if N-way called before implementation)
+- ✅ **Hand-tuned heads-up kernel** — two-stream rank-sweep algorithm in
+  `evaluate_showdown_heads_up` (O(H+V), branch-predictable, allocation-free)
+- ✅ **Reach index abstraction** — `river_reach_index` per player, supports exact
+  traversal, blocker correction, and future sampling views
+- ✅ **Documentation and tests** — see `terminal_nway_plan.md` for the multi-kernel
+  architecture roadmap; 76 test cases + benchmarks confirm zero regression
+
+#### Required next (the multi-kernel engine)
+
+The near-term roadmap lifts heads-up optimization to support N-way evaluation
+without touching the fast path:
+
+1. **Range infrastructure** — `range_data` with three views:
+   - `exact_view` (current `river_reach_index`) — hot path for heads-up
+   - `sampling_view` (alias tables, CDFs, strata) — for N-way sampling
+   - `blocker_view` (card-to-combo lookup) — for multiway blocker filtering
+
+2. **Sparse N-way kernel** (3-player, narrow ranges) — exact enumeration with
+   card-availability pruning and incremental blocker maintenance
+
+3. **Sampled N-way kernel** (3–6 players) — the primary multiway route:
+   - stratified sampling (premium hands vs. air)
+   - importance sampling (high-impact outcomes)
+   - quasi-random sequences (Sobol/Halton)
+   - adaptive confidence intervals
+
+4. **Payoff/side-pot kernel** — separate hand-rank evaluation from pot accounting:
+   - `pot_structure` for unequal all-in stacks
+   - win/tie accounting per pot
+   - rake distribution
+
+5. **`terminal_engine` dispatch** — route by player count, range mass, and accuracy:
+   ```
+   Players == 2           → heads_up_exact (current kernel)
+   Players == 3, sparse   → sparse_exact (opportunistic)
+   otherwise              → sampled (general multiway route)
+   ```
+
+6. **Parallel execution** — board-first parallelism with thread-local workspaces:
+   - read-only shared cache
+   - thread-local reach indices and sampling state
+   - no synchronisation inside evaluator (single-threaded kernel)
+
+7. **Turn / flop evaluators** — separate siblings to the river evaluator (different
+   problems: C(44,1) unknown rivers on turn; C(45,2) on flop)
+
+8. **Abstraction layers** — bucketed ranges feeding enumeration/sampled kernels
+
+#### Benchmark baseline (heads-up river showdown)
+
+Current performance on dense 1081-combo heads-up evaluation (WSL Clang Release):
+
+| Benchmark | Throughput | Latency | Outcome |
+|---|---:|---:|---|
+| Dense showdown | 122.3M/s | ~141 µs | Two rank-buckets merged |
+| Sparse (50 combos) | 84.2M/s | ~9.5 µs | Per-card blocker correction |
+| Sparse (100 combos) | 91.7M/s | ~17.4 µs | Scaling typical game states |
+
+The 40G matchups/sec throughput on dense evaluation demonstrates the architecture
+is not the bottleneck; competitive differentiation will come from **systems
+engineering** (memory layout, cache efficiency, parallelism), **sampling quality**
+(variance reduction, adaptive refinement), and **abstraction** (bucket hierarchies,
+compression).
 
 ### Evaluator benchmark summary
 

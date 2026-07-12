@@ -28,8 +28,14 @@ namespace zeta::holdem {
         utility ip_contribution = 0.0;
     };
 
+    // Player-neutral, compile-time-sized terminal accounting context.
+    // For N active players, `contribution[seat]` is that seat's contribution.
+    // Heads-up is terminal_context<2> (contribution[0]=oop, contribution[1]=ip).
+    template <std::size_t N>
     struct terminal_context {
-        terminal_pot pot{};
+        utility gross_pot = 0.0;
+        utility rake = 0.0;
+        std::array<utility, N> contribution{};
     };
 
     struct terminal_payoff {
@@ -37,25 +43,79 @@ namespace zeta::holdem {
         utility ip = 0.0;
     };
 
+    // Build a heads-up context from explicit pot accounting.
+    [[nodiscard]] constexpr terminal_context<2> make_heads_up_context(
+        const utility gross_pot,
+        const utility rake,
+        const utility oop_contribution,
+        const utility ip_contribution
+    ) noexcept {
+        return terminal_context<2>{
+            .gross_pot = gross_pot,
+            .rake = rake,
+            .contribution = {oop_contribution, ip_contribution}
+        };
+    }
+
+    [[nodiscard]] constexpr terminal_context<2> make_heads_up_context(const terminal_pot pot) noexcept {
+        return make_heads_up_context(pot.gross_pot, pot.rake, pot.oop_contribution, pot.ip_contribution);
+    }
+
+    // Recover the heads-up pot accounting from a two-player context so the
+    // existing payoff helpers can be reused unchanged.
+    [[nodiscard]] constexpr terminal_pot heads_up_pot(const terminal_context<2>& context) noexcept {
+        return terminal_pot{
+            .gross_pot = context.gross_pot,
+            .rake = context.rake,
+            .oop_contribution = context.contribution[0],
+            .ip_contribution = context.contribution[1]
+        };
+    }
+
     [[nodiscard]] constexpr std::size_t player_index(const player p) noexcept {
         return p == player::oop ? 0u : 1u;
     }
 
-    struct terminal_values {
-        std::array<std::array<terminal_value, combination_count>, 2> values{};
+    using value_array = std::array<terminal_value, combination_count>;
 
-        [[nodiscard]] constexpr const std::array<terminal_value, combination_count>& operator[](
-            const player p
-        ) const noexcept {
-            return values[player_index(p)];
+    // Templated structure-of-arrays: one contiguous per-combo value array per
+    // active player. terminal_values<2> is exactly the heads-up layout. Even at
+    // 6 players this is 6 * combination_count floats (~31 KB), so no nesting or
+    // compression is needed.
+    template <std::size_t N>
+    struct terminal_values {
+        std::array<value_array, N> player_values{};
+
+        // Heads-up ergonomic access by player enum (valid while N >= 2).
+        [[nodiscard]] constexpr const value_array& operator[](const player p) const noexcept {
+            return player_values[player_index(p)];
         }
 
-        [[nodiscard]] constexpr std::array<terminal_value, combination_count>& operator[](const player p) noexcept {
-            return values[player_index(p)];
+        [[nodiscard]] constexpr value_array& operator[](const player p) noexcept {
+            return player_values[player_index(p)];
+        }
+
+        // Seat-indexed access for the generic (N-way) form.
+        [[nodiscard]] constexpr const value_array& operator[](const std::size_t seat) const noexcept {
+            return player_values[seat];
+        }
+
+        [[nodiscard]] constexpr value_array& operator[](const std::size_t seat) noexcept {
+            return player_values[seat];
         }
     };
 
+    // Aggregate EV / win-tie accounting for an evaluated terminal. The summary is
+    // inherently kernel-specific: the heads-up specialization below exposes the
+    // lower/equal/higher decomposition (oop vs ip). An N-way summary would carry a
+    // different shape, so the primary template is left unimplemented on purpose.
+    template <std::size_t N>
     struct terminal_summary {
+        static_assert(N == 2, "terminal_summary is only specialized for heads-up (N == 2)");
+    };
+
+    template <>
+    struct terminal_summary<2> {
         accumulator oop_ev = 0.0;
         accumulator ip_ev = 0.0;
         accumulator matchup_weight = 0.0;
@@ -64,9 +124,13 @@ namespace zeta::holdem {
         accumulator ip_wins = 0.0;
     };
 
+    // Result bundle for an evaluated terminal. Fully templated on the player count
+    // so a future N-way kernel returns terminal_result<N> rather than being forced
+    // through a permanently heads-up (two-seat) shape.
+    template <std::size_t N>
     struct terminal_result {
-        terminal_values values{};
-        terminal_summary summary{};
+        terminal_values<N> values{};
+        terminal_summary<N> summary{};
     };
 
     struct reach_vector {
@@ -184,13 +248,13 @@ namespace zeta::holdem {
     struct river_reach_index {
         uint64_t board_hash = 0;
         std::array<combo_weight, combination_count> weights{};
-        std::array<combination_index, combination_count> active_indices{};
+        std::array<combination_index, river_live_combination_count> active_indices{};
         std::array<accumulator, 52> mass_by_card{};
         accumulator total_live_mass = 0.0;
         uint16_t active_count = 0;
-        std::array<river_rank_bucket, combination_count> rank_buckets{};
+        std::array<river_rank_bucket, river_live_combination_count> rank_buckets{};
         uint16_t unique_rank_count = 0;
-        std::array<river_bucket_card_mass, combination_count * 2> bucket_card_masses{};
+        std::array<river_bucket_card_mass, river_live_combination_count * 2> bucket_card_masses{};
         uint16_t bucket_card_mass_count = 0;
     };
 
@@ -398,7 +462,7 @@ namespace zeta::holdem {
     }
 
     inline void accumulate_showdown_bucket_values(
-        terminal_result& result,
+        terminal_result<2>& result,
         const river_terminal_cache& cache,
         const player hero_player,
         const river_reach_index& hero_index,
@@ -462,19 +526,23 @@ namespace zeta::holdem {
         }
     }
 
-    [[nodiscard]] inline terminal_result evaluate_showdown(
+    // Heads-up (2-player) exact showdown kernel: a two-stream rank-bucket merge.
+    // This is the hand-tuned fast path; the generic evaluate_showdown<N> dispatches
+    // here for N == 2. reach[0] == oop, reach[1] == ip.
+    [[nodiscard]] inline terminal_result<2> evaluate_showdown_heads_up(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
-        const terminal_context context
+        const terminal_context<2>& context
     ) noexcept {
         assert(cache.board_hash == oop_index.board_hash);
         assert(cache.board_hash == ip_index.board_hash);
 
-        terminal_result result{};
-        const auto oop_win = payoff_for_oop_win(context.pot);
-        const auto ip_win = payoff_for_ip_win(context.pot);
-        const auto tie = payoff_for_tie(context.pot);
+        terminal_result<2> result{};
+        const auto pot = heads_up_pot(context);
+        const auto oop_win = payoff_for_oop_win(pot);
+        const auto ip_win = payoff_for_ip_win(pot);
+        const auto tie = payoff_for_tie(pot);
 
         std::size_t oop_bucket_idx = 0;
         std::size_t ip_bucket_idx = 0;
@@ -546,65 +614,92 @@ namespace zeta::holdem {
         return result;
     }
 
-    [[nodiscard]] inline terminal_result evaluate_showdown(
+    // Generic entry point: player count is a compile-time constant. Primary
+    // template fails to compile for N != 2 until multiplayer kernels exist, so an
+    // accidental N-way call is a hard error rather than a silent slow path.
+    template <std::size_t N>
+    [[nodiscard]] terminal_result<N> evaluate_showdown(
+        const river_terminal_cache& cache,
+        const std::array<river_reach_index, N>& reach,
+        const terminal_context<N>& context
+    ) noexcept {
+        static_assert(N == 2, "N-way showdown evaluator not implemented");
+        if constexpr (N == 2) {
+            return evaluate_showdown_heads_up(cache, reach[0], reach[1], context);
+        }
+    }
+
+    // Heads-up convenience overload: forwards a pair of reach indices to the
+    // two-stream kernel (keeps existing call sites working).
+    [[nodiscard]] inline terminal_result<2> evaluate_showdown(
+        const river_terminal_cache& cache,
+        const river_reach_index& oop_index,
+        const river_reach_index& ip_index,
+        const terminal_context<2>& context
+    ) noexcept {
+        return evaluate_showdown_heads_up(cache, oop_index, ip_index, context);
+    }
+
+    [[nodiscard]] inline terminal_result<2> evaluate_showdown(
         const river_terminal_cache& cache,
         const reach_vector& oop_reach,
         const reach_vector& ip_reach,
-        const terminal_context context
+        const terminal_context<2>& context
     ) noexcept {
         const auto oop_index = make_river_reach_index(cache, oop_reach);
         const auto ip_index = make_river_reach_index(cache, ip_reach);
         return evaluate_showdown(cache, oop_index, ip_index, context);
     }
 
-    [[nodiscard]] inline terminal_values evaluate_showdown_values(
+    [[nodiscard]] inline terminal_values<2> evaluate_showdown_values(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
-        const terminal_context context
+        const terminal_context<2>& context
     ) noexcept {
         return evaluate_showdown(cache, oop_index, ip_index, context).values;
     }
 
-    [[nodiscard]] inline terminal_values evaluate_showdown_values(
+    [[nodiscard]] inline terminal_values<2> evaluate_showdown_values(
         const river_terminal_cache& cache,
         const reach_vector& oop_reach,
         const reach_vector& ip_reach,
-        const terminal_context context
+        const terminal_context<2>& context
     ) noexcept {
         return evaluate_showdown(cache, oop_reach, ip_reach, context).values;
     }
 
-    [[nodiscard]] inline terminal_summary summarize_showdown(
+    [[nodiscard]] inline terminal_summary<2> summarize_showdown(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
-        const terminal_context context
+        const terminal_context<2>& context
     ) noexcept {
         return evaluate_showdown(cache, oop_index, ip_index, context).summary;
     }
 
-    [[nodiscard]] inline terminal_summary summarize_showdown(
+    [[nodiscard]] inline terminal_summary<2> summarize_showdown(
         const river_terminal_cache& cache,
         const reach_vector& oop_reach,
         const reach_vector& ip_reach,
-        const terminal_context context
+        const terminal_context<2>& context
     ) noexcept {
         return evaluate_showdown(cache, oop_reach, ip_reach, context).summary;
     }
 
-    [[nodiscard]] inline terminal_values evaluate_fold_values(
+    // Heads-up (2-player) fold kernel: compatible opponent mass × constant payoff.
+    [[nodiscard]] inline terminal_values<2> evaluate_fold_values_heads_up(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
-        const terminal_context context,
+        const terminal_context<2>& context,
         const player folded
     ) noexcept {
         assert(cache.board_hash == oop_index.board_hash);
         assert(cache.board_hash == ip_index.board_hash);
 
-        terminal_values values{};
-        const auto payoff = payoff_for_fold(context.pot, folded);
+        terminal_values<2> values{};
+        const auto payoff = payoff_for_fold(heads_up_pot(context), folded);
 
         for (uint16_t offset = 0; offset < oop_index.active_count; ++offset) {
             const auto combo = oop_index.active_indices[offset];
@@ -621,11 +716,36 @@ namespace zeta::holdem {
         return values;
     }
 
-    [[nodiscard]] inline terminal_values evaluate_fold_values(
+    // Generic fold entry point. Fold generalizes cleanly, but only the heads-up
+    // kernel exists today, so the primary template hard-errors for N != 2.
+    template <std::size_t N>
+    [[nodiscard]] terminal_values<N> evaluate_fold_values(
+        const river_terminal_cache& cache,
+        const std::array<river_reach_index, N>& reach,
+        const terminal_context<N>& context,
+        const player folded
+    ) noexcept {
+        static_assert(N == 2, "N-way fold evaluator not implemented");
+        if constexpr (N == 2) {
+            return evaluate_fold_values_heads_up(cache, reach[0], reach[1], context, folded);
+        }
+    }
+
+    [[nodiscard]] inline terminal_values<2> evaluate_fold_values(
+        const river_terminal_cache& cache,
+        const river_reach_index& oop_index,
+        const river_reach_index& ip_index,
+        const terminal_context<2>& context,
+        const player folded
+    ) noexcept {
+        return evaluate_fold_values_heads_up(cache, oop_index, ip_index, context, folded);
+    }
+
+    [[nodiscard]] inline terminal_values<2> evaluate_fold_values(
         const river_terminal_cache& cache,
         const reach_vector& oop_reach,
         const reach_vector& ip_reach,
-        const terminal_context context,
+        const terminal_context<2>& context,
         const player folded
     ) noexcept {
         const auto oop_index = make_river_reach_index(cache, oop_reach);

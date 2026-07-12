@@ -214,16 +214,17 @@ namespace {
         return 0;
     }
 
-    zeta::holdem::terminal_result reference_showdown(
+    zeta::holdem::terminal_result<2> reference_showdown(
         const zeta::holdem::river_terminal_cache& cache,
         const zeta::holdem::reach_vector& oop_reach,
         const zeta::holdem::reach_vector& ip_reach,
-        const zeta::holdem::terminal_context context
+        const zeta::holdem::terminal_context<2>& context
     ) {
-        zeta::holdem::terminal_result result{};
-        const auto oop_win = zeta::holdem::payoff_for_oop_win(context.pot);
-        const auto ip_win = zeta::holdem::payoff_for_ip_win(context.pot);
-        const auto tie = zeta::holdem::payoff_for_tie(context.pot);
+        zeta::holdem::terminal_result<2> result{};
+        const auto pot = zeta::holdem::heads_up_pot(context);
+        const auto oop_win = zeta::holdem::payoff_for_oop_win(pot);
+        const auto ip_win = zeta::holdem::payoff_for_ip_win(pot);
+        const auto tie = zeta::holdem::payoff_for_tie(pot);
 
         for (zeta::holdem::combination_index oi = 0; oi < zeta::holdem::combination_count; ++oi) {
             const auto oop_weight = oop_reach[oi];
@@ -320,8 +321,8 @@ namespace {
     }
 
     void check_result_matches_reference(
-        const zeta::holdem::terminal_result& actual,
-        const zeta::holdem::terminal_result& expected,
+        const zeta::holdem::terminal_result<2>& actual,
+        const zeta::holdem::terminal_result<2>& expected,
         const double value_tolerance = 0.01,
         const double summary_tolerance = 0.05
     ) {
@@ -838,14 +839,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_values_respect_card_removal) {
     ip[as_qs] = 1.0f;
     ip[six_h_seven_d] = 1.0f;
 
-    const zeta::holdem::terminal_context context{
-        .pot = {
-            .gross_pot = 100.0,
-            .rake = 0.0,
-            .oop_contribution = 50.0,
-            .ip_contribution = 50.0
-        }
-    };
+    const auto context = zeta::holdem::make_heads_up_context(100.0, 0.0, 50.0, 50.0);
 
     const auto values = zeta::holdem::evaluate_fold_values(
         cache,
@@ -880,14 +874,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_values_handle_board_blockers_and_both_
     ip[six_h_seven_d] = 1.0f;
     ip[board_blocked_ip] = 1.0f;
 
-    const zeta::holdem::terminal_context context{
-        .pot = {
-            .gross_pot = 100.0,
-            .rake = 0.0,
-            .oop_contribution = 50.0,
-            .ip_contribution = 50.0
-        }
-    };
+    const auto context = zeta::holdem::make_heads_up_context(100.0, 0.0, 50.0, 50.0);
 
     const auto oop_index = zeta::holdem::make_river_reach_index(cache, oop);
     const auto ip_index = zeta::holdem::make_river_reach_index(cache, ip);
@@ -909,7 +896,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_values_handle_board_blockers_and_both_
     BOOST_CHECK_EQUAL(
         ip_folds[zeta::holdem::player::oop][as_ks],
         static_cast<zeta::holdem::terminal_value>(
-            slow_compatible_mass(cache, ip_index, as_ks) * zeta::holdem::payoff_for_fold(context.pot, zeta::holdem::player::ip).oop
+            slow_compatible_mass(cache, ip_index, as_ks) * zeta::holdem::payoff_for_fold(zeta::holdem::heads_up_pot(context), zeta::holdem::player::ip).oop
         )
     );
     BOOST_CHECK_EQUAL(ip_folds[zeta::holdem::player::oop][board_blocked_oop], 0.0f);
@@ -936,14 +923,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_matches_reference_oracle) {
         }
     }
 
-    const zeta::holdem::terminal_context context{
-        .pot = {
-            .gross_pot = 300.0,
-            .rake = 15.0,
-            .oop_contribution = 100.0,
-            .ip_contribution = 100.0
-        }
-    };
+    const auto context = zeta::holdem::make_heads_up_context(300.0, 15.0, 100.0, 100.0);
 
     const auto actual = zeta::holdem::evaluate_showdown(cache, oop, ip, context);
     const auto expected = reference_showdown(cache, oop, ip, context);
@@ -951,10 +931,10 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_matches_reference_oracle) {
     check_close_abs(
         actual.summary.oop_ev + actual.summary.ip_ev,
         actual.summary.matchup_weight * (
-            context.pot.gross_pot
-            - context.pot.rake
-            - context.pot.oop_contribution
-            - context.pot.ip_contribution
+            context.gross_pot
+            - context.rake
+            - context.contribution[0]
+            - context.contribution[1]
         ),
         0.1
     );
@@ -962,17 +942,10 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_matches_reference_oracle) {
 
 BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_single_combo_win_loss_tie) {
     const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
-    const zeta::holdem::terminal_context context{
-        .pot = {
-            .gross_pot = 100.0,
-            .rake = 0.0,
-            .oop_contribution = 50.0,
-            .ip_contribution = 50.0
-        }
-    };
-    const auto oop_win = zeta::holdem::payoff_for_oop_win(context.pot);
-    const auto ip_win = zeta::holdem::payoff_for_ip_win(context.pot);
-    const auto tie = zeta::holdem::payoff_for_tie(context.pot);
+    const auto context = zeta::holdem::make_heads_up_context(100.0, 0.0, 50.0, 50.0);
+    const auto oop_win = zeta::holdem::payoff_for_oop_win(zeta::holdem::heads_up_pot(context));
+    const auto ip_win = zeta::holdem::payoff_for_ip_win(zeta::holdem::heads_up_pot(context));
+    const auto tie = zeta::holdem::payoff_for_tie(zeta::holdem::heads_up_pot(context));
 
     const auto [oop_wins_combo, ip_loses_combo] = find_disjoint_pair(
         cache,
@@ -1036,14 +1009,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_blocker_excludes_overlapping_match
     ip[as_qs] = 1.0f;
     ip[six_h_seven_d] = 1.0f;
 
-    const zeta::holdem::terminal_context context{
-        .pot = {
-            .gross_pot = 120.0,
-            .rake = 0.0,
-            .oop_contribution = 60.0,
-            .ip_contribution = 60.0
-        }
-    };
+    const auto context = zeta::holdem::make_heads_up_context(120.0, 0.0, 60.0, 60.0);
 
     const auto actual = zeta::holdem::evaluate_showdown(cache, oop, ip, context);
     const auto expected = reference_showdown(cache, oop, ip, context);
@@ -1069,14 +1035,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_board_blocked_combos_contribute_no
     ip[board_blocked_ip] = 11.0f;
     ip[ip_live] = 1.0f;
 
-    const zeta::holdem::terminal_context context{
-        .pot = {
-            .gross_pot = 100.0,
-            .rake = 0.0,
-            .oop_contribution = 50.0,
-            .ip_contribution = 50.0
-        }
-    };
+    const auto context = zeta::holdem::make_heads_up_context(100.0, 0.0, 50.0, 50.0);
 
     const auto actual = zeta::holdem::evaluate_showdown(cache, oop, ip, context);
     const auto expected = reference_showdown(cache, oop, ip, context);
@@ -1094,15 +1053,8 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_random_reference_regression) {
         for (int reach_iter = 0; reach_iter < 20; ++reach_iter) {
             const auto oop = random_sparse_reach(cache, state);
             const auto ip = random_sparse_reach(cache, state);
-            const zeta::holdem::terminal_context context{
-                .pot = {
-                    .gross_pot = 150.0 + static_cast<double>(xorshift64(state) % 250),
-                    .rake = static_cast<double>(xorshift64(state) % 30),
-                    .oop_contribution = static_cast<double>(50 + (xorshift64(state) % 60)),
-                    .ip_contribution = static_cast<double>(50 + (xorshift64(state) % 60))
-                }
-            };
-            if ((context.pot.gross_pot - context.pot.rake) < (context.pot.oop_contribution + context.pot.ip_contribution)) {
+            const auto context = zeta::holdem::make_heads_up_context(150.0 + static_cast<double>(xorshift64(state) % 250), static_cast<double>(xorshift64(state) % 30), static_cast<double>(50 + (xorshift64(state) % 60)), static_cast<double>(50 + (xorshift64(state) % 60)));
+            if ((context.gross_pot - context.rake) < (context.contribution[0] + context.contribution[1])) {
                 continue;
             }
 
@@ -1130,14 +1082,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_pathological_boards_match_referenc
         const auto cache = zeta::holdem::make_river_terminal_cache(board);
         const auto oop = random_sparse_reach(cache, state);
         const auto ip = random_sparse_reach(cache, state);
-        const zeta::holdem::terminal_context context{
-            .pot = {
-                .gross_pot = 250.0,
-                .rake = 10.0,
-                .oop_contribution = 100.0,
-                .ip_contribution = 100.0
-            }
-        };
+        const auto context = zeta::holdem::make_heads_up_context(250.0, 10.0, 100.0, 100.0);
 
         const auto actual = zeta::holdem::evaluate_showdown(cache, oop, ip, context);
         const auto expected = reference_showdown(cache, oop, ip, context);
@@ -1167,14 +1112,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_is_deterministic_for_cache_index_a
     }
     BOOST_REQUIRE(assigned > 0);
 
-    const zeta::holdem::terminal_context context{
-        .pot = {
-            .gross_pot = 300.0,
-            .rake = 15.0,
-            .oop_contribution = 100.0,
-            .ip_contribution = 100.0
-        }
-    };
+    const auto context = zeta::holdem::make_heads_up_context(300.0, 15.0, 100.0, 100.0);
     const auto result_a = zeta::holdem::evaluate_showdown(*cache_a, oop, ip, context);
     const auto result_b = zeta::holdem::evaluate_showdown(*cache_b, oop, ip, context);
     check_result_matches_reference(result_a, result_b, 0.0, 0.0);
@@ -1197,14 +1135,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_summary_and_values_are_consistent)
         }
     }
 
-    const zeta::holdem::terminal_context context{
-        .pot = {
-            .gross_pot = 300.0,
-            .rake = 15.0,
-            .oop_contribution = 100.0,
-            .ip_contribution = 100.0
-        }
-    };
+    const auto context = zeta::holdem::make_heads_up_context(300.0, 15.0, 100.0, 100.0);
 
     const auto result = zeta::holdem::evaluate_showdown(*cache, oop, ip, context);
     const auto values = zeta::holdem::evaluate_showdown_values(*cache, oop, ip, context);
@@ -1234,13 +1165,78 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_summary_and_values_are_consistent)
     check_close_abs(
         result.summary.oop_ev + result.summary.ip_ev,
         result.summary.matchup_weight * (
-            context.pot.gross_pot
-            - context.pot.rake
-            - context.pot.oop_contribution
-            - context.pot.ip_contribution
+            context.gross_pot
+            - context.rake
+            - context.contribution[0]
+            - context.contribution[1]
         ),
         0.1
     );
+}
+
+BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_array_api_matches_index_api) {
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    auto oop = zeta::holdem::reach_vector{};
+    auto ip = zeta::holdem::reach_vector{};
+    std::size_t assigned = 0;
+    for (std::size_t order = 0; order < cache.rank_order_count && assigned < 24; ++order) {
+        const auto combo = cache.rank_order[order];
+        oop[combo] = static_cast<float>((order % 3) + 1) * 0.5f;
+        ip[combo] = static_cast<float>((order % 4) + 1) * 0.25f;
+        ++assigned;
+    }
+    BOOST_REQUIRE(assigned > 0);
+
+    const auto context = zeta::holdem::make_heads_up_context(300.0, 15.0, 100.0, 100.0);
+    const auto oop_index = zeta::holdem::make_river_reach_index(cache, oop);
+    const auto ip_index = zeta::holdem::make_river_reach_index(cache, ip);
+
+    const auto expected = zeta::holdem::evaluate_showdown(cache, oop_index, ip_index, context);
+
+    const std::array<zeta::holdem::river_reach_index, 2> reach{oop_index, ip_index};
+    const auto actual = zeta::holdem::evaluate_showdown<2>(cache, reach, context);
+
+    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+        BOOST_CHECK_EQUAL(actual.values[zeta::holdem::player::oop][i], expected.values[zeta::holdem::player::oop][i]);
+        BOOST_CHECK_EQUAL(actual.values[zeta::holdem::player::ip][i], expected.values[zeta::holdem::player::ip][i]);
+    }
+    BOOST_CHECK_EQUAL(actual.summary.oop_ev, expected.summary.oop_ev);
+    BOOST_CHECK_EQUAL(actual.summary.ip_ev, expected.summary.ip_ev);
+    BOOST_CHECK_EQUAL(actual.summary.matchup_weight, expected.summary.matchup_weight);
+
+    // Seat-indexed access on terminal_values<N> must agree with player-enum access.
+    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+        BOOST_CHECK_EQUAL(actual.values[std::size_t{0}][i], actual.values[zeta::holdem::player::oop][i]);
+        BOOST_CHECK_EQUAL(actual.values[std::size_t{1}][i], actual.values[zeta::holdem::player::ip][i]);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_terminal_fold_array_api_matches_index_api) {
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    auto oop = zeta::holdem::reach_vector{};
+    auto ip = zeta::holdem::reach_vector{};
+    std::size_t assigned = 0;
+    for (std::size_t order = 0; order < cache.rank_order_count && assigned < 24; ++order) {
+        const auto combo = cache.rank_order[order];
+        oop[combo] = static_cast<float>((order % 3) + 1) * 0.5f;
+        ip[combo] = static_cast<float>((order % 4) + 1) * 0.25f;
+        ++assigned;
+    }
+    BOOST_REQUIRE(assigned > 0);
+
+    const auto context = zeta::holdem::make_heads_up_context(100.0, 0.0, 50.0, 50.0);
+    const auto oop_index = zeta::holdem::make_river_reach_index(cache, oop);
+    const auto ip_index = zeta::holdem::make_river_reach_index(cache, ip);
+    const std::array<zeta::holdem::river_reach_index, 2> reach{oop_index, ip_index};
+
+    for (const auto folded : {zeta::holdem::player::oop, zeta::holdem::player::ip}) {
+        const auto expected = zeta::holdem::evaluate_fold_values(cache, oop_index, ip_index, context, folded);
+        const auto actual = zeta::holdem::evaluate_fold_values<2>(cache, reach, context, folded);
+        for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+            BOOST_CHECK_EQUAL(actual[zeta::holdem::player::oop][i], expected[zeta::holdem::player::oop][i]);
+            BOOST_CHECK_EQUAL(actual[zeta::holdem::player::ip][i], expected[zeta::holdem::player::ip][i]);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_CASE(holdem_combination_mask_helper_matches_table) {
