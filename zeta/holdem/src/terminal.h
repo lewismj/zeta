@@ -27,9 +27,52 @@ namespace zeta::holdem {
     using accumulator = double;
     using utility = double;
 
-    // N-way seat mask: bitset<N> where bit i == true means seat i is folded.
+    // N-way seat mask: generic template uses bitset<N> where bit i == true means seat i is folded.
     template <std::size_t N>
-    using folded_mask = std::bitset<N>;
+    struct folded_mask {
+        std::bitset<N> bits;
+
+        [[nodiscard]] constexpr bool operator[](std::size_t seat) const noexcept {
+            return bits[seat];
+        }
+
+        constexpr bool& operator[](std::size_t seat) noexcept {
+            return bits[seat];
+        }
+    };
+
+    // Heads-up specialization: genuine optimization with direct boolean fields, not bitset.
+    // This avoids any bitset overhead in the fast path.
+    template <>
+    struct folded_mask<2> {
+        bool oop_folded = false;
+        bool ip_folded = false;
+
+        // Accessor for compatibility with generic interface
+        [[nodiscard]] constexpr bool operator[](std::size_t seat) const noexcept {
+            return seat == 0 ? oop_folded : ip_folded;
+        }
+
+        // Helper to set folded state
+        constexpr void set_folded(std::size_t seat, bool value) noexcept {
+            if (seat == 0) {
+                oop_folded = value;
+            } else {
+                ip_folded = value;
+            }
+        }
+
+        // Factory from heads_up_player for compatibility.
+        [[nodiscard]] static constexpr folded_mask<2> from_folded_player(const heads_up_player folded) noexcept {
+            folded_mask<2> mask;
+            if (folded == heads_up_player::oop) {
+                mask.oop_folded = true;
+            } else {
+                mask.ip_folded = true;
+            }
+            return mask;
+        }
+    };
 
     struct terminal_pot {
         utility gross_pot = 0.0;
@@ -786,6 +829,7 @@ namespace zeta::holdem {
 
     // Generic fold entry point with bitset: now properly handles N-way folded masks.
     // The generic kernel uses folded_mask<N> (bitset<N>) where bit i == true means seat i is folded.
+    // Heads-up uses the specialized folded_mask<2> with direct boolean fields for performance.
     template <std::size_t N>
     [[nodiscard]] terminal_values<N> evaluate_fold_values(
         const river_terminal_cache& cache,
@@ -794,17 +838,16 @@ namespace zeta::holdem {
         const folded_mask<N>& folded
     ) noexcept {
         if constexpr (N == 2) {
-            return evaluate_fold_values_heads_up(
-                cache, reach[0], reach[1], context,
-                folded[static_cast<std::size_t>(heads_up_player::oop)] ? heads_up_player::oop : heads_up_player::ip
-            );
+            // Heads-up fast path: extract from the specialized folded_mask<2> struct
+            const auto folded_player = folded.oop_folded ? heads_up_player::oop : heads_up_player::ip;
+            return evaluate_fold_values_heads_up(cache, reach[0], reach[1], context, folded_player);
         } else {
             return evaluate_fold_values_generic(cache, reach, context, folded);
         }
     }
 
     // Heads-up convenience overload (deprecated signature, kept for compatibility).
-    // Converts heads_up_player to folded_mask<2> and dispatches to the generic entry point.
+    // Converts heads_up_player to folded_mask<2> using the specialized factory.
     template <std::size_t N>
     [[nodiscard]] terminal_values<N> evaluate_fold_values(
         const river_terminal_cache& cache,
@@ -814,8 +857,7 @@ namespace zeta::holdem {
     ) noexcept {
         static_assert(N == 2, "heads_up_player parameter only valid for N == 2");
         if constexpr (N == 2) {
-            folded_mask<2> folded;
-            folded[static_cast<std::size_t>(folded_player)] = true;
+            const auto folded = folded_mask<2>::from_folded_player(folded_player);
             return evaluate_fold_values(cache, reach, context, folded);
         }
     }

@@ -1259,10 +1259,10 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_generic_kernel_matches_heads_up) {
     const auto ip_index = zeta::holdem::make_river_reach_index(cache, ip);
     const std::array<zeta::holdem::river_reach_index, 2> reach{oop_index, ip_index};
 
-    // Test both folded scenarios with the generic bitset-based API
+    // Test both folded scenarios with the generic folded_mask API
     for (std::size_t folded_seat = 0; folded_seat < 2; ++folded_seat) {
         zeta::holdem::folded_mask<2> folded_mask;
-        folded_mask[folded_seat] = true;
+        folded_mask.set_folded(folded_seat, true);
 
         const auto generic_result = zeta::holdem::evaluate_fold_values<2>(cache, reach, context, folded_mask);
         const auto heads_up_player = (folded_seat == 0) ? zeta::holdem::heads_up_player::oop : zeta::holdem::heads_up_player::ip;
