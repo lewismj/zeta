@@ -1239,6 +1239,43 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_array_api_matches_index_api) {
     }
 }
 
+// Validation: generic fold kernel with folded_mask<N> produces heads-up-equivalent
+// results for N == 2. This is the key test that the N-way API is working correctly.
+BOOST_AUTO_TEST_CASE(holdem_terminal_fold_generic_kernel_matches_heads_up) {
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    auto oop = zeta::holdem::reach_vector{};
+    auto ip = zeta::holdem::reach_vector{};
+    std::size_t assigned = 0;
+    for (std::size_t order = 0; order < cache.rank_order_count && assigned < 24; ++order) {
+        const auto combo = cache.rank_order[order];
+        oop[combo] = static_cast<float>((order % 3) + 1) * 0.5f;
+        ip[combo] = static_cast<float>((order % 4) + 1) * 0.25f;
+        ++assigned;
+    }
+    BOOST_REQUIRE(assigned > 0);
+
+    const auto context = zeta::holdem::make_heads_up_context(100.0, 0.0, 50.0, 50.0);
+    const auto oop_index = zeta::holdem::make_river_reach_index(cache, oop);
+    const auto ip_index = zeta::holdem::make_river_reach_index(cache, ip);
+    const std::array<zeta::holdem::river_reach_index, 2> reach{oop_index, ip_index};
+
+    // Test both folded scenarios with the generic bitset-based API
+    for (std::size_t folded_seat = 0; folded_seat < 2; ++folded_seat) {
+        zeta::holdem::folded_mask<2> folded_mask;
+        folded_mask[folded_seat] = true;
+
+        const auto generic_result = zeta::holdem::evaluate_fold_values<2>(cache, reach, context, folded_mask);
+        const auto heads_up_player = (folded_seat == 0) ? zeta::holdem::heads_up_player::oop : zeta::holdem::heads_up_player::ip;
+        const auto heads_up_result = zeta::holdem::evaluate_fold_values(cache, oop_index, ip_index, context, heads_up_player);
+
+        // Verify bit-identical results
+        for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+            BOOST_CHECK_EQUAL(generic_result[0][i], heads_up_result[zeta::holdem::heads_up_player::oop][i]);
+            BOOST_CHECK_EQUAL(generic_result[1][i], heads_up_result[zeta::holdem::heads_up_player::ip][i]);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(holdem_combination_mask_helper_matches_table) {
     BOOST_CHECK_EQUAL(zeta::holdem::combination_mask(0), zeta::holdem::combination_masks.front());
     BOOST_CHECK_EQUAL(

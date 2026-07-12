@@ -717,42 +717,142 @@ Each step is source-compatible and independently testable. Steps 1–6 are the
 
 ### Future roadmap (the multi-kernel engine)
 
-Beyond the near-term refactor, the tiered `terminal_engine` grows in this order:
+Beyond the near-term refactor, the tiered `terminal_engine` grows in this order.
+The following reordering (from review feedback) reflects commercial priorities:
 
-8. **`range_data` split views** — introduce `sampling_view` (`alias_table` / CDF
-   / strata) and richer `blocker_view` as *separate* structures alongside the
-   existing lean `exact_view` (`river_reach_index`). Do not overload the hot path.
-9. **`card_to_combos`** in the cache for fast blocker/availability queries.
-10. **Payoff kernel + `pot_structure`** — separate showdown ranking from side-pot
-    payoff computation. `pot_structure<N>` (rake + per-seat contribution +
-    contested active-set) is the payoff input; `build_side_pots` derives layers and
-    `distribute_pots` awards them. Kept **off** the lean showdown `terminal_context<N>`
-    and only invoked by ranking-based (enumeration/sampled) kernels. See
-    *Layer 5b — Payoff kernel: active-set & `pot_structure`* above for the full
-    design and heads-up reduction.
-11. **3-player narrow-range exact enumeration kernel** with card-availability
-    pruning, range ordering, and incremental `used_cards` blockers.
-12. **Sampled 4+ player kernel**: stratified + importance + quasi-random
-    (Sobol/Halton) + adaptive sampling.
-13. **`terminal_engine` dispatch** (`evaluate_terminal`) routing on player count,
-    range sizes, accuracy, and CFR mode.
-14. **Abstraction support** — bucketed ranges feeding the enumeration/sampled
-    kernels.
-15. **Parallelism & memory** — board-first parallelism, NUMA-aware scheduling,
+**Phase 1 (current): API migration & heads-up isolation** ✅
+
+Steps 1–6 above (complete).
+
+**Phase 2: Multiplayer infrastructure & workspace**
+
+7. **`terminal_workspace<N>`** — the `river_reach_index` is ~129 KB per player; do
+   not retain per CFR node or copy around. Wrap reach indices in a reusable scratch
+   object (thread-local):
+   
+   ```cpp
+   template <size_t N>
+   struct terminal_workspace {
+       std::array<river_reach_index, N> reach;
+       // future: scratch buffers
+   };
+   ```
+   
+   Pass by reference to `evaluate_terminal(workspace&, cache, context)`. This
+   validates the architecture's memory model: persistent cache + ephemeral
+   workspace.
+
+8. **`evaluate_fold_values<N>` generic kernel** — the fold evaluator is almost
+   free to generalize (compatible mass × constant payoff) and validates the N-way
+   architecture with minimal risk. Implement generic loop over active players; add
+   unit tests. No sampling, no special casing — just the first "non-heads-up"
+   kernel.
+
+9. **`pot_structure<N>` & side-pot infrastructure** — separate showdown ranking
+   from payoff computation. Implement `pot_structure<N>` (rake + per-seat
+   contribution + active-set mask), `build_side_pots`, and `distribute_pots` as
+   standalone, testable units. **Do not use yet** — only unit-test the payoff
+   pipeline in isolation.
+
+**Phase 3: Sampling & multiway dispatch**
+
+10. **`terminal_engine<N>` dispatch layer** — route on player count and range size:
+    - `N == 2`: heads-up exact (two-stream rank sweep)
+    - `N == 3` *and* sparse ranges: prototype 3-player exact
+    - `N >= 3`: sampled (stratified, importance, quasi-random)
+    
+    The dispatch routes the generic `evaluate_terminal` call to the right kernel.
+
+11. **3-player exact enumeration kernel (refined approach)** — not triple-nested
+    loops, but **hero-fixed enumeration + opponent-pair sub-kernel**:
+    
+    ```cpp
+    for hero_combo in reach[0] {
+        remove_blockers(hero_combo, opponent_combos);
+        result += evaluate_opponent_pair(opponent_combos);
+    }
+    ```
+    
+    This avoids the combinatorial explosion of full enumeration. Requires
+    `card_to_combos` (see step 12). **Conditional** on sparse range sizes.
+
+12. **`card_to_combos` in the cache** — defer from step 9 (earlier plan). Only
+    needed by the 3-player exact kernel for fast blocker/availability filtering.
+    Add `std::array<uint16_t, 52>` lookup: card → combo indices containing it. Keep
+    the cache at 22 KB until this kernel is real; adding it naively is ~10 KB more
+    but only the 3-way kernel needs it.
+
+13. **Sampled 4+ player kernel** — stratified + importance + quasi-random
+    (Sobol/Halton) + adaptive sampling. Requires `range_data` split views
+    (step 14).
+
+14. **`range_data` split views** — introduce `sampling_view` (`alias_table` / CDF
+    / strata) and richer `blocker_view` as *separate* structures alongside the
+    existing lean `exact_view` (`river_reach_index`). Do not overload the hot path.
+
+**Phase 4 (future): Abstraction & polish**
+
+15. **Abstraction support** — bucketed ranges feeding the enumeration/sampled
+    kernels. Commercial solvers solve buckets, not 1081 raw combos.
+
+16. **`rake_policy` abstraction** — the current rake model `f = (gross - rake) /
+    gross` is not universally valid (rake caps, no-flop rules, time collection,
+    etc.). Add a policy abstraction eventually; for now, document the assumption.
+
+17. **Parallelism & memory** — board-first parallelism, NUMA-aware scheduling,
     compact regret/infoset storage, optional SIMD/GPU terminal rollouts.
 
-**Additional architectural guidance (review round 4):**
+**Architectural principles (review feedback synthesis):**
 
-- **Keep the evaluator single-threaded.** Do *not* parallelize inside a showdown
-  (rank-bucket sweeps synchronize badly and thrash cache). Parallelize the *outer*
-  dimension instead: CFR traversal / board batches call the evaluator with a
-  read-only cache and a thread-local workspace. The kernel stays cache-friendly
-  and branch-predictable.
+This architecture is **commercial-grade**. The critical decisions that *must* remain:
+
+✅ **Compile-time player count** — no dynamic allocation, size known to compiler, no 
+   runtime player-count checks. Prefer `std::array<T, N>` over dynamic sizing.
+
+✅ **Heads-up specialization sacred** — the two-stream rank sweep is a fast specialization 
+   that must remain isolated and hand-tuned. Do *not* add the HU path as a special case 
+   inside a generic N-way loop; the compiler cannot magically optimize it back.
+
+✅ **SoA terminal values** — never nest vectors. Keep `std::array<value_array, N>` flat.
+   Even 6 players × 1081 combos ≈ 26 KB, trivial.
+
+✅ **Player-neutral cache & reach indexing** — `river_terminal_cache` and `river_reach_index` 
+   know nothing about players. This separation is correct.
+
+✅ **Separate payoff kernel** — ranking (showdown) and payoff (pots, rake, side-pot 
+   distribution) are different problems. Do not mix them.
+
+✅ **Sampled N-way strategy** — for 4+ players, sampling with variance reduction is 
+   far more practical than exact enumeration (which explodes combinatorially). Heads-up 
+   exact, 3-player exact for sparse ranges only, 4+ sampled.
+
+✅ **Single-threaded evaluator** — do *not* parallelize rank-bucket sweeps internally 
+   (synchronization and cache thrashing). Parallelize the *outer* dimension instead: 
+   CFR traversal / board batches call the evaluator with a read-only cache and a 
+   thread-local workspace.
+
 - **Reach indices are scratch, not persistent.** `river_terminal_cache` is the
   persistent shared object; a `river_reach_index` is ~129 KB per player and must
-  not be retained per CFR node. Eventually wrap them in a thread-local
-  `terminal_workspace { std::array<river_reach_index, N> players; scratch; }` that
-  is reused across evaluations.
+  not be retained per CFR node. Wrap them in a thread-local
+  `terminal_workspace<N> { std::array<river_reach_index, N> reach; scratch; }` that
+  is reused across evaluations (Phase 2, step 7).
+
+- **3-player exact is hero-fixed + opponent-pair**, not triple-nested loops. Full 
+  enumeration of 1000³ combos is impossible; reduce to a single hero combo plus 
+  opponent-pair evaluation. Only applicable for sparse ranges.
+
+- **Do not rename `terminal_context<N>` now.** It is currently `{ pot info }`. Later, 
+  when multiway is real, introduce `pot_context<N>` (just this struct) and 
+  `terminal_context<N> { pot_context<N> pot; seat_mask<N> active; }` to add the 
+  active-set / folded-player information. For now, keep it clean; no churn.
+
+- **Defer `card_to_combos`** from the cache. It is ~10 KB of overhead and only needed 
+  by the 3-player exact kernel for blocker filtering. Keep cache at 22 KB until then.
+
+- **Benchmark baseline is excellent.** Dense showdown: 138M compatible_matchups/s. 
+  The fold-to-showdown ratio is sensible (fold is just compatible mass × payoff; 
+  showdown has bucket traversal + accounting). Preserve this performance in later 
+  kernels.
 - **One evaluator per street — do not unify.** Keep this a *river-only* evaluator.
   Turn (`C(44,1)` unknown rivers) and flop (`C(45,2)` unknown turn+river) are
   different problems; a single all-streets evaluator destroys the specialization.
@@ -791,6 +891,43 @@ additive and shares Layers 1–2.
 - Compare pre/post refactor for: cache construction, reach index construction,
   dense showdown, dense fold, sparse scaling (50/100/300/1081).
 - Do not add memory-layout no-op micro-benchmarks.
+
+---
+
+## Status
+
+### Completed (Steps 1–6)
+
+✅ **API migration & heads-up preservation complete.**
+
+- `terminal_context<N>` templated on player count with `std::array<utility, N> 
+  contribution`; heads-up context helpers for compatibility.
+- `terminal_values<N>` and `terminal_result<N>` templated as compact SoA 
+  (`std::array<value_array, N>`) without nesting.
+- Generic `evaluate_showdown<N>` and `evaluate_fold_values<N>` entry points with 
+  primary-template `static_assert(N == 2)` guard (non-heads-up calls are compile errors).
+- Heads-up algorithm isolated as explicit specialization (`evaluate_showdown<2>`, 
+  `evaluate_fold_values_heads_up`); current kernels renamed but algorithm unchanged.
+- Existing call sites + 74+ test cases passing; benchmarks confirm no regression.
+- Documentation (`terminal_evaluator.md`) updated: objective reworded to "active players"; 
+  specialization noted; sections retitled; generic API shape documented; no performance 
+  change.
+
+**Next immediate step: Phase 2, Step 7 (`terminal_workspace<N>`)**
+
+The fold evaluator can be implemented alongside this (low risk, high validation).
+
+### Deferred (do not implement yet)
+
+❌ **Do not implement generic N-way showdown now.** The heads-up specialization is 
+the only exact showdown kernel; multiplayer exact is deferred to Phase 3.
+
+❌ **Do not add `card_to_combos` to the cache yet.** It is 10 KB of overhead and 
+only needed by the 3-player exact kernel (Phase 3, step 11). Keep the cache at 22 KB.
+
+❌ **Do not rename `terminal_context<N>` to `pot_context<N>` yet.** Rename when the 
+active-set / folded-player information is actually needed (Phase 2, step 9+). Current 
+naming is clean; early renaming creates churn.
 
 ---
 
