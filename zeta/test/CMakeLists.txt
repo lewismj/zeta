@@ -46,6 +46,7 @@ add_executable(zeta_tests
     src/test_main.cpp
     src/test_repr.cpp
     src/test_holdem.cpp
+    src/test_cfr_graph.cpp
 )
 target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework)
 target_compile_definitions(zeta_tests PRIVATE BOOST_TEST_DYN_LINK)

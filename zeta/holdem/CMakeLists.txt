@@ -2,13 +2,22 @@ project(zeta_holdem LANGUAGES CXX)
 
 add_library(zeta-holdem STATIC
     src/board.h
-    src/eval.h
-    src/evaluator.h
     src/range.h
     src/range_parser.h
     src/tables.h
-    src/terminal.h
+    src/tables.cpp
     src/tables.generated.cpp
+    src/eval/eval.h
+    src/eval/evaluator.h
+    src/terminal/terminal.h
+    src/terminal/terminal_types.h
+    src/terminal/engine.h
+    src/terminal/fold.h
+    src/terminal/reach_index.h
+    src/terminal/showdown.h
+    src/terminal/workspace.h
+    src/cfr/graph.h
+    src/cfr/graph.cpp
 )
 add_library(zeta_holdem ALIAS zeta-holdem)
 

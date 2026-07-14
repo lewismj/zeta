@@ -1,33 +1,5 @@
 project(zeta_benchmark_holdem LANGUAGES CXX)
 
-add_executable(zeta-bench-holdem-probes
-    src/bench_probes.cpp
-)
-
-target_link_libraries(zeta-bench-holdem-probes
-    PRIVATE zeta-holdem
-)
-
-if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_link_libraries(zeta-bench-holdem-probes PRIVATE stdc++ m)
-endif()
-
-set(ZETA_BENCH_HOLDEM_MAX_RANDOM_NS "80" CACHE STRING "Maximum random-corpus ns/eval for zeta-bench-holdem-regression")
-set(ZETA_BENCH_HOLDEM_MAX_ADVERSARIAL_NS "80" CACHE STRING "Maximum adversarial-corpus ns/eval for zeta-bench-holdem-regression")
-set(ZETA_BENCH_HOLDEM_MAX_INDEX_NS "60" CACHE STRING "Maximum isolated quinary-index ns/op for zeta-bench-holdem-regression")
-
-add_custom_target(zeta-bench-holdem-regression
-    COMMAND $<TARGET_FILE:zeta-bench-holdem-probes>
-        --quick
-        --max-random-ns ${ZETA_BENCH_HOLDEM_MAX_RANDOM_NS}
-        --max-adversarial-ns ${ZETA_BENCH_HOLDEM_MAX_ADVERSARIAL_NS}
-        --max-index-ns ${ZETA_BENCH_HOLDEM_MAX_INDEX_NS}
-    DEPENDS zeta-bench-holdem-probes
-    USES_TERMINAL
-    VERBATIM
-    COMMENT "Running Hold'em evaluator benchmark regression smoke check"
-)
-
 find_package(benchmark 1.9.5 CONFIG QUIET)
 if(NOT benchmark_FOUND)
     include(FetchContent)
@@ -63,6 +35,10 @@ add_executable(zeta-bench-holdem-terminal
     src/terminal_benchmark.cpp
 )
 
+add_executable(zeta-bench-holdem-cfr
+    src/cfr_benchmark.cpp
+)
+
 target_link_libraries(zeta-bench-holdem-evaluator
     PRIVATE
     zeta-holdem
@@ -81,10 +57,17 @@ target_link_libraries(zeta-bench-holdem-terminal
     benchmark::benchmark
 )
 
+target_link_libraries(zeta-bench-holdem-cfr
+    PRIVATE
+    zeta-holdem
+    benchmark::benchmark
+)
+
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta-bench-holdem-evaluator PRIVATE stdc++ m)
     target_link_libraries(zeta-bench-holdem-range-parser PRIVATE stdc++ m)
     target_link_libraries(zeta-bench-holdem-terminal PRIVATE stdc++ m)
+    target_link_libraries(zeta-bench-holdem-cfr PRIVATE stdc++ m)
 endif()
 
 add_custom_target(zeta-bench-holdem-evaluator-json
@@ -115,4 +98,14 @@ add_custom_target(zeta-bench-holdem-terminal-json
     USES_TERMINAL
     VERBATIM
     COMMENT "Running Google Benchmark Hold'em terminal suite and writing JSON baseline"
+)
+
+add_custom_target(zeta-bench-holdem-cfr-json
+    COMMAND $<TARGET_FILE:zeta-bench-holdem-cfr>
+        --benchmark_out=${CMAKE_CURRENT_BINARY_DIR}/holdem-cfr-benchmark.json
+        --benchmark_out_format=json
+    DEPENDS zeta-bench-holdem-cfr
+    USES_TERMINAL
+    VERBATIM
+    COMMENT "Running Google Benchmark Hold'em CFR suite and writing JSON baseline"
 )

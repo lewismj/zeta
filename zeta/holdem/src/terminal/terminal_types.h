@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "board.h"
-#include "evaluator.h"
+#include "eval/evaluator.h"
 #include "range.h"
 
 namespace zeta::holdem {

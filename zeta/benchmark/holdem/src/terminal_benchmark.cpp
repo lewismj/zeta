@@ -743,7 +743,13 @@ BENCHMARK(BM_TerminalEngineShowdownDense)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalEngineShowdownDensePreindexed)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalEngineShowdownDenseCached)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_RiverCFRIterationDense)->Unit(benchmark::kNanosecond);
-BENCHMARK(BM_RiverCFRIterationDenseParallel)->ThreadRange(1, 8)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_RiverCFRIterationDenseParallel)
+    ->Threads(1)
+    ->Threads(2)
+    ->Threads(4)
+    ->Threads(8)
+    ->Threads(12)
+    ->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalEngineMultiplayerShowdownDense)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalEngineMultiplayerShowdownDense4)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalEngineMultiplayerShowdownDense6)->Unit(benchmark::kNanosecond);

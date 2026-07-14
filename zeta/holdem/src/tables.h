@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "eval.h"
+#include "eval/eval.h"
 
 namespace zeta::holdem::lookup {
 

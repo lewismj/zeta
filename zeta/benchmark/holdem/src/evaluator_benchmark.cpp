@@ -13,7 +13,7 @@
 
 #include <benchmark/benchmark.h>
 
-#include "evaluator.h"
+#include "eval/evaluator.h"
 #include "tables.h"
 
 namespace {

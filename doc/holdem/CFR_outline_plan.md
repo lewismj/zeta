@@ -12,6 +12,55 @@ This document focuses on:
 
 ---
 
+## Project Organization
+
+**Recommended folder structure for CFR+ implementation:**
+
+Organize holdem/src with core domain models at top level and subsystems in folders:
+
+```
+holdem/
+└── src/
+    ├── board.h             (core poker domain model)
+    ├── range.h             (core poker domain model)
+    ├── range_parser.h      (core poker domain model)
+    ├── tables.h            (precomputed lookup tables)
+    ├── tables.cpp
+    ├── tables.generated.cpp
+    │
+    ├── eval/               (hand evaluation subsystem) ✓ IMPLEMENTED
+    │   ├── eval.h
+    │   └── evaluator.h
+    │
+    ├── terminal/           (river terminal evaluation subsystem)
+    │   └── terminal.h
+    │
+    └── cfr/                (CFR+ solver subsystem)
+        ├── graph.h         (game_graph, CSR topology + partitions)
+        ├── regret_table.h   (regret storage, contiguous layout)
+        ├── strategy_table.h (strategy storage, contiguous layout)
+        ├── traversal.h     (traversal stack, worker context)
+        ├── scheduler.h     (work scheduling, board-level partitioning)
+        ├── reduction.h     (reduction logic, batch updates)
+        └── solver.h        (top-level solver orchestration)
+```
+
+**Benefits of dedicated folder:**
+
+1. **Clear separation of concerns** – CFR+ is a distinct subsystem from existing terminal eval
+2. **Isolation** – reduces coupling with board.h, eval.h, etc.
+3. **Scalability** – easy to add more CFR+ modules (infoset indexing, value approximation, etc.)
+4. **Testability** – unit tests can focus on CFR+ without polluting holdem/ test suite
+5. **Dependency clarity** – CFR+ consumes terminal evaluator (unidirectional), not vice versa
+
+**Include patterns:**
+
+- Internal CFR+ files use: `#include <holdem/cfr/graph.h>`
+- Solver client code uses: `#include <holdem/cfr/solver.h>`
+- No other holdem/ files should `#include <holdem/cfr/*>` except the solver entry point
+
+---
+
 ## Design principles
 
 1. **Immutable shared state** for board-specialized evaluator caches.
@@ -155,26 +204,60 @@ std::array<traversal_frame, MAX_DEPTH> stack;
 
 ---
 
-## 7) Infoset graph storage (CSR-like)
+## 7) Infoset graph storage (CSR-like + partition metadata)
 
-Avoid pointer trees. Use compact arrays:
+`game_graph` is built once, then read extremely often during solving. That makes
+CSR the right base layout: contiguous, compact, cache-friendly, and immutable.
+Do not bolt scheduling on later — include partition metadata at construction.
 
 ```cpp
+struct edge {
+    uint32_t child_node;
+    uint16_t action_index;
+};
+
+struct graph_partition {
+    uint32_t begin_node;       // inclusive
+    uint32_t end_node;         // exclusive
+    uint32_t subtree_size;
+    uint32_t terminal_count;
+    uint32_t action_count;
+    uint16_t min_depth;
+    uint16_t max_depth;
+    uint64_t estimated_work;
+};
+
 struct game_graph {
-    std::vector<uint32_t> child_index;   // flattened child node ids
-    std::vector<uint32_t> child_offset;  // size node_count + 1
-    std::vector<uint8_t>  node_kind;     // player/chance/terminal
+    // Immutable topology (CSR)
+    std::vector<uint32_t> row_offsets;   // size node_count + 1
+    std::vector<edge> edges;             // flattened adjacency
+    std::vector<uint8_t> node_kind;      // player/chance/terminal
     std::vector<uint32_t> infoset_id;    // mapping for player nodes
+
+    // Immutable scheduling metadata
+    std::vector<graph_partition> partitions;
 };
 ```
 
 Traversal:
 
 ```cpp
-for (i = child_offset[node]; i < child_offset[node + 1]; ++i) {
-    auto child = child_index[i];
+for (uint32_t e = row_offsets[node]; e < row_offsets[node + 1]; ++e) {
+    auto child = edges[e].child_node;
 }
 ```
+
+Partitioning objective: equalize estimated traversal cost, not raw node count.
+Node-ID ranges alone are usually imbalanced in poker trees.
+
+`estimated_work` should be a construction-time heuristic (exact formula can evolve),
+for example:
+
+```
+estimated_work ~= descendants * action_count * terminal_probability
+```
+
+or a simpler approximation when probability data is unavailable.
 
 ---
 
@@ -215,6 +298,10 @@ Later extensions:
 - Dynamic work queue for load balancing (some boards take longer than others)
 - NUMA-aware board partitioning if latency matters
 - Only parallelize within a board if board count < thread count
+
+Keep this separation strict:
+- `game_graph`: immutable data + valid work partitions
+- `scheduler`: mutable execution policy/state
 
 ---
 
@@ -324,14 +411,131 @@ Current expectation: memory bandwidth, not CPU, will limit scaling at 16 threads
 
 ## Suggested implementation sequence
 
-1. Add `game_graph` CSR-like storage and validation tests.
-2. Add contiguous regret/strategy table types with indexed accessors.
-3. Add single-thread iterative traversal stack prototype (no threading).
+1. Add immutable `game_graph` CSR storage **with partition metadata and estimated traversal cost**, plus validation tests.
+2. Add contiguous regret/strategy table types with indexed accessors and thread-local delta-buffer interfaces.
+3. Add iterative traversal stack prototype on the multithread-capable execution path (run with `threads=1` for parity and `threads>1` for scaling).
 4. Integrate terminal evaluator at river leaves.
 5. Add thread-local update buffers + deterministic reduction.
-6. Add multithread board-partition scheduler.
+6. Add multithread board-partition scheduler (consumes `game_graph.partitions` directly).
 7. Add solver correctness tests (small toy trees vs reference).
 8. Add performance benchmarks (single vs multi-thread scaling, reduction cost).
+
+---
+
+## Next steps (trackable)
+
+Status legend: `[ ]` not started, `[~]` in progress, `[x]` complete.
+
+### Step 1 — `game_graph` foundation (next)
+
+- [ ] **S1.1 Define immutable graph types**: `edge`, `graph_partition`, `game_graph` (CSR topology + partition metadata).
+- [ ] **S1.2 Build graph constructor**: produce `row_offsets`, `edges`, `node_kind`, `infoset_id` from source tree.
+- [ ] **S1.3 Build partition constructor**: compute `subtree_size`, `terminal_count`, `action_count`, depth bounds, and `estimated_work`.
+- [ ] **S1.4 Add graph validation tests**: CSR offset monotonicity, edge bounds, partition coverage/non-overlap, deterministic build.
+- [ ] **S1.5 Add scheduling sanity checks**: verify partition cost balance quality (cost-balanced, not node-ID balanced).
+- [ ] **S1.6 Add graph benchmark hooks**: graph build time, partition build time, and read-only traversal scan throughput.
+
+### Immediate follow-on (after Step 1)
+
+- [ ] **S2.1 Regret/strategy table types** with contiguous storage and indexed accessors.
+- [ ] **S2.2 Thread-local delta buffers** + deterministic chunk reduction API.
+
+---
+
+## Planned graph/scheduler refinements
+
+### Refinement 1 — Cost metadata (first production refinement)
+
+```cpp
+struct partition {
+    uint32_t begin_node;
+    uint32_t end_node;
+    uint64_t estimated_work;
+};
+```
+
+Use work-balanced scheduling (equalize `estimated_work`), not node-count balancing.
+
+### Refinement 2 — Depth-aware partitions
+
+```cpp
+struct partition {
+    uint32_t begin_node;
+    uint32_t end_node;
+    uint16_t min_depth;
+    uint16_t max_depth;
+    uint64_t estimated_work;
+};
+```
+
+This supports depth-limited and street-specific traversal policies.
+
+### Refinement 3 — Traversal order separate from storage order
+
+Keep CSR storage order immutable, but allow execution order overlays:
+
+```cpp
+std::span<const uint32_t> traversal_order;
+```
+
+or partition-local node order views.
+
+### Refinement 4 — Information-set grouping
+
+Move from node-centric traversal metadata to explicit infoset indexing:
+
+```cpp
+struct game_graph {
+    // CSR topology...
+    information_set_index infosets;
+};
+```
+
+This is required once regret/strategy storage dominates memory.
+
+### Refinement 5 — Persistent solver layout
+
+Offset-based solver addressing (no hash lookups in hot path):
+
+```cpp
+struct solver_graph {
+    game_graph topology;
+    std::vector<uint32_t> regret_offsets;
+    std::vector<uint32_t> strategy_offsets;
+    std::vector<uint32_t> terminal_offsets;
+};
+```
+
+### Refinement 6 — NUMA-aware partitioning (large machines)
+
+Add NUMA placement metadata when scaling beyond a single shared-memory domain:
+
+```cpp
+struct partition {
+    uint32_t begin_node;
+    uint32_t end_node;
+    uint16_t numa_domain;
+};
+```
+
+### Refinement 7 — Dynamic scheduling overlay (not in `game_graph`)
+
+Do not make graph mutable. Keep dynamic scheduling in a separate runtime object:
+
+```cpp
+struct work_queue {
+    std::atomic<uint32_t> next_partition;
+};
+```
+
+`game_graph` defines valid work units; scheduler decides execution order.
+
+### Recommended roadmap
+
+1. **Initial**: CSR + static partitions
+2. **First production refinement**: cost-weighted partitions + depth metadata
+3. **Solver integration refinement**: infoset indexing + regret/strategy offsets
+4. **Large-scale refinement**: NUMA placement + dynamic scheduling overlay
 
 ---
 
@@ -353,4 +557,3 @@ Track at minimum:
 3. Terminal evaluator share of total iteration time
 4. Cache/index build time share
 5. Memory footprint of graph/tables/thread-local buffers
-
