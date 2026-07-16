@@ -4,9 +4,11 @@
 
 namespace zeta::holdem {
 
-    // Stage 10 dispatch layer: select kernel family at compile-time by player count.
-    // - N == 2: heads-up exact kernel family
-    // - N > 2 : multiplayer kernel family (current implementation under this family is sampled)
+    /**
+     * Dispatch layer: select kernel family at compile-time by player count.
+     * - N == 2: heads-up exact kernel family
+     * - N > 2 : multiplayer kernel family, currently sampled
+     */
     template <std::size_t N>
     struct terminal_engine {
         [[nodiscard]] static constexpr terminal_kernel_family kernel_family() noexcept {
@@ -21,7 +23,7 @@ namespace zeta::holdem {
             return kernel_family() == terminal_kernel_family::heads_up_exact;
         }
 
-        // Showdown dispatch: currently only the heads-up exact kernel is implemented.
+        /** Showdown dispatch: currently only the heads-up exact kernel is implemented. */
         [[nodiscard]] auto evaluate_showdown(
             const river_terminal_cache& cache,
             const std::array<river_reach_index, N>& reach,
@@ -75,7 +77,7 @@ namespace zeta::holdem {
             }
         }
 
-        // Fold dispatch: heads-up exact path for N == 2, generic N-way fold for N > 2.
+        /** Fold dispatch: heads-up exact path for N == 2, generic N-way fold for N > 2. */
         [[nodiscard]] terminal_values<N> evaluate_fold_values(
             const river_terminal_cache& cache,
             const std::array<river_reach_index, N>& reach,
@@ -96,7 +98,7 @@ namespace zeta::holdem {
         }
     };
 
-    // Heads-up convenience overloads for engine callers that keep the legacy two-range style.
+    /** Heads-up convenience overloads for engine callers that keep the legacy two-range style. */
     template <>
     struct terminal_engine<2> {
         [[nodiscard]] static constexpr terminal_kernel_family kernel_family() noexcept {

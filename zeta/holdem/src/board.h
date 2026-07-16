@@ -17,7 +17,7 @@ namespace zeta::holdem {
 
 
     struct board {
-        card_mask mask = 0;             /* 3, 4 or 5 bits set   */
+        card_mask mask = 0;             /**< 3, 4 or 5 bits set. */
 
         constexpr int size() const noexcept
         {
@@ -48,14 +48,14 @@ namespace zeta::holdem {
         }
 
         constexpr void add(const card_mask m) {
-            assert(ops::popcount(m) >= 1);          /* at least one card.   */
-            assert((mask & m) == 0);                /* no duplicates.       */
-            assert(ops::popcount(mask | m) <= 5);   /* max 5 board cards.   */
+            assert(ops::popcount(m) >= 1);          /**< At least one card. */
+            assert((mask & m) == 0);                /**< No duplicates. */
+            assert(ops::popcount(mask | m) <= 5);   /**< Max 5 board cards. */
             mask |= m;
         }
 
         constexpr void remove(const card_mask m) {
-            assert((mask & m) == m);  /* cards must be present. */
+            assert((mask & m) == m);  /**< Cards must be present. */
             mask &= ~m;
         }
 
@@ -72,7 +72,7 @@ namespace zeta::holdem {
      *   2	    As  Ac
      *           ...	...
      *   1325	2d  2c
-    */
+     */
     using combination_index = uint16_t;
     inline constexpr std::size_t combination_count = 1326;
 

@@ -8,7 +8,7 @@
 
 namespace zeta::holdem::lookup {
 
-    /*
+    /**
      * Numeric layout notes for the restricted-quinary indexer:
      *
      * 7      Hold'em evaluator input size; also the maximum remaining card count.

@@ -17,7 +17,7 @@
 #define inline_always inline
 #endif
 
-/*
+/**
  * Clang allows us to specify inline always on recursive functions,
  * GCC does not.
  */

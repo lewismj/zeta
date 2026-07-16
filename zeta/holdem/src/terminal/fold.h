@@ -3,21 +3,22 @@
 #include "terminal/showdown.h"
 
 namespace zeta::holdem {
-    // Generic N-way fold kernel: for each active player, accumulate compatible mass
-    // from all other active opponents × constant payoff per opponent. Generalizes
-    // cleanly because fold is deterministic payout regardless of hand strength.
-    //
-    // Algorithm (pseudocode):
-    // for active_player in players:
-    //     if folded[active_player]:
-    //         values[active_player][:] = 0  (folded players act no further)
-    //     else:
-    //         for combo in active_player_combos:
-    //             for opponent in active_opponents (excluding active_player):
-    //                 total_compatible += compatible_mass(opponent, combo)
-    //             value[combo] = total_compatible * payoff_per_compatible_unit
-    //
-    // For heads-up: this reduces exactly to the current two-stream kernel.
+    /**
+     * Generic N-way fold kernel: for each active player, accumulate compatible
+     * mass from all other active opponents * constant payoff per opponent.
+     *
+     * Pseudocode:
+     * for active_player in players:
+     *     if folded[active_player]:
+     *         values[active_player][:] = 0
+     *     else:
+     *         for combo in active_player_combos:
+     *             for opponent in active_opponents excluding active_player:
+     *                 total_compatible += compatible_mass(opponent, combo)
+     *             value[combo] = total_compatible * payoff_per_compatible_unit
+     *
+     * For heads-up: this reduces exactly to the current two-stream kernel.
+     */
     template <std::size_t N>
     [[nodiscard]] inline_always terminal_values<N> evaluate_fold_values_generic(
         const river_terminal_cache& cache,
@@ -27,28 +28,29 @@ namespace zeta::holdem {
     ) noexcept {
         terminal_values<N> values{};
         
-        // For each active (non-folded) player
+        /** For each active non-folded player. */
         for (std::size_t active_seat = 0; active_seat < N; ++active_seat) {
             if (folded[active_seat]) {
-                // Folded players get zero values; skip initialization (already zero)
+                /** Folded players get zero values; skip initialization because it is already zero. */
                 continue;
             }
             
-            // Active player receives payoff from all remaining active opponents
+            /** Active player receives payoff from all remaining active opponents. */
             for (uint16_t combo_offset = 0; combo_offset < reach[active_seat].active_count; ++combo_offset) {
                 const auto combo = reach[active_seat].active_indices[combo_offset];
                 accumulator total_compatible = 0.0;
                 
-                // Accumulate compatible mass from each active opponent
+                /** Accumulate compatible mass from each active opponent. */
                 for (std::size_t opponent_seat = 0; opponent_seat < N; ++opponent_seat) {
                     if (opponent_seat != active_seat && !folded[opponent_seat]) {
                         total_compatible += compatible_mass(cache, reach[opponent_seat], combo);
                     }
                 }
                 
-                // For now: store total compatible mass. Payoff multiplier (win amount per opponent)
-                // will be added when pot_structure<N> is available. For heads-up validation,
-                // this accumulates to the correct denominator and is tested at that scale.
+                /**
+                 * Store total compatible mass; payoff multiplication is handled
+                 * by specialized paths where full pot accounting is available.
+                 */
                 values[active_seat][combo] = static_cast<terminal_value>(total_compatible);
             }
         }
@@ -56,7 +58,7 @@ namespace zeta::holdem {
         return values;
     }
 
-    // Heads-up (2-player) fold kernel: compatible opponent mass × constant payoff.
+    /** Heads-up (2-player) fold kernel: compatible opponent mass * constant payoff. */
     [[nodiscard]] inline_always terminal_values<2> evaluate_fold_values_heads_up(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
@@ -85,9 +87,11 @@ namespace zeta::holdem {
         return values;
     }
 
-    // Generic fold entry point with bitset: now properly handles N-way folded masks.
-    // The generic kernel uses folded_mask<N> (bitset<N>) where bit i == true means seat i is folded.
-    // Heads-up uses the specialized folded_mask<2> with direct boolean fields for performance.
+    /**
+     * Generic fold entry point with bitset support for N-way folded masks.
+     * The generic kernel uses folded_mask<N> where bit i == true means seat i is folded.
+     * Heads-up uses the specialized folded_mask<2> with direct boolean fields for performance.
+     */
     template <std::size_t N>
     [[nodiscard]] terminal_values<N> evaluate_fold_values(
         const river_terminal_cache& cache,
@@ -96,7 +100,7 @@ namespace zeta::holdem {
         const folded_mask<N>& folded
     ) noexcept {
         if constexpr (N == 2) {
-            // Heads-up fast path: extract from the specialized folded_mask<2> struct
+            /** Heads-up fast path: extract from the specialized folded_mask<2> struct. */
             const auto folded_player = folded.oop_folded ? heads_up_player::oop : heads_up_player::ip;
             return evaluate_fold_values_heads_up(cache, reach[0], reach[1], context, folded_player);
         } else {
@@ -104,8 +108,10 @@ namespace zeta::holdem {
         }
     }
 
-    // Heads-up convenience overload (deprecated signature, kept for compatibility).
-    // Converts heads_up_player to folded_mask<2> using the specialized factory.
+    /**
+     * Heads-up convenience overload retained for compatibility.
+     * Converts heads_up_player to folded_mask<2> using the specialized factory.
+     */
     template <std::size_t N>
     [[nodiscard]] terminal_values<N> evaluate_fold_values(
         const river_terminal_cache& cache,
@@ -142,7 +148,7 @@ namespace zeta::holdem {
         return evaluate_fold_values(cache, oop_index, ip_index, context, folded);
     }
 
-    // Workspace-based fold API (preferred for CFR): caller provides ranges, workspace owns reach indices.
+    /** Workspace-based fold API: caller provides ranges, workspace owns reach indices. */
     template <std::size_t N>
     [[nodiscard]] terminal_values<N> evaluate_fold_values(
         terminal_workspace<N>& workspace,
@@ -151,14 +157,14 @@ namespace zeta::holdem {
         const terminal_context<N>& context,
         const folded_mask<N>& folded
     ) noexcept {
-        // Materialize ranges into workspace reach indices
+        /** Materialize ranges into workspace reach indices. */
         workspace.materialize(cache, ranges);
         
-        // Evaluate using the materialized indices
+        /** Evaluate using the materialized indices. */
         return evaluate_fold_values(cache, workspace.reach, context, folded);
     }
 
-    // Heads-up workspace specialization (overload for convenience)
+    /** Heads-up workspace specialization. */
     [[nodiscard]] inline_always terminal_values<2> evaluate_fold_values(
         terminal_workspace<2>& workspace,
         const river_terminal_cache& cache,

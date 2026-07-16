@@ -21,7 +21,7 @@ game_graph create_benchmark_tree(uint32_t branching_factor, uint32_t depth)
 {
     graph_builder builder;
     
-    // Calculate total nodes needed
+    /** Calculate total nodes needed. */
     uint32_t total_nodes = 0;
     uint32_t nodes_at_depth = 1;
     for (uint16_t d = 0; d <= depth; ++d) {
@@ -31,10 +31,10 @@ game_graph create_benchmark_tree(uint32_t branching_factor, uint32_t depth)
     
     builder = graph_builder(total_nodes);
     
-    // Node ID counter
+    /** Node ID counter. */
     uint32_t node_id = 0;
     
-    // Add nodes and compute tree structure
+    /** Add nodes and compute tree structure. */
     struct node_info {
         uint32_t id;
         uint32_t depth;
@@ -43,7 +43,7 @@ game_graph create_benchmark_tree(uint32_t branching_factor, uint32_t depth)
     std::vector<node_info> level;
     level.push_back({node_id++, 0});
     
-    // Root is player node
+    /** Root is player node. */
     (void) builder.add_node(node_kind::player);
     builder.set_infoset_id(0, 0);
     
@@ -57,11 +57,11 @@ game_graph create_benchmark_tree(uint32_t branching_factor, uint32_t depth)
                 continue;
             }
             
-            // Add children
+            /** Add children. */
             for (uint16_t child_idx = 0; child_idx < branching_factor; ++child_idx) {
                 uint32_t child_id = node_id++;
                 
-                // Alternate node types: player, chance, player, ...
+                /** Alternate node types: player, chance, player, and so on. */
                 node_kind kind;
                 if (d == depth - 1) {
                     kind = node_kind::terminal;
@@ -73,10 +73,10 @@ game_graph create_benchmark_tree(uint32_t branching_factor, uint32_t depth)
                 
                 (void) builder.add_node(kind);
                 
-                // Add edge from parent to child
+                /** Add edge from parent to child. */
                 builder.add_edge(parent.id, child_id, child_idx);
                 
-                // Set infoset for player nodes
+                /** Set infoset for player nodes. */
                 if (kind == node_kind::player) {
                     builder.set_infoset_id(child_id, infoset_count++);
                 }
@@ -91,9 +91,9 @@ game_graph create_benchmark_tree(uint32_t branching_factor, uint32_t depth)
     return require_graph(builder.build());
 }
 
-// ============================================================================
-// S1.6 - Graph build time benchmark
-// ============================================================================
+/**
+ * Graph build time benchmark.
+ */
 
 static void BM_GraphBuildSmallTree(benchmark::State& state)
 {
@@ -133,9 +133,9 @@ BENCHMARK(BM_GraphBuildSmallTree);
 BENCHMARK(BM_GraphBuildMediumTree);
 BENCHMARK(BM_GraphBuildLargeTree);
 
-// ============================================================================
-// Partition build time benchmark
-// ============================================================================
+/**
+ * Partition build time benchmark.
+ */
 
 static void BM_PartitionComputeSmallTree(benchmark::State& state)
 {
@@ -180,9 +180,9 @@ BENCHMARK(BM_PartitionComputeSmallTree);
 BENCHMARK(BM_PartitionComputeMediumTree);
 BENCHMARK(BM_PartitionComputeLargeTree);
 
-// ============================================================================
-// Traversal scan throughput benchmark
-// ============================================================================
+/**
+ * Traversal scan throughput benchmark.
+ */
 
 static void BM_TraversalScanSmallTree(benchmark::State& state)
 {
@@ -230,16 +230,16 @@ BENCHMARK(BM_TraversalScanSmallTree);
 BENCHMARK(BM_TraversalScanMediumTree);
 BENCHMARK(BM_TraversalScanLargeTree);
 
-// ============================================================================
-// Validation throughput benchmark
-// ============================================================================
+/**
+ * Validation throughput benchmark.
+ */
 
 static void BM_ValidateSmallTree(benchmark::State& state)
 {
     auto graph = create_benchmark_tree(2, 2);
     
     for (auto _ : state) {
-        bool valid = graph_validator::validate(graph);
+        bool valid = ::zeta::holdem::cfr::graph_validation::validate(graph);
         benchmark::DoNotOptimize(valid);
     }
 }
@@ -249,7 +249,7 @@ static void BM_ValidateMediumTree(benchmark::State& state)
     auto graph = create_benchmark_tree(4, 4);
     
     for (auto _ : state) {
-        bool valid = graph_validator::validate(graph);
+        bool valid = ::zeta::holdem::cfr::graph_validation::validate(graph);
         benchmark::DoNotOptimize(valid);
     }
 }
@@ -259,7 +259,7 @@ static void BM_ValidateLargeTree(benchmark::State& state)
     auto graph = create_benchmark_tree(3, 6);
     
     for (auto _ : state) {
-        bool valid = graph_validator::validate(graph);
+        bool valid = ::zeta::holdem::cfr::graph_validation::validate(graph);
         benchmark::DoNotOptimize(valid);
     }
 }
@@ -268,9 +268,9 @@ BENCHMARK(BM_ValidateSmallTree);
 BENCHMARK(BM_ValidateMediumTree);
 BENCHMARK(BM_ValidateLargeTree);
 
-// ============================================================================
-// Partition balance metric benchmark
-// ============================================================================
+/**
+ * Partition balance metric benchmark.
+ */
 
 static void BM_BalanceMetricSmallTree(benchmark::State& state)
 {
@@ -306,5 +306,5 @@ BENCHMARK(BM_BalanceMetricSmallTree);
 BENCHMARK(BM_BalanceMetricMediumTree);
 BENCHMARK(BM_BalanceMetricLargeTree);
 
-// Main entry point
+/** Main entry point. */
 BENCHMARK_MAIN();

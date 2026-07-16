@@ -17,24 +17,24 @@ namespace zeta {
     /**
      *  BitBoard-style bitmask for sets of cards.
      *
-     *  52 standard cards mapped to bits 0–51:
+     *  52 standard cards mapped to bits 0-51:
      *
-     *  0–12 Spades (bit 0 = 2♠, bit 12 = A♠)
-     *  13–25 Hearts (bit 13 = 2♥, bit 25 = A♥)
-     *  26–38 Diamonds (bit 26 = 2♦, bit 38 = A♦)
-     *  39–51 Clubs (bit 39 = 2♣, bit 51 = A♣)
+     *  0-12 Spades (bit 0 = 2♠, bit 12 = A♠)
+     *  13-25 Hearts (bit 13 = 2♥, bit 25 = A♥)
+     *  26-38 Diamonds (bit 26 = 2♦, bit 38 = A♦)
+     *  39-51 Clubs (bit 39 = 2♣, bit 51 = A♣)
      */
     using card_mask = uint64_t;
 
     /**
-     * Type for the card index. 0–51 for standard cards, or special values for jokers/wildcards if needed.
+     * Type for the card index. 0-51 for standard cards, or special values for jokers/wildcards if needed.
      */
     using card = uint8_t;
 
     /**
-        * Enum. For the four standard suits in a deck of cards.
-        *       Spades, Hearts, Diamonds, Clubs.
-        */
+     * Enum. For the four standard suits in a deck of cards.
+     * Spades, Hearts, Diamonds, Clubs.
+     */
     enum class suit: uint8_t {
         spades,
         hearts,
@@ -81,7 +81,7 @@ namespace zeta {
     /** Allow for future variants, e.g. Jass. */
     template<typename Variant> struct deck_traits;
 
-    /* Game types, e.g. if implementing Jass. */
+    /** Game types, e.g. if implementing Jass. */
     struct default_deck {
         static constexpr int num_ranks = 13;
         static constexpr int num_suits = 4;

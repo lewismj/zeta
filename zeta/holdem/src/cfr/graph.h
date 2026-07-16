@@ -22,21 +22,21 @@ namespace zeta::holdem::cfr {
     };
 
     struct graph_partition {
-        uint32_t begin_node;        // inclusive: first node in DFS order for this partition
-        uint32_t end_node;          // exclusive: last node + 1 in DFS order for this partition
-        uint32_t node_count;        // number of nodes in partition
-        uint32_t terminal_count;    // terminal nodes in partition
-        uint32_t action_count;      // total action count in partition
+        uint32_t begin_node;        /**< Inclusive: first node in DFS order for this partition. */
+        uint32_t end_node;          /**< Exclusive: last node + 1 in DFS order for this partition. */
+        uint32_t node_count;        /**< Number of nodes in partition. */
+        uint32_t terminal_count;    /**< Terminal nodes in partition. */
+        uint32_t action_count;      /**< Total action count in partition. */
         uint16_t min_depth;
         uint16_t max_depth;
-        uint64_t estimated_work;    // heuristic cost metric for scheduling
+        uint64_t estimated_work;    /**< Heuristic cost metric for scheduling. */
     };
 
     enum class node_kind : uint8_t {
-        player_chance = 0,  // Player node (chance must act to determine infoset)
-        player = 1,         // Player information set node
-        chance = 2,         // Chance node
-        terminal = 3        // Terminal node
+        player_chance = 0,  /**< Player node; chance must act to determine infoset. */
+        player = 1,         /**< Player information set node. */
+        chance = 2,         /**< Chance node. */
+        terminal = 3        /**< Terminal node. */
     };
 
     enum class graph_build_error_kind : uint8_t {
@@ -87,8 +87,8 @@ namespace zeta::holdem::cfr {
      * 
      * Node Ordering:
      *   - DFS post-order (NOT pre-order)
-     *   - Post-order processes: left subtree → right subtree → node itself
-     *   - Example: tree with A→[B,C], B→[D,E], C→[] produces order: D,E,B,C,A
+     *   - Post-order processes: left subtree -> right subtree -> node itself
+     *   - Example: tree with A->[B,C], B->[D,E], C->[] produces order: D,E,B,C,A
      *   - Important: Parent does NOT immediately precede children in post-order
      *   - This ordering is chosen for:
      *     (1) Efficient bottom-up traversals (compute on children before parent)
@@ -106,20 +106,20 @@ namespace zeta::holdem::cfr {
     struct game_graph {
         static constexpr uint32_t INVALID_INFOSET = ~0u;
 
-        // Immutable CSR topology
-        std::vector<uint32_t> row_offsets;      // size: node_count + 1
-        std::vector<edge> edges;                // flattened adjacency list
-        std::vector<node_kind> node_types;      // node type per node_id
-        std::vector<uint32_t> infoset_id;       // infoset mapping per node (INVALID_INFOSET for non-player nodes)
-        std::vector<uint32_t> node_depth;       // depth of each node in tree
-        std::vector<uint32_t> subtree_size;     // actual subtree size (descendants including self) per node
+        /** Immutable CSR topology. */
+        std::vector<uint32_t> row_offsets;      /**< Size: node_count + 1. */
+        std::vector<edge> edges;                /**< Flattened adjacency list. */
+        std::vector<node_kind> node_types;      /**< Node type per node_id. */
+        std::vector<uint32_t> infoset_id;       /**< Infoset mapping per node; INVALID_INFOSET for non-player nodes. */
+        std::vector<uint16_t> node_depth;       /**< Depth of each node in tree. */
+        std::vector<uint32_t> subtree_size;     /**< Actual subtree size, including self. */
 
-        // Immutable scheduling metadata
+        /** Immutable scheduling metadata. */
         std::vector<graph_partition> partitions;
 
-        // Metadata
+        /** Metadata. */
         uint32_t node_count = 0;
-        uint32_t root_node = 0;       // root node after DFS post-order reordering
+        uint32_t root_node = 0;       /**< Root node after DFS post-order reordering. */
         uint32_t terminal_count = 0;
         uint32_t infoset_count = 0;
         uint16_t max_depth = 0;
@@ -180,14 +180,14 @@ namespace zeta::holdem::cfr {
         [[nodiscard]] double partition_balance_metric() const noexcept;
     };
 
-    struct graph_validator {
-        [[nodiscard]] static bool validate(const game_graph& graph) noexcept;
-        [[nodiscard]] static std::expected<void, graph_build_error> validate_all(const game_graph& graph) noexcept;
-        [[nodiscard]] static std::expected<void, graph_build_error> validate_structure(const game_graph& graph) noexcept;
-        [[nodiscard]] static std::expected<void, graph_build_error> validate_metadata(const game_graph& graph) noexcept;
-        [[nodiscard]] static std::expected<void, graph_build_error> validate_infosets(const game_graph& graph) noexcept;
-        [[nodiscard]] static std::expected<void, graph_build_error> validate_partitions(const game_graph& graph) noexcept;
-    };
+    namespace graph_validation {
+        [[nodiscard]] bool validate(const game_graph& graph) noexcept;
+        [[nodiscard]] std::expected<void, graph_build_error> validate_all(const game_graph& graph) noexcept;
+        [[nodiscard]] std::expected<void, graph_build_error> validate_structure(const game_graph& graph) noexcept;
+        [[nodiscard]] std::expected<void, graph_build_error> validate_metadata(const game_graph& graph) noexcept;
+        [[nodiscard]] std::expected<void, graph_build_error> validate_infosets(const game_graph& graph) noexcept;
+        [[nodiscard]] std::expected<void, graph_build_error> validate_partitions(const game_graph& graph) noexcept;
+    }
 
     /**
      * Builder for game_graph from a mutable game tree representation.
@@ -214,6 +214,10 @@ namespace zeta::holdem::cfr {
          */
         void set_root(const uint32_t root_node) noexcept
         {
+            if (finalized_) {
+                record_error_(graph_build_error_kind::already_finalized);
+                return;
+            }
             root_ = root_node;
         }
 
@@ -223,7 +227,7 @@ namespace zeta::holdem::cfr {
          * 
          * For player nodes, must call set_infoset_id() before build().
          */
-        [[nodiscard]] uint32_t add_node(node_kind kind) noexcept;
+        [[nodiscard]] uint32_t add_node(node_kind kind);
 
         /**
          * Add an edge from source_node to dest_node with action_index.
@@ -231,7 +235,7 @@ namespace zeta::holdem::cfr {
          * 
          * Note: action_index must be in the range [0, degree-1] and contiguous.
          */
-        void add_edge(uint32_t source_node, uint32_t dest_node, uint16_t action_index) noexcept;
+        void add_edge(uint32_t source_node, uint32_t dest_node, uint16_t action_index);
 
         /**
          * Set infoset_id for a player node. O(1) operation.
@@ -257,24 +261,36 @@ namespace zeta::holdem::cfr {
         std::expected<game_graph, graph_build_error> build();
 
     private:
-        std::vector<std::vector<edge>> edges_by_node_;  // edges organized per node
+        std::vector<std::vector<edge>> edges_by_node_;  /**< Edges organized per node. */
         std::vector<node_kind> node_types_;
-        std::vector<uint32_t> infoset_ids_;             // per-node allocation
-        uint32_t root_ = 0;                             // root node for DFS traversal
+        std::vector<uint32_t> infoset_ids_;             /**< Per-node allocation. */
+        uint32_t root_ = 0;                             /**< Root node for DFS traversal. */
         bool finalized_ = false;
+        bool has_pending_error_ = false;
+        graph_build_error pending_error_{};
+
+        void record_error_(
+            graph_build_error_kind kind,
+            uint32_t node_id = 0,
+            uint32_t related_node_id = 0) noexcept;
 
         /**
          * Compute DFS post-order, depths, and subtree sizes via single tree traversal.
          * Returns mapping from original node IDs to DFS-reordered node IDs.
          */
         struct dfs_result {
-            std::vector<uint32_t> depth;
+            std::vector<uint16_t> depth;
             std::vector<uint32_t> subtree_size;
-            std::vector<uint32_t> dfs_order;  // dfs_order[old_id] = new_id
-            std::vector<uint32_t> inverse_order;  // inverse_order[new_id] = old_id
+            std::vector<uint32_t> dfs_order;  /**< dfs_order[old_id] = new_id. */
+            std::vector<uint32_t> inverse_order;  /**< inverse_order[new_id] = old_id. */
             uint16_t max_depth;
         };
         [[nodiscard]] std::expected<dfs_result, graph_build_error> compute_tree_metadata_() const;
+        void sort_edges_by_action_();
+        void build_node_arrays_(game_graph& graph, const dfs_result& metadata) const;
+        void build_csr_(game_graph& graph, const dfs_result& metadata) const;
+        void compute_graph_counts_(game_graph& graph) const noexcept;
+        [[nodiscard]] static std::expected<void, graph_build_error> validate_complete_(const game_graph& graph) noexcept;
     };
 
     /**
@@ -293,7 +309,7 @@ namespace zeta::holdem::cfr {
      *   - NOTE: Does NOT guarantee subtree locality (can split subtrees)
      * 
      * Work Heuristic (provisional):
-     *   - Formula: actions × 2^depth (using bitshift for speed)
+     *   - Formula: actions * 2^depth (using bitshift for speed)
      *   - Cheap to compute but not accurate for CFR cost
      *   - Actual CFR cost depends on reach probability, strategy updates, etc.
      *   - Should eventually be replaced with dynamic measurement or better model
@@ -310,4 +326,4 @@ namespace zeta::holdem::cfr {
         const game_graph& graph,
         const partition_strategy& strategy);
 
-} // namespace zeta::holdem::cfr
+}

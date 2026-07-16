@@ -45,7 +45,7 @@ BOOST_AUTO_TEST_CASE(rank_mask_default_deck_is_13_low_bits) {
 }
 
 BOOST_AUTO_TEST_CASE(suit_masks_cover_correct_bit_ranges) {
-    // Spades bits 0-12, Hearts 13-25, Diamonds 26-38, Clubs 39-51
+    /** Spades bits 0-12, Hearts 13-25, Diamonds 26-38, Clubs 39-51. */
     BOOST_TEST(zeta::make_suit_mask<zeta::default_deck>(zeta::suit::spades)   == 0x1FFFull);
     BOOST_TEST(zeta::make_suit_mask<zeta::default_deck>(zeta::suit::hearts)   == (0x1FFFull << 13));
     BOOST_TEST(zeta::make_suit_mask<zeta::default_deck>(zeta::suit::diamonds) == (0x1FFFull << 26));
@@ -60,7 +60,7 @@ BOOST_AUTO_TEST_CASE(ops_suit_masks_constexpr_matches_make_suit_masks) {
     }
 }
 
-// ---- ops primitives --------------------------------------------------------
+/** Ops primitives. */
 
 BOOST_AUTO_TEST_CASE(lsb_returns_lowest_set_bit) {
     BOOST_TEST(zeta::ops::lsb(0b1010u) == 0b0010u);
@@ -96,17 +96,17 @@ BOOST_AUTO_TEST_CASE(is_empty_true_only_for_zero_mask) {
 }
 
 BOOST_AUTO_TEST_CASE(nth_set_bit_selects_correct_bit) {
-    // 0b10110 has bits 1, 2, 4 set
+    /** 0b10110 has bits 1, 2, 4 set. */
     constexpr zeta::card_mask m = 0b10110u;
     BOOST_TEST(zeta::ops::nth_set_bit(m, 0) == (zeta::card_mask{1} << 1));
     BOOST_TEST(zeta::ops::nth_set_bit(m, 1) == (zeta::card_mask{1} << 2));
     BOOST_TEST(zeta::ops::nth_set_bit(m, 2) == (zeta::card_mask{1} << 4));
 }
 
-// ---- suit-aware ops --------------------------------------------------------
+/** Suit-aware ops. */
 
 BOOST_AUTO_TEST_CASE(cards_in_suit_isolates_one_suit) {
-    // 2♠ = bit 0, 2♥ = bit 13
+    /** 2♠ = bit 0, 2♥ = bit 13. */
     constexpr zeta::card_mask hand = (zeta::card_mask{1} << 0) | (zeta::card_mask{1} << 13);
 
     BOOST_TEST(zeta::ops::cards_in_suit<zeta::default_deck>(hand, zeta::suit::spades)
@@ -118,7 +118,7 @@ BOOST_AUTO_TEST_CASE(cards_in_suit_isolates_one_suit) {
 }
 
 BOOST_AUTO_TEST_CASE(has_suit_detects_presence_of_suit) {
-    constexpr zeta::card_mask hand = zeta::card_mask{1} << 0; // 2♠ only
+    constexpr zeta::card_mask hand = zeta::card_mask{1} << 0; /**< 2♠ only. */
     BOOST_TEST( zeta::ops::has_suit<zeta::default_deck>(hand, zeta::suit::spades));
     BOOST_TEST(!zeta::ops::has_suit<zeta::default_deck>(hand, zeta::suit::hearts));
     BOOST_TEST(!zeta::ops::has_suit<zeta::default_deck>(hand, zeta::suit::diamonds));
@@ -126,7 +126,7 @@ BOOST_AUTO_TEST_CASE(has_suit_detects_presence_of_suit) {
 }
 
 BOOST_AUTO_TEST_CASE(suit_ranks_and_ranks_to_cards_roundtrip) {
-    // 2♠ (bit 0), 3♠ (bit 1), A♥ (rank 12 in hearts = bit 13+12=25)
+    /** 2♠ (bit 0), 3♠ (bit 1), A♥ (rank 12 in hearts = bit 13+12=25). */
     constexpr zeta::card_mask hand =
         (zeta::card_mask{1} << 0)  |
         (zeta::card_mask{1} << 1)  |
@@ -140,7 +140,7 @@ BOOST_AUTO_TEST_CASE(suit_ranks_and_ranks_to_cards_roundtrip) {
 }
 
 BOOST_AUTO_TEST_CASE(highest_in_suit_returns_top_card_or_zero) {
-    // 2♠ (bit 0) and 3♠ (bit 1) in hand
+    /** 2♠ (bit 0) and 3♠ (bit 1) in hand. */
     constexpr zeta::card_mask hand = (zeta::card_mask{1} << 0) | (zeta::card_mask{1} << 1);
     BOOST_TEST(zeta::ops::highest_in_suit<zeta::default_deck>(hand, zeta::suit::spades)
                == (zeta::card_mask{1} << 1));
@@ -148,14 +148,14 @@ BOOST_AUTO_TEST_CASE(highest_in_suit_returns_top_card_or_zero) {
 }
 
 BOOST_AUTO_TEST_CASE(lowest_in_suit_returns_bottom_card_or_zero) {
-    // 2♠ (bit 0) and 3♠ (bit 1) in hand
+    /** 2♠ (bit 0) and 3♠ (bit 1) in hand. */
     constexpr zeta::card_mask hand = (zeta::card_mask{1} << 0) | (zeta::card_mask{1} << 1);
     BOOST_TEST(zeta::ops::lowest_in_suit<zeta::default_deck>(hand, zeta::suit::spades)
                == (zeta::card_mask{1} << 0));
     BOOST_TEST(zeta::ops::lowest_in_suit<zeta::default_deck>(hand, zeta::suit::hearts) == 0u);
 }
 
-// ---- make_suit_masks size --------------------------------------------------
+/** make_suit_masks size. */
 
 BOOST_AUTO_TEST_CASE(make_suit_masks_size_matches_num_suits) {
     constexpr auto masks = zeta::make_suit_masks<zeta::default_deck>();
@@ -163,7 +163,7 @@ BOOST_AUTO_TEST_CASE(make_suit_masks_size_matches_num_suits) {
     BOOST_TEST(masks.size() == static_cast<std::size_t>(zeta::deck_traits<zeta::default_deck>::num_suits));
 }
 
-// ---- Jass variant (9 ranks, 4 suits = 36 cards) ----------------------------
+/** Jass variant: 9 ranks, 4 suits = 36 cards. */
 
 namespace {
     struct jass_deck {
@@ -213,7 +213,7 @@ BOOST_AUTO_TEST_CASE(jass_suit_masks_cover_correct_bit_ranges) {
 }
 
 BOOST_AUTO_TEST_CASE(jass_suit_ranks_and_ranks_to_cards_roundtrip) {
-    // 6♠ (bit 0), 7♠ (bit 1), A♥ (rank 8 in hearts = bit 9+8=17)
+    /** 6♠ (bit 0), 7♠ (bit 1), A♥ (rank 8 in hearts = bit 9+8=17). */
     constexpr zeta::card_mask hand =
         (zeta::card_mask{1} << 0)  |
         (zeta::card_mask{1} << 1)  |
@@ -226,7 +226,7 @@ BOOST_AUTO_TEST_CASE(jass_suit_ranks_and_ranks_to_cards_roundtrip) {
     }
 }
 
-// ---- deck utilities --------------------------------------------------------
+/** Deck utilities. */
 
 BOOST_AUTO_TEST_CASE(shuffled_contains_each_card_exactly_once) {
     std::mt19937 rng{42};
@@ -243,7 +243,7 @@ BOOST_AUTO_TEST_CASE(shuffled_contains_each_card_exactly_once) {
     BOOST_TEST(std::all_of(seen.begin(), seen.end(), [](bool b) { return b; }));
 }
 
-// ---- swiss aliases ---------------------------------------------------------
+/** Swiss aliases. */
 
 BOOST_AUTO_TEST_CASE(swiss_aliases_map_to_correct_suits) {
     BOOST_TEST(static_cast<int>(zeta::swiss::schilten) == static_cast<int>(zeta::suit::spades));

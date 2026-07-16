@@ -16,6 +16,14 @@ namespace zeta::holdem::cfr {
             return std::unexpected(graph_build_error{kind, node_id, related_node_id});
         }
 
+        [[nodiscard]] uint64_t estimate_node_work(const game_graph& graph, const uint32_t node_id) noexcept
+        {
+            const auto actions = graph.action_count(node_id);
+            const auto depth = std::min<uint32_t>(graph.node_depth[node_id], 16u);
+            const auto depth_factor = uint64_t{1} << depth;
+            return static_cast<uint64_t>(actions) * depth_factor;
+        }
+
         [[nodiscard]] std::expected<void, graph_build_error> validate_sizes(const game_graph& graph) noexcept
         {
             if (graph.row_offsets.size() != static_cast<size_t>(graph.node_count + 1)
@@ -77,12 +85,15 @@ namespace zeta::holdem::cfr {
 
             std::vector<uint32_t> indegree(graph.node_count, 0);
             std::vector<uint32_t> child_seen(graph.node_count, 0);
-            std::vector<uint32_t> action_seen(graph.node_count, 0);
+            std::vector<uint32_t> action_seen;
 
             for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
                 const auto edges_span = graph.out_edges(node_id);
                 const auto degree = static_cast<uint32_t>(edges_span.size());
                 const auto source_stamp = node_id + 1;
+                if (action_seen.size() < degree) {
+                    action_seen.resize(degree, 0);
+                }
 
                 for (const auto& e : edges_span) {
                     if (e.action_index >= degree) {
@@ -127,9 +138,9 @@ namespace zeta::holdem::cfr {
 
             return {};
         }
-    } // namespace
+    }
 
-    std::expected<void, graph_build_error> graph_validator::validate_infosets(const game_graph& graph) noexcept
+    std::expected<void, graph_build_error> graph_validation::validate_infosets(const game_graph& graph) noexcept
     {
         if (auto result = validate_sizes(graph); !result) {
             return result;
@@ -150,7 +161,7 @@ namespace zeta::holdem::cfr {
         return {};
     }
 
-    std::expected<void, graph_build_error> graph_validator::validate_metadata(const game_graph& graph) noexcept
+    std::expected<void, graph_build_error> graph_validation::validate_metadata(const game_graph& graph) noexcept
     {
         if (auto result = validate_sizes_and_csr(graph); !result) {
             return result;
@@ -193,12 +204,12 @@ namespace zeta::holdem::cfr {
         return {};
     }
 
-    std::expected<void, graph_build_error> graph_validator::validate_structure(const game_graph& graph) noexcept
+    std::expected<void, graph_build_error> graph_validation::validate_structure(const game_graph& graph) noexcept
     {
         return validate_tree_metadata(graph);
     }
 
-    std::expected<void, graph_build_error> graph_validator::validate_partitions(const game_graph& graph) noexcept
+    std::expected<void, graph_build_error> graph_validation::validate_partitions(const game_graph& graph) noexcept
     {
         if (auto result = validate_sizes_and_csr(graph); !result) {
             return result;
@@ -216,6 +227,7 @@ namespace zeta::holdem::cfr {
 
             uint32_t terminal_count = 0;
             uint32_t action_count = 0;
+            uint64_t estimated_work = 0;
             auto min_depth = std::numeric_limits<uint16_t>::max();
             uint16_t max_depth = 0;
             for (uint32_t node_id = p.begin_node; node_id < p.end_node; ++node_id) {
@@ -223,6 +235,7 @@ namespace zeta::holdem::cfr {
                     ++terminal_count;
                 }
                 action_count += graph.action_count(node_id);
+                estimated_work += estimate_node_work(graph, node_id);
                 min_depth = std::min(min_depth, static_cast<uint16_t>(graph.node_depth[node_id]));
                 max_depth = std::max(max_depth, static_cast<uint16_t>(graph.node_depth[node_id]));
             }
@@ -230,6 +243,7 @@ namespace zeta::holdem::cfr {
             if (p.node_count != p.end_node - p.begin_node
                 || p.terminal_count != terminal_count
                 || p.action_count != action_count
+                || p.estimated_work != estimated_work
                 || p.min_depth != min_depth
                 || p.max_depth != max_depth) {
                 return validation_error(graph_build_error_kind::invalid_graph_partitions, p.begin_node, p.end_node);
@@ -245,7 +259,7 @@ namespace zeta::holdem::cfr {
         return {};
     }
 
-    std::expected<void, graph_build_error> graph_validator::validate_all(const game_graph& graph) noexcept
+    std::expected<void, graph_build_error> graph_validation::validate_all(const game_graph& graph) noexcept
     {
         if (auto result = validate_structure(graph); !result) {
             return result;
@@ -259,26 +273,49 @@ namespace zeta::holdem::cfr {
         return validate_partitions(graph);
     }
 
-    bool graph_validator::validate(const game_graph& graph) noexcept
+    bool graph_validation::validate(const game_graph& graph) noexcept
     {
         return validate_all(graph).has_value();
     }
 
-    uint32_t graph_builder::add_node(cfr::node_kind kind) noexcept
+    void graph_builder::record_error_(
+        const graph_build_error_kind kind,
+        const uint32_t node_id,
+        const uint32_t related_node_id) noexcept
+    {
+        if (!has_pending_error_) {
+            pending_error_ = graph_build_error{kind, node_id, related_node_id};
+            has_pending_error_ = true;
+        }
+    }
+
+    uint32_t graph_builder::add_node(cfr::node_kind kind)
     {
         assert(!finalized_);
+        if (finalized_) {
+            record_error_(graph_build_error_kind::already_finalized);
+            return game_graph::INVALID_INFOSET;
+        }
         const auto node_id = static_cast<uint32_t>(node_types_.size());
         node_types_.push_back(kind);
         edges_by_node_.emplace_back();
-        infoset_ids_.push_back(game_graph::INVALID_INFOSET);  // Allocate per node
+        infoset_ids_.push_back(game_graph::INVALID_INFOSET);  /**< Allocate per node. */
         return node_id;
     }
 
-    void graph_builder::add_edge(const uint32_t source_node, const uint32_t dest_node, const uint16_t action_index) noexcept
+    void graph_builder::add_edge(const uint32_t source_node, const uint32_t dest_node, const uint16_t action_index)
     {
         assert(!finalized_);
         assert(source_node < node_types_.size());
         assert(dest_node < node_types_.size());
+        if (finalized_) {
+            record_error_(graph_build_error_kind::already_finalized, source_node, dest_node);
+            return;
+        }
+        if (source_node >= node_types_.size() || dest_node >= node_types_.size()) {
+            record_error_(graph_build_error_kind::invalid_graph, source_node, dest_node);
+            return;
+        }
         edges_by_node_[source_node].push_back({dest_node, action_index});
     }
 
@@ -288,7 +325,20 @@ namespace zeta::holdem::cfr {
         assert(node_id < node_types_.size());
         assert(node_types_[node_id] == cfr::node_kind::player || 
                node_types_[node_id] == cfr::node_kind::player_chance);
-        infoset_ids_[node_id] = infoset_id;  // O(1) direct assignment
+        if (finalized_) {
+            record_error_(graph_build_error_kind::already_finalized, node_id);
+            return;
+        }
+        if (node_id >= node_types_.size()) {
+            record_error_(graph_build_error_kind::invalid_graph, node_id);
+            return;
+        }
+        if (node_types_[node_id] != cfr::node_kind::player
+            && node_types_[node_id] != cfr::node_kind::player_chance) {
+            record_error_(graph_build_error_kind::invalid_graph, node_id);
+            return;
+        }
+        infoset_ids_[node_id] = infoset_id;  /**< O(1) direct assignment. */
     }
 
     std::expected<graph_builder::dfs_result, graph_build_error> graph_builder::compute_tree_metadata_() const {
@@ -300,18 +350,18 @@ namespace zeta::holdem::cfr {
         dfs_result result;
         result.depth.assign(node_count, 0);
         result.subtree_size.assign(node_count, 0);
-        result.dfs_order.assign(node_count, game_graph::INVALID_INFOSET);  // old_id -> new_id
-        result.inverse_order.assign(node_count, game_graph::INVALID_INFOSET);  // new_id -> old_id
+        result.dfs_order.assign(node_count, game_graph::INVALID_INFOSET);  /**< old_id -> new_id. */
+        result.inverse_order.assign(node_count, game_graph::INVALID_INFOSET);  /**< new_id -> old_id. */
         result.max_depth = 0;
 
-        std::vector<uint8_t> visited(node_count, 0);  // Use uint8_t for consistency
-        uint32_t dfs_counter = 0;  // Post-order counter
+        std::vector<uint8_t> visited(node_count, 0);  /**< Use uint8_t for consistency. */
+        uint32_t dfs_counter = 0;  /**< Post-order counter. */
 
-        // Iterative DFS to avoid stack overflow on deep trees
+        /** Iterative DFS to avoid stack overflow on deep trees. */
         struct StackFrame {
             uint32_t node_id;
             uint16_t depth;
-            uint8_t phase;  // 0=entry, 1=return
+            uint8_t phase;  /**< 0=entry, 1=return. */
         };
         std::vector<StackFrame> stack;
         stack.push_back({root_, 0, 0});
@@ -320,7 +370,7 @@ namespace zeta::holdem::cfr {
             auto& frame = stack.back();
             
             if (frame.phase == 0) {
-                // Entry phase
+                /** Entry phase. */
                 if (visited[frame.node_id]) {
                     stack.pop_back();
                     continue;
@@ -329,13 +379,15 @@ namespace zeta::holdem::cfr {
                 result.depth[frame.node_id] = frame.depth;
                 result.max_depth = std::max(result.max_depth, frame.depth);
                  
-                frame.phase = 1;  // Move to return phase
+                frame.phase = 1;  /**< Move to return phase. */
                  
                 const auto node_id = frame.node_id;
                 const auto depth = frame.depth;
 
-                // Push children in reverse action order so post-order remains deterministic
-                // with lower action subtrees receiving lower node IDs.
+                /**
+                 * Push children in reverse action order so post-order remains
+                 * deterministic with lower action subtrees receiving lower node IDs.
+                 */
                 const auto& node_edges = edges_by_node_[node_id];
                 for (auto it = node_edges.rbegin();
                      it != node_edges.rend();
@@ -353,14 +405,14 @@ namespace zeta::holdem::cfr {
                     }
                 }
             } else {
-                // Return phase - post-order processing
+                /** Return phase: post-order processing. */
                 uint32_t size = 1;
                 for (const auto& e : edges_by_node_[frame.node_id]) {
                     size += result.subtree_size[e.child_node];
                 }
                 result.subtree_size[frame.node_id] = size;
                 
-                // Assign post-order number
+                /** Assign post-order number. */
                 result.dfs_order[frame.node_id] = dfs_counter;
                 result.inverse_order[dfs_counter] = frame.node_id;
                 ++dfs_counter;
@@ -369,7 +421,7 @@ namespace zeta::holdem::cfr {
             }
         }
 
-        // Verify all nodes were visited (connected tree from root)
+        /** Verify all nodes were visited; connected tree from root. */
         for (uint32_t i = 0; i < node_count; ++i) {
             if (!visited[i]) {
                 return std::unexpected(graph_build_error{graph_build_error_kind::disconnected_tree, i});
@@ -379,10 +431,99 @@ namespace zeta::holdem::cfr {
         return result;
     }
 
+    void graph_builder::sort_edges_by_action_()
+    {
+        for (auto& node_edges : edges_by_node_) {
+            std::sort(
+                node_edges.begin(),
+                node_edges.end(),
+                [](const edge lhs, const edge rhs) noexcept {
+                    return lhs.action_index < rhs.action_index;
+                });
+        }
+    }
+
+    void graph_builder::build_node_arrays_(game_graph& graph, const dfs_result& metadata) const
+    {
+        const auto node_count = static_cast<uint32_t>(node_types_.size());
+        std::vector<cfr::node_kind> reordered_node_types(node_count);
+        std::vector<uint32_t> reordered_infoset_ids(node_count);
+        std::vector<uint16_t> reordered_depth(node_count);
+        std::vector<uint32_t> reordered_subtree_size(node_count);
+
+        for (uint32_t new_id = 0; new_id < node_count; ++new_id) {
+            const auto old_id = metadata.inverse_order[new_id];
+            reordered_node_types[new_id] = node_types_[old_id];
+            reordered_infoset_ids[new_id] = infoset_ids_[old_id];
+            reordered_depth[new_id] = metadata.depth[old_id];
+            reordered_subtree_size[new_id] = metadata.subtree_size[old_id];
+        }
+
+        graph.node_types = std::move(reordered_node_types);
+        graph.infoset_id = std::move(reordered_infoset_ids);
+        graph.node_depth = std::move(reordered_depth);
+        graph.subtree_size = std::move(reordered_subtree_size);
+        graph.max_depth = metadata.max_depth;
+        graph.root_node = metadata.dfs_order[root_];
+    }
+
+    void graph_builder::build_csr_(game_graph& graph, const dfs_result& metadata) const
+    {
+        const auto node_count = static_cast<uint32_t>(node_types_.size());
+        uint32_t edge_count = 0;
+        for (const auto& node_edges : edges_by_node_) {
+            edge_count += static_cast<uint32_t>(node_edges.size());
+        }
+
+        std::vector<uint32_t> row_offsets;
+        std::vector<edge> edges;
+        row_offsets.reserve(static_cast<size_t>(node_count) + 1);
+        edges.reserve(edge_count);
+
+        row_offsets.push_back(0);
+        for (uint32_t new_id = 0; new_id < node_count; ++new_id) {
+            const auto old_id = metadata.inverse_order[new_id];
+            for (const auto& e : edges_by_node_[old_id]) {
+                edges.push_back({metadata.dfs_order[e.child_node], e.action_index});
+            }
+            row_offsets.push_back(static_cast<uint32_t>(edges.size()));
+        }
+
+        graph.row_offsets = std::move(row_offsets);
+        graph.edges = std::move(edges);
+    }
+
+    void graph_builder::compute_graph_counts_(game_graph& graph) const noexcept
+    {
+        graph.infoset_count = 0;
+        graph.terminal_count = 0;
+
+        for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+            if (graph.node_types[node_id] == cfr::node_kind::player || 
+                graph.node_types[node_id] == cfr::node_kind::player_chance) {
+                if (graph.infoset_id[node_id] != game_graph::INVALID_INFOSET) {
+                    graph.infoset_count = std::max(graph.infoset_count, graph.infoset_id[node_id] + 1);
+                }
+            }
+
+            if (graph.node_types[node_id] == cfr::node_kind::terminal) {
+                graph.terminal_count++;
+            }
+        }
+    }
+
+    std::expected<void, graph_build_error> graph_builder::validate_complete_(const game_graph& graph) noexcept
+    {
+        return graph_validation::validate_all(graph);
+    }
+
     std::expected<game_graph, graph_build_error> graph_builder::build()
     {
         if (finalized_) {
             return std::unexpected(graph_build_error{graph_build_error_kind::already_finalized});
+        }
+        if (has_pending_error_) {
+            return std::unexpected(pending_error_);
         }
 
         const auto node_count = static_cast<uint32_t>(node_types_.size());
@@ -390,95 +531,23 @@ namespace zeta::holdem::cfr {
             return std::unexpected(graph_build_error{graph_build_error_kind::empty_graph});
         }
 
-        game_graph graph;
-        graph.node_count = node_count;
+        sort_edges_by_action_();
 
-        // Compute DFS order and metadata
         auto metadata_result = compute_tree_metadata_();
         if (!metadata_result) {
             return std::unexpected(metadata_result.error());
         }
-        auto [depth, subtree_size, dfs_order, inverse_order, max_depth] = std::move(*metadata_result);
-        
-        // Reorder all node arrays into DFS post-order
-        std::vector<cfr::node_kind> reordered_node_types(node_count);
-        std::vector<uint32_t> reordered_infoset_ids(node_count);
-        std::vector<uint32_t> reordered_depth(node_count);
-        std::vector<uint32_t> reordered_subtree_size(node_count);
-        
-        for (uint32_t new_id = 0; new_id < node_count; ++new_id) {
-            const auto old_id = inverse_order[new_id];
-            reordered_node_types[new_id] = node_types_[old_id];
-            reordered_infoset_ids[new_id] = infoset_ids_[old_id];
-            reordered_depth[new_id] = depth[old_id];
-            reordered_subtree_size[new_id] = subtree_size[old_id];
-        }
-        
-        graph.node_types = std::move(reordered_node_types);
-        graph.infoset_id = std::move(reordered_infoset_ids);
-        graph.node_depth = std::move(reordered_depth);
-        graph.subtree_size = std::move(reordered_subtree_size);
-        graph.max_depth = max_depth;
-        graph.root_node = dfs_order[root_];
 
-        // Build CSR storage from reordered edges
-        // First, remap all edges with new node IDs
-        std::vector<std::vector<edge>> reordered_edges_by_node(node_count);
-        
-        for (uint32_t old_id = 0; old_id < node_count; ++old_id) {
-            const auto new_id = dfs_order[old_id];
-            
-            // Collect edges from this node and remap child node IDs
-            for (const auto& edge : edges_by_node_[old_id]) {
-                const auto new_child_id = dfs_order[edge.child_node];
-                reordered_edges_by_node[new_id].push_back({new_child_id, edge.action_index});
-            }
-        }
-        
-        // Convert to CSR format
-        std::vector<uint32_t> row_offsets;
-        std::vector<edge> edges;
-        
-        row_offsets.push_back(0);
-        for (const auto& node_edges : reordered_edges_by_node) {
-            edges.insert(edges.end(), node_edges.begin(), node_edges.end());
-            row_offsets.push_back(static_cast<uint32_t>(edges.size()));
-        }
-        
-        graph.row_offsets = std::move(row_offsets);
-        graph.edges = std::move(edges);
+        game_graph graph;
+        graph.node_count = node_count;
+        build_node_arrays_(graph, *metadata_result);
+        build_csr_(graph, *metadata_result);
+        compute_graph_counts_(graph);
 
-        // Build infoset_count
-        for (uint32_t node_id = 0; node_id < node_count; ++node_id) {
-            if (graph.node_types[node_id] == cfr::node_kind::player || 
-                graph.node_types[node_id] == cfr::node_kind::player_chance) {
-                if (graph.infoset_id[node_id] != game_graph::INVALID_INFOSET) {
-                    graph.infoset_count = std::max(graph.infoset_count, graph.infoset_id[node_id] + 1);
-                }
-            }
-        }
-
-        // Count terminals
-        for (uint32_t node_id = 0; node_id < node_count; ++node_id) {
-            if (graph.node_types[node_id] == cfr::node_kind::terminal) {
-                graph.terminal_count++;
-            }
-        }
-
-        if (auto result = graph_validator::validate_structure(graph); !result) {
-            return std::unexpected(result.error());
-        }
-        if (auto result = graph_validator::validate_metadata(graph); !result) {
-            return std::unexpected(result.error());
-        }
-        if (auto result = graph_validator::validate_infosets(graph); !result) {
-            return std::unexpected(result.error());
-        }
-
-        // Compute default partition strategy
         partition_strategy strategy;
         graph.partitions = compute_partitions(graph, strategy);
-        if (auto result = graph_validator::validate_partitions(graph); !result) {
+
+        if (auto result = validate_complete_(graph); !result) {
             return std::unexpected(result.error());
         }
 
@@ -494,7 +563,7 @@ namespace zeta::holdem::cfr {
 
         const auto n = static_cast<double>(partitions.size());
         
-        // Compute mean estimated_work
+        /** Compute mean estimated_work. */
         double sum = 0.0;
         for (const auto& p : partitions) {
             sum += static_cast<double>(p.estimated_work);
@@ -502,10 +571,10 @@ namespace zeta::holdem::cfr {
         const auto mean = sum / n;
 
         if (mean == 0.0) {
-            return 0.0;  // All partitions have zero work
+            return 0.0;  /**< All partitions have zero work. */
         }
 
-        // Compute standard deviation
+        /** Compute standard deviation. */
         double sum_sq_dev = 0.0;
         for (const auto& p : partitions) {
             const auto dev = static_cast<double>(p.estimated_work) - mean;
@@ -513,7 +582,7 @@ namespace zeta::holdem::cfr {
         }
         const auto stddev = std::sqrt(sum_sq_dev / n);
 
-        // Coefficient of variation
+        /** Coefficient of variation. */
         return stddev / mean;
     }
 
@@ -523,7 +592,8 @@ namespace zeta::holdem::cfr {
     static graph_partition compute_partition_metadata(
         const game_graph& graph,
         const uint32_t begin_node,
-        const uint32_t end_node)
+        const uint32_t end_node,
+        const std::span<const uint64_t> node_work = {})
     {
         graph_partition p{};
         p.begin_node = begin_node;
@@ -535,7 +605,7 @@ namespace zeta::holdem::cfr {
         p.max_depth = 0;
         p.estimated_work = 0;
 
-        // Scan nodes in partition
+        /** Scan nodes in partition. */
         for (uint32_t node_id = begin_node; node_id < end_node; ++node_id) {
             if (graph.is_terminal(node_id)) {
                 p.terminal_count++;
@@ -543,21 +613,12 @@ namespace zeta::holdem::cfr {
             
             const auto num_actions = graph.action_count(node_id);
             p.action_count += num_actions;
+            p.estimated_work += node_work.empty()
+                ? estimate_node_work(graph, node_id)
+                : node_work[node_id];
             
             p.min_depth = std::min(p.min_depth, static_cast<uint16_t>(graph.node_depth[node_id]));
             p.max_depth = std::max(p.max_depth, static_cast<uint16_t>(graph.node_depth[node_id]));
-        }
-
-        // Work heuristic: branching × 2^depth (provisional, not accurate CFR cost model)
-        // Note: This is only a rough estimate. Actual CFR cost depends on reach probability,
-        // action frequencies, and strategy update complexity. Eventually should use:
-        // subtree_size × branching^depth × expected_visits or dynamic measurement.
-        for (uint32_t node_id = begin_node; node_id < end_node; ++node_id) {
-            const auto actions = graph.action_count(node_id);
-            const auto depth = std::min(graph.node_depth[node_id], 16u);  // Clamp to prevent overflow
-            const auto depth_factor = uint64_t{1} << depth;  // 2^depth using bitshift (faster than pow)
-            
-            p.estimated_work += static_cast<uint64_t>(actions) * depth_factor;
         }
 
         if (p.min_depth == std::numeric_limits<uint16_t>::max()) {
@@ -587,26 +648,24 @@ namespace zeta::holdem::cfr {
             return partitions;
         }
 
-        // Compute metadata for all nodes first using work heuristic
+        /** Compute metadata for all nodes first using work heuristic. */
         std::vector<uint64_t> node_work(graph.node_count);
         uint64_t total_work = 0;
         for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
-            const auto actions = graph.action_count(node_id);
-            const auto depth = std::min(graph.node_depth[node_id], 16u);
-            const auto depth_factor = uint64_t{1} << depth;  // 2^depth using bitshift
-            
-            node_work[node_id] = static_cast<uint64_t>(actions) * depth_factor;
+            node_work[node_id] = estimate_node_work(graph, node_id);
             total_work += node_work[node_id];
         }
 
         const auto target_work = (total_work + target_count - 1) / target_count;
 
-        // Greedily partition by accumulated work, respecting DFS post-order.
-        // WARNING: This algorithm CAN split subtrees across partitions.
-        // Example: if subtree B (nodes 1-3) has high work, the algorithm might cut
-        // after node 2, leaving nodes 2 and 3 in different partitions.
-        // This is a tradeoff: perfect work balance vs perfect subtree locality.
-        // For better subtree preservation, would need to penalize cuts within subtrees.
+        /**
+         * Greedily partition by accumulated work, respecting DFS post-order.
+         * WARNING: This algorithm CAN split subtrees across partitions.
+         * Example: if subtree B (nodes 1-3) has high work, the algorithm might cut
+         * after node 2, leaving nodes 2 and 3 in different partitions.
+         * This is a tradeoff: perfect work balance vs perfect subtree locality.
+         * For better subtree preservation, would need to penalize cuts within subtrees.
+         */
         uint32_t partition_start = 0;
         uint64_t current_work = 0;
 
@@ -615,7 +674,7 @@ namespace zeta::holdem::cfr {
 
             if (const bool last_node = (node_id == graph.node_count - 1); (current_work >= target_work) || last_node) {
                 partitions.push_back(
-                    compute_partition_metadata(graph, partition_start, node_id + 1)
+                    compute_partition_metadata(graph, partition_start, node_id + 1, node_work)
                 );
                 partition_start = node_id + 1;
                 current_work = 0;
@@ -625,4 +684,4 @@ namespace zeta::holdem::cfr {
         return partitions;
     }
 
-} // namespace zeta::holdem::cfr
+}

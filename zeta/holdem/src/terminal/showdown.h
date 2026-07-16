@@ -68,9 +68,11 @@ namespace zeta::holdem {
         }
     }
 
-    // Heads-up (2-player) exact showdown kernel: a two-stream rank-bucket merge.
-    // This is the hand-tuned fast path; the generic evaluate_showdown<N> dispatches
-    // here for N == 2. reach[0] == oop, reach[1] == ip.
+    /**
+     * Heads-up (2-player) exact showdown kernel: a two-stream rank-bucket merge.
+     * This is the hand-tuned fast path; the generic evaluate_showdown<N> dispatches
+     * here for N == 2. reach[0] == oop, reach[1] == ip.
+     */
     [[nodiscard]] inline_always terminal_result<2> evaluate_showdown_heads_up(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
@@ -156,9 +158,11 @@ namespace zeta::holdem {
         return result;
     }
 
-    // Generic entry point: player count is a compile-time constant. Primary
-    // template fails to compile for N != 2 until multiplayer kernels exist, so an
-    // accidental N-way call is a hard error rather than a silent slow path.
+    /**
+     * Generic entry point: player count is a compile-time constant. Primary
+     * template fails to compile for N != 2 until multiplayer kernels exist, so an
+     * accidental N-way call is a hard error rather than a silent slow path.
+     */
     template <std::size_t N>
     [[nodiscard]] terminal_result<N> evaluate_showdown(
         const river_terminal_cache& cache,
@@ -179,8 +183,10 @@ namespace zeta::holdem {
         const uint16_t samples_per_combo
     ) noexcept;
 
-    // Heads-up convenience overload: forwards a pair of reach indices to the
-    // two-stream kernel (keeps existing call sites working).
+    /**
+     * Heads-up convenience overload: forwards a pair of reach indices to the
+     * two-stream kernel and keeps existing call sites working.
+     */
     [[nodiscard]] inline_always terminal_result<2> evaluate_showdown(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
@@ -252,8 +258,10 @@ namespace zeta::holdem {
         return evaluate_showdown(cache, oop_reach, ip_reach, context).summary;
     }
 
-    // Workspace-based API (preferred for CFR): caller provides ranges, workspace owns reach indices.
-    // The workspace materializes ranges on first call, then reuses for subsequent evaluations.
+    /**
+     * Workspace-based API: caller provides ranges, workspace owns reach indices.
+     * The workspace materializes ranges on first call, then reuses them.
+     */
     template <std::size_t N>
     [[nodiscard]] terminal_result<N> evaluate_showdown(
        terminal_workspace<N>& workspace,
@@ -261,14 +269,14 @@ namespace zeta::holdem {
        const std::array<reach_vector, N>& ranges,
        const terminal_context<N>& context
     ) noexcept {
-       // Materialize ranges into workspace reach indices
+       /** Materialize ranges into workspace reach indices. */
        workspace.materialize(cache, ranges);
         
-       // Evaluate using the materialized indices
+       /** Evaluate using the materialized indices. */
        return evaluate_showdown(cache, workspace.reach, context);
     }
 
-    // Workspace-based showdown values (convenience wrapper)
+    /** Workspace-based showdown values convenience wrapper. */
     template <std::size_t N>
     [[nodiscard]] terminal_values<N> evaluate_showdown_values(
        terminal_workspace<N>& workspace,
@@ -284,7 +292,7 @@ namespace zeta::holdem {
        }
     }
 
-    // Workspace-based showdown summary (convenience wrapper)
+    /** Workspace-based showdown summary convenience wrapper. */
     template <std::size_t N>
     [[nodiscard]] terminal_summary<N> summarize_showdown(
        terminal_workspace<N>& workspace,
@@ -295,7 +303,7 @@ namespace zeta::holdem {
        return evaluate_showdown(workspace, cache, ranges, context).summary;
     }
 
-    // Heads-up workspace specialization (overload for convenience)
+    /** Heads-up workspace specialization. */
     [[nodiscard]] inline_always terminal_result<2> evaluate_showdown(
        terminal_workspace<2>& workspace,
        const river_terminal_cache& cache,
@@ -318,10 +326,11 @@ namespace zeta::holdem {
         return static_cast<accumulator>(next_sample_state(state)) * inv;
     }
 
-    // Step 11: initial multiplayer kernel (N > 2) using stratified sampling with
-    // importance weighting. This is the first practical multiplayer implementation
-    // under the multiplayer kernel family; future kernels can replace it without
-    // changing the caller-facing dispatch interface.
+    /**
+     * Multiplayer kernel (N > 2) using stratified sampling with importance
+     * weighting. Future kernels can replace it without changing the
+     * caller-facing dispatch interface.
+     */
     template <std::size_t N>
     [[nodiscard]] terminal_values<N> evaluate_showdown_values_multiplayer_sampled(
         const river_terminal_cache& cache,

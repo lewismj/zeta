@@ -91,8 +91,10 @@ namespace zeta::holdem {
             }
         }
 
-        // Matches make_combination_masks(): high rank descending, then first suit,
-        // same-rank suit pairs, then lower ranks by descending rank and suit.
+        /**
+         * Matches make_combination_masks(): high rank descending, then first suit,
+         * same-rank suit pairs, then lower ranks by descending rank and suit.
+         */
         [[nodiscard]] constexpr std::array<combination_index, 13> make_combo_rank_bases() noexcept {
             std::array<combination_index, 13> bases{};
             combination_index base = 0;

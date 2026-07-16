@@ -421,8 +421,10 @@ namespace {
         );
     }
 
-    // End-to-end engine path (range->index materialization + showdown) is benchmarked above.
-    // This isolates engine wrapper/dispatch over pre-indexed reaches to compare with raw kernel.
+    /**
+     * End-to-end engine path (range->index materialization + showdown) is benchmarked above.
+     * This isolates engine wrapper/dispatch over pre-indexed reaches to compare with raw kernel.
+     */
     void BM_TerminalEngineShowdownDensePreindexed(benchmark::State& state) {
         const auto& d = data();
         const auto& cases = d.dense_cases;
@@ -458,7 +460,7 @@ namespace {
         );
     }
 
-    // Solver-like hot path: cache + reach indexes are already materialized and reused.
+    /** Solver-like hot path: cache + reach indexes are already materialized and reused. */
     void BM_TerminalEngineShowdownDenseCached(benchmark::State& state) {
         const auto& d = data();
         const auto& cases = d.dense_cases;

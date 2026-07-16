@@ -14,9 +14,11 @@
 
 namespace zeta::holdem {
 
-    // Heads-up seat identity. Only meaningful for 2-player terminals; N-way
-    // kernels address seats by index (0..N-1). `player` is retained as a
-    // back-compat alias so existing call sites compile unchanged.
+    /**
+     * Heads-up seat identity. Only meaningful for 2-player terminals; N-way
+     * kernels address seats by index (0..N-1). `player` is retained as a
+     * back-compat alias so existing call sites compile unchanged.
+     */
     enum class heads_up_player : uint8_t {
         oop,
         ip
@@ -33,7 +35,9 @@ namespace zeta::holdem {
         multiplayer
     };
 
-    // N-way seat mask: generic template uses bitset<N> where bit i == true means seat i is folded.
+    /**
+     * N-way seat mask: generic template uses bitset<N> where bit i == true means seat i is folded.
+     */
     template <std::size_t N>
     struct folded_mask {
         std::bitset<N> bits;
@@ -47,19 +51,21 @@ namespace zeta::holdem {
         }
     };
 
-    // Heads-up specialization: genuine optimization with direct boolean fields, not bitset.
-    // This avoids any bitset overhead in the fast path.
+    /**
+     * Heads-up specialization: genuine optimization with direct boolean fields,
+     * not bitset. This avoids any bitset overhead in the fast path.
+     */
     template <>
     struct folded_mask<2> {
         bool oop_folded = false;
         bool ip_folded = false;
 
-        // Accessor for compatibility with generic interface
+        /** Accessor for compatibility with generic interface. */
         [[nodiscard]] constexpr bool operator[](const std::size_t seat) const noexcept {
             return seat == 0 ? oop_folded : ip_folded;
         }
 
-        // Helper to set folded state
+        /** Helper to set folded state. */
         constexpr void set_folded(const std::size_t seat, const bool value) noexcept {
             if (seat == 0) {
                 oop_folded = value;
@@ -68,7 +74,7 @@ namespace zeta::holdem {
             }
         }
 
-        // Factory from heads_up_player for compatibility.
+        /** Factory from heads_up_player for compatibility. */
         [[nodiscard]] static constexpr folded_mask<2> from_folded_player(const heads_up_player folded) noexcept {
             folded_mask<2> mask;
             if (folded == heads_up_player::oop) {
@@ -87,9 +93,11 @@ namespace zeta::holdem {
         utility ip_contribution = 0.0;
     };
 
-    // Player-neutral, compile-time-sized terminal accounting context.
-    // For N active players, `contribution[seat]` is that seat's contribution.
-    // Heads-up is terminal_context<2> (contribution[0]=oop, contribution[1]=ip).
+    /**
+     * Player-neutral, compile-time-sized terminal accounting context.
+     * For N active players, `contribution[seat]` is that seat's contribution.
+     * Heads-up is terminal_context<2> (contribution[0]=oop, contribution[1]=ip).
+     */
     template <std::size_t N>
     struct terminal_context {
         utility gross_pot = 0.0;
@@ -97,9 +105,11 @@ namespace zeta::holdem {
         std::array<utility, N> contribution{};
     };
 
-    // Zero-cost clarity alias: heads-up accounting is exactly terminal_context<2>
-    // (contribution[0]=oop, contribution[1]=ip). No separate type is needed; this
-    // keeps the single templated context boundary while naming the heads-up intent.
+    /**
+     * Zero-cost clarity alias: heads-up accounting is exactly terminal_context<2>
+     * (contribution[0]=oop, contribution[1]=ip). No separate type is needed; this
+     * keeps the single templated context boundary while naming the heads-up intent.
+     */
     using heads_up_context = terminal_context<2>;
 
     struct terminal_payoff {
@@ -107,7 +117,7 @@ namespace zeta::holdem {
         utility ip = 0.0;
     };
 
-    // Build a heads-up context from explicit pot accounting.
+    /** Build a heads-up context from explicit pot accounting. */
     [[nodiscard]] constexpr terminal_context<2> make_heads_up_context(
         const utility gross_pot,
         const utility rake,
@@ -125,8 +135,10 @@ namespace zeta::holdem {
         return make_heads_up_context(pot.gross_pot, pot.rake, pot.oop_contribution, pot.ip_contribution);
     }
 
-    // Recover the heads-up pot accounting from a two-player context so the
-    // existing payoff helpers can be reused unchanged.
+    /**
+     * Recover the heads-up pot accounting from a two-player context so the
+     * existing payoff helpers can be reused unchanged.
+     */
     [[nodiscard]] constexpr terminal_pot heads_up_pot(const terminal_context<2>& context) noexcept {
         return terminal_pot{
             .gross_pot = context.gross_pot,
@@ -140,46 +152,49 @@ namespace zeta::holdem {
         return p == heads_up_player::oop ? 0u : 1u;
     }
 
-    // ============================================================================
-    // Phase 2, Step 9: pot_structure<N> and payoff infrastructure
-    // ============================================================================
-    //
-    // Separates hand ranking (showdown) from payoff computation (pot distribution).
-    // Side-pot handling, rake application, and eligibility are payoff concerns,
-    // not ranking concerns.
-    //
-    // This structure can be extended for:
-    // - Step 15 (range_data policy): bucketed ranges instead of raw combos
-    // - Step 16 (rake_policy): generalized rake models beyond linear deduction
-    // - Step 17 (parallelism): memory layout and NUMA affinity hints
+    /**
+     * Payoff infrastructure for pot distribution.
+     *
+     * Separates hand ranking (showdown) from payoff computation. Side-pot
+     * handling, rake application, and eligibility are payoff concerns, not
+     * ranking concerns.
+     *
+     * The policy hooks below support bucketed ranges, generalized rake models,
+     * and memory-layout hints without changing terminal evaluation APIs.
+     */
 
-    // Side pot representation: accumulates contributions toward a particular pot.
-    // Each seat's total winnings is distributed across main pot + side pots[0..n-1].
+    /**
+     * Side pot representation: accumulates contributions toward a particular pot.
+     * Each seat's total winnings is distributed across main pot + side pots[0..n-1].
+     */
     template <std::size_t N>
     struct side_pot {
-        // Seats that contributed to this pot (and are thus eligible to win it).
+        /** Seats that contributed to this pot and are thus eligible to win it. */
         std::bitset<N> eligible{};
-        // Total amount in this pot before distribution.
+        /** Total amount in this pot before distribution. */
         utility amount = 0.0;
     };
 
-    // Rake policy abstraction: how rake is deducted from the gross pot.
-    // Hook for Step 16: allows plugging in different rake models.
-    //
-    // Default (linear): rake = f * gross_pot (capped at max_rake if present).
-    // Examples:
-    //   - No-flop rake: zero on side pots, full rate on main pot.
-    //   - Time collection: rake = time_amount (fixed).
-    //   - Rake cap: rake = min(f * gross_pot, cap).
-    //   - Tournament: rake = zero.
+    /**
+     * Rake policy abstraction: how rake is deducted from the gross pot.
+     *
+     * Default (linear): rake = f * gross_pot (capped at max_rake if present).
+     * Examples:
+     *   - No-flop rake: zero on side pots, full rate on main pot.
+     *   - Time collection: rake = time_amount (fixed).
+     *   - Rake cap: rake = min(f * gross_pot, cap).
+     *   - Tournament: rake = zero.
+     */
     struct rake_policy {
-        // Standard online poker rake: fraction of the pot (e.g., 0.05 for 5%).
+        /** Standard online poker rake: fraction of the pot (e.g., 0.05 for 5%). */
         float rate = 0.0f;
-        // Optional cap: rake cannot exceed this amount. Zero = no cap.
+        /** Optional cap: rake cannot exceed this amount. Zero = no cap. */
         float max_rake = 0.0f;
 
-        // Compute rake deducted from a pot. Override this function (or use
-        // a derived class / custom policy) to implement different rake models.
+        /**
+         * Compute rake deducted from a pot. Override this function (or use
+         * a derived class / custom policy) to implement different rake models.
+         */
         [[nodiscard]] constexpr utility compute_rake(const utility gross_amount) const noexcept {
             utility computed = static_cast<utility>(rate) * gross_amount;
             if (max_rake > 0.0f) {
@@ -189,73 +204,84 @@ namespace zeta::holdem {
         }
     };
 
-    // Range data policy: abstraction for range representation.
-    // Hook for Step 15: allows plugging in different range sources (raw combos, buckets, etc.).
-    //
-    // The evaluator's core algorithm works with per-combo weighting. This policy
-    // allows a future implementation to feed in bucketed ranges, sampled subsets,
-    // or importance-weighted distributions without changing the payoff kernel.
+    /**
+     * Range data policy: abstraction for range representation.
+     *
+     * The evaluator's core algorithm works with per-combo weighting. This policy
+     * allows a future implementation to feed in bucketed ranges, sampled subsets,
+     * or importance-weighted distributions without changing the payoff kernel.
+     */
     struct range_data_policy {
-        // Placeholder: could be specialized for:
-        //   - exact_range_policy: raw 1081 combos (current)
-        //   - bucketed_range_policy: precomputed hand strength buckets
-        //   - sampled_range_policy: importance-weighted samples
-        //   - abstract_range_policy: strategic abstraction (e.g., isomorphic groups)
-        //
-        // For now, this is a marker struct. The evaluator uses raw reach_vector.
-        // Later, a template parameter can select the policy.
+        /**
+         * Placeholder: could be specialized for exact_range_policy,
+         * bucketed_range_policy, sampled_range_policy, or abstract_range_policy.
+         * For now, this is a marker struct. The evaluator uses raw reach_vector.
+         */
     };
 
-    // Memory layout policy: hints for parallelism and NUMA optimization.
-    // Hook for Step 17: allows specifying memory affinity and layout constraints.
-    //
-    // The evaluator is single-threaded, but the workspace and cache can be
-    // placed according to these hints when used in a parallel CFR solver.
+    /**
+     * Memory layout policy: hints for parallelism and NUMA optimization.
+     *
+     * The evaluator is single-threaded, but the workspace and cache can be
+     * placed according to these hints when used in a parallel CFR solver.
+     */
     struct memory_layout_policy {
-        // Alignment requirement for workspace allocation (e.g., 64 for cache line).
-        // Zero = default alignment.
+        /**
+         * Alignment requirement for workspace allocation (e.g., 64 for cache line).
+         * Zero = default alignment.
+         */
         size_t alignment = 0;
 
-        // NUMA affinity node, if relevant (e.g., for thread-local workspaces).
-        // -1 = no preference (system chooses).
+        /**
+         * NUMA affinity node, if relevant (e.g., for thread-local workspaces).
+         * -1 = no preference (system chooses).
+         */
         int numa_node = -1;
 
-        // True if this workspace is read-only (sharable across threads).
-        // False = thread-local only.
+        /**
+         * True if this workspace is read-only (sharable across threads).
+         * False = thread-local only.
+         */
         bool is_shared = false;
 
-        // Memory size estimate for planning (diagnostic only; not enforced).
+        /** Memory size estimate for planning (diagnostic only; not enforced). */
         [[nodiscard]] static constexpr size_t estimate_workspace_bytes(std::size_t N) noexcept {
-            // Rough estimate: N reach indices at ~129 KB each + scratch buffers.
+            /** Rough estimate: N reach indices at ~129 KB each + scratch buffers. */
             return N * 129'000 + 8'000;
         }
     };
 
-    // N-way pot structure: main pot + side pots, rake policy, and active-set mask.
-    // Separates payoff computation from hand ranking.
+    /**
+     * N-way pot structure: main pot + side pots, rake policy, and active-set mask.
+     * Separates payoff computation from hand ranking.
+     */
     template <std::size_t N>
     struct pot_structure {
-        // Which seats are active and eligible to win (complement of folded_mask).
+        /** Which seats are active and eligible to win (complement of folded_mask). */
         std::bitset<N> active{};
 
-        // Main pot and side pots. For simplicity, we accumulate side pots linearly.
-        // (A more complex representation could track per-player all-in amounts.)
+        /**
+         * Main pot and side pots. For simplicity, we accumulate side pots linearly.
+         * A more complex representation could track per-player all-in amounts.
+         */
         std::vector<side_pot<N>> pots;
 
-        // Rake policy: determines how rake is deducted.
-        // Default is linear: rate * gross_pot (capped).
+        /**
+         * Rake policy: determines how rake is deducted.
+         * Default is linear: rate * gross_pot (capped).
+         */
         rake_policy rake{};
 
-        // Range data policy: future hook for bucketed/sampled ranges.
-        // Currently unused; prepared for Step 15.
+        /** Range data policy: future hook for bucketed/sampled ranges. */
         range_data_policy range_policy{};
 
-        // Memory layout hints: for NUMA-aware allocation and thread pinning.
-        // Prepared for Step 17 (parallelism & memory).
+        /** Memory layout hints for NUMA-aware allocation and thread pinning. */
         memory_layout_policy memory_policy{};
 
-        // Initialize main pot with all active seats eligible.
-        // Call after setting active and before distributing side pots.
+        /**
+         * Initialize main pot with all active seats eligible.
+         * Call after setting active and before distributing side pots.
+         */
         constexpr void initialize_main_pot(const utility gross_pot) noexcept {
             pots.clear();
             pots.emplace_back();
@@ -263,7 +289,7 @@ namespace zeta::holdem {
             pots[0].amount = gross_pot;
         }
 
-        // Total pot balance (sum of all side pots).
+        /** Total pot balance (sum of all side pots). */
         [[nodiscard]] constexpr utility total_pot_balance() const noexcept {
             utility total = 0.0;
             for (const auto& pot : pots) {
@@ -272,27 +298,29 @@ namespace zeta::holdem {
             return total;
         }
 
-        // Count of active players.
+        /** Count of active players. */
         [[nodiscard]] constexpr std::size_t active_count() const noexcept {
             return active.count();
         }
     };
 
-    // Heads-up specialization: no side pots, simpler structure.
-    // This keeps the data layout tight for the fast path.
+    /**
+     * Heads-up specialization: no side pots, simpler structure.
+     * This keeps the data layout tight for the fast path.
+     */
     template <>
     struct pot_structure<2> {
         bool oop_active = true;
         bool ip_active = true;
 
         utility main_pot = 0.0;
-        // No side pots for heads-up (binary all-in semantics).
+        /** No side pots for heads-up (binary all-in semantics). */
 
         rake_policy rake{};
         range_data_policy range_policy{};
         memory_layout_policy memory_policy{};
 
-        // Accessors for generic interface compatibility.
+        /** Accessors for generic interface compatibility. */
         [[nodiscard]] constexpr std::size_t active_count() const noexcept {
             return (oop_active ? 1 : 0) + (ip_active ? 1 : 0);
         }
@@ -304,15 +332,17 @@ namespace zeta::holdem {
 
     using value_array = std::array<terminal_value, combination_count>;
 
-    // Templated structure-of-arrays: one contiguous per-combo value array per
-    // active player. terminal_values<2> is exactly the heads-up layout. Even at
-    // 6 players this is 6 * combination_count floats (~31 KB), so no nesting or
-    // compression is needed.
+    /**
+     * Templated structure-of-arrays: one contiguous per-combo value array per
+     * active player. terminal_values<2> is exactly the heads-up layout. Even at
+     * 6 players this is 6 * combination_count floats (~31 KB), so no nesting or
+     * compression is needed.
+     */
     template <std::size_t N>
     struct terminal_values {
         std::array<value_array, N> player_values{};
 
-        // Heads-up ergonomic access by seat enum (valid while N >= 2).
+        /** Heads-up ergonomic access by seat enum (valid while N >= 2). */
         [[nodiscard]] constexpr const value_array& operator[](const heads_up_player p) const noexcept {
             return player_values[player_index(p)];
         }
@@ -321,7 +351,7 @@ namespace zeta::holdem {
             return player_values[player_index(p)];
         }
 
-        // Seat-indexed access for the generic (N-way) form.
+        /** Seat-indexed access for the generic (N-way) form. */
         [[nodiscard]] constexpr const value_array& operator[](const std::size_t seat) const noexcept {
             return player_values[seat];
         }
@@ -331,10 +361,12 @@ namespace zeta::holdem {
         }
     };
 
-    // Aggregate EV / win-tie accounting for an evaluated terminal. The summary is
-    // inherently kernel-specific: the heads-up specialization below exposes the
-    // lower/equal/higher decomposition (oop vs ip). An N-way summary would carry a
-    // different shape, so the primary template is left unimplemented on purpose.
+    /**
+     * Aggregate EV / win-tie accounting for an evaluated terminal. The summary is
+     * inherently kernel-specific: the heads-up specialization below exposes the
+     * lower/equal/higher decomposition (oop vs ip). An N-way summary would carry a
+     * different shape, so the primary template is left unimplemented on purpose.
+     */
     template <std::size_t N>
     struct terminal_summary {
         static_assert(N == 2, "terminal_summary is only specialized for heads-up (N == 2)");
@@ -350,9 +382,11 @@ namespace zeta::holdem {
         accumulator ip_wins = 0.0;
     };
 
-    // Result bundle for an evaluated terminal. Fully templated on the player count
-    // so a future N-way kernel returns terminal_result<N> rather than being forced
-    // through a permanently heads-up (two-seat) shape.
+    /**
+     * Result bundle for an evaluated terminal. Fully templated on the player count
+     * so a future N-way kernel returns terminal_result<N> rather than being forced
+     * through a permanently heads-up (two-seat) shape.
+     */
     template <std::size_t N>
     struct terminal_result {
         terminal_values<N> values{};

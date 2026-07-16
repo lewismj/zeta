@@ -342,7 +342,7 @@ namespace {
 
 BOOST_AUTO_TEST_CASE(holdem_detects_straight_flush) {
     const auto seven = hand7({
-        {0, 8}, {0, 9}, {0, 10}, {0, 11}, {0, 12}, // T? J? Q? K? A?
+        {0, 8}, {0, 9}, {0, 10}, {0, 11}, {0, 12}, /**< Ten through ace. */
         {1, 2}, {2, 4}
     });
 
@@ -352,7 +352,7 @@ BOOST_AUTO_TEST_CASE(holdem_detects_straight_flush) {
 
 BOOST_AUTO_TEST_CASE(holdem_detects_quads) {
     const auto seven = hand7({
-        {0, 12}, {1, 12}, {2, 12}, {3, 12}, // quad aces
+        {0, 12}, {1, 12}, {2, 12}, {3, 12}, /**< Quad aces. */
         {0, 11}, {1, 5}, {2, 3}
     });
 
@@ -381,8 +381,8 @@ BOOST_AUTO_TEST_CASE(holdem_ranking_ordering_is_monotonic) {
     }));
 
     const auto full_house = zeta::holdem::evaluate(hand7({
-        {0, 10}, {1, 10}, {2, 10}, // trip queens
-        {0, 7}, {1, 7},            // pair nines
+        {0, 10}, {1, 10}, {2, 10}, /**< Trip queens. */
+        {0, 7}, {1, 7},            /**< Pair nines. */
         {2, 3}, {3, 2}
     }));
 
@@ -1204,7 +1204,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_array_api_matches_index_api) {
     BOOST_CHECK_EQUAL(actual.summary.ip_ev, expected.summary.ip_ev);
     BOOST_CHECK_EQUAL(actual.summary.matchup_weight, expected.summary.matchup_weight);
 
-    // Seat-indexed access on terminal_values<N> must agree with player-enum access.
+    /** Seat-indexed access on terminal_values<N> must agree with player-enum access. */
     for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
         BOOST_CHECK_EQUAL(actual.values[std::size_t{0}][i], actual.values[zeta::holdem::player::oop][i]);
         BOOST_CHECK_EQUAL(actual.values[std::size_t{1}][i], actual.values[zeta::holdem::player::ip][i]);
@@ -1239,8 +1239,10 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_array_api_matches_index_api) {
     }
 }
 
-// Validation: generic fold kernel with folded_mask<N> produces heads-up-equivalent
-// results for N == 2. This is the key test that the N-way API is working correctly.
+/**
+ * Validation: generic fold kernel with folded_mask<N> produces heads-up-equivalent
+ * results for N == 2. This is the key test that the N-way API is working correctly.
+ */
 BOOST_AUTO_TEST_CASE(holdem_terminal_fold_generic_kernel_matches_heads_up) {
     const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
     auto oop = zeta::holdem::reach_vector{};
@@ -1259,7 +1261,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_generic_kernel_matches_heads_up) {
     const auto ip_index = zeta::holdem::make_river_reach_index(cache, ip);
     const std::array<zeta::holdem::river_reach_index, 2> reach{oop_index, ip_index};
 
-    // Test both folded scenarios with the generic folded_mask API
+    /** Test both folded scenarios with the generic folded_mask API. */
     for (std::size_t folded_seat = 0; folded_seat < 2; ++folded_seat) {
         zeta::holdem::folded_mask<2> folded_mask;
         folded_mask.set_folded(folded_seat, true);
@@ -1268,7 +1270,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_generic_kernel_matches_heads_up) {
         const auto heads_up_player = (folded_seat == 0) ? zeta::holdem::heads_up_player::oop : zeta::holdem::heads_up_player::ip;
         const auto heads_up_result = zeta::holdem::evaluate_fold_values(cache, oop_index, ip_index, context, heads_up_player);
 
-        // Verify bit-identical results
+        /** Verify bit-identical results. */
         for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
             BOOST_CHECK_EQUAL(generic_result[0][i], heads_up_result[zeta::holdem::heads_up_player::oop][i]);
             BOOST_CHECK_EQUAL(generic_result[1][i], heads_up_result[zeta::holdem::heads_up_player::ip][i]);

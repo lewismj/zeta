@@ -21,16 +21,16 @@ game_graph create_simple_tree()
 {
     graph_builder builder;
     
-    // Add nodes
+    /** Add nodes. */
     auto root = builder.add_node(node_kind::player);
     auto term1 = builder.add_node(node_kind::terminal);
     auto term2 = builder.add_node(node_kind::terminal);
     
-    // Add edges
+    /** Add edges. */
     builder.add_edge(root, term1, 0);
     builder.add_edge(root, term2, 1);
     
-    // Set infoset for player node
+    /** Set infoset for player node. */
     builder.set_infoset_id(root, 0);
     
     return require_graph(builder.build());
@@ -69,7 +69,7 @@ game_graph create_chance_tree()
 
 BOOST_AUTO_TEST_SUITE(cfr_graph_types)
 
-// S1.1 - Check that graph types are properly defined
+/** Check that graph types are properly defined. */
 BOOST_AUTO_TEST_CASE(edge_structure) {
     edge e{42, 3};
     BOOST_CHECK_EQUAL(e.child_node, 42u);
@@ -102,7 +102,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(cfr_graph_construction)
 
-// S1.2 - Test graph construction and CSR topology
+/** Test graph construction and CSR topology. */
 BOOST_AUTO_TEST_CASE(simple_tree_construction) {
     auto graph = create_simple_tree();
     
@@ -138,7 +138,7 @@ BOOST_AUTO_TEST_CASE(out_edges_accessor) {
     BOOST_CHECK_EQUAL(edges[0].child_node, 0u);
     BOOST_CHECK_EQUAL(edges[1].child_node, 1u);
     
-    // Terminal nodes should have 0 edges
+    /** Terminal nodes should have 0 edges. */
     auto edges1 = graph.out_edges(0);
     BOOST_CHECK_EQUAL(edges1.size(), 0u);
 }
@@ -166,22 +166,41 @@ BOOST_AUTO_TEST_CASE(node_kind_queries) {
 BOOST_AUTO_TEST_CASE(infoset_id_mapping) {
     auto graph = create_simple_tree();
     
-    BOOST_CHECK_EQUAL(graph.infoset_id[0], ~0u);  // Non-player node
+    BOOST_CHECK_EQUAL(graph.infoset_id[0], ~0u);  /**< Non-player node. */
     BOOST_CHECK_EQUAL(graph.infoset_id[1], ~0u);
     BOOST_CHECK_EQUAL(graph.infoset_id[2], 0u);
+}
+
+BOOST_AUTO_TEST_CASE(builder_canonicalizes_edges_by_action_index) {
+    graph_builder builder;
+
+    auto root = builder.add_node(node_kind::player);
+    auto action_one_terminal = builder.add_node(node_kind::terminal);
+    auto action_zero_terminal = builder.add_node(node_kind::terminal);
+
+    builder.add_edge(root, action_one_terminal, 1);
+    builder.add_edge(root, action_zero_terminal, 0);
+    builder.set_infoset_id(root, 0);
+
+    auto graph = require_graph(builder.build());
+    auto edges = graph.out_edges(graph.root_node);
+
+    BOOST_REQUIRE_EQUAL(edges.size(), 2u);
+    BOOST_CHECK_EQUAL(edges[0].action_index, 0u);
+    BOOST_CHECK_EQUAL(edges[1].action_index, 1u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(cfr_partitions)
 
-// S1.3 - Test partition construction and metadata
+/** Test partition construction and metadata. */
 BOOST_AUTO_TEST_CASE(partition_coverage) {
     auto graph = create_chance_tree();
     
     BOOST_CHECK(!graph.partitions.empty());
     
-    // Check coverage: all nodes should be in exactly one partition
+    /** Check coverage: all nodes should be in exactly one partition. */
     uint32_t prev_end = 0;
     for (const auto& p : graph.partitions) {
         BOOST_CHECK_EQUAL(p.begin_node, prev_end);
@@ -204,32 +223,41 @@ BOOST_AUTO_TEST_CASE(partition_metadata_consistency) {
     auto graph = create_chance_tree();
     
     for (const auto& p : graph.partitions) {
-        // node_count should be consistent
+        /** node_count should be consistent. */
         uint32_t expected_size = p.end_node - p.begin_node;
         BOOST_CHECK_EQUAL(p.node_count, expected_size);
         
-        // terminal_count should not exceed node_count
+        /** terminal_count should not exceed node_count. */
         BOOST_CHECK_LE(p.terminal_count, p.node_count);
         
-        // action_count should be reasonable
+        /** action_count should be reasonable. */
         BOOST_CHECK_GE(p.action_count, 0u);
     }
+}
+
+BOOST_AUTO_TEST_CASE(validate_rejects_partition_estimated_work_mismatch) {
+    auto graph = create_simple_tree();
+    BOOST_REQUIRE(!graph.partitions.empty());
+
+    ++graph.partitions.front().estimated_work;
+
+    BOOST_CHECK(!::zeta::holdem::cfr::graph_validation::validate_partitions(graph));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(cfr_validation)
 
-// S1.4 - Test graph validation
+/** Test graph validation. */
 BOOST_AUTO_TEST_CASE(graph_validation) {
     auto graph = create_simple_tree();
-    BOOST_CHECK(graph_validator::validate(graph));
+    BOOST_CHECK(::zeta::holdem::cfr::graph_validation::validate(graph));
 }
 
 BOOST_AUTO_TEST_CASE(validate_terminal_no_out_edges) {
     auto graph = create_simple_tree();
     
-    // Manually verify terminals have no edges
+    /** Manually verify terminals have no edges. */
     for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
         if (graph.is_terminal(node_id)) {
             BOOST_CHECK_EQUAL(graph.action_count(node_id), 0u);
@@ -249,7 +277,7 @@ BOOST_AUTO_TEST_CASE(validate_all_player_nodes_have_infosets) {
 }
 
 BOOST_AUTO_TEST_CASE(deterministic_build) {
-    // Build the same tree twice and verify they're identical
+    /** Build the same tree twice and verify they are identical. */
     auto graph1 = create_simple_tree();
     auto graph2 = create_simple_tree();
     
@@ -268,24 +296,24 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(cfr_balance)
 
-// S1.5 - Test partition balance metric
+/** Test partition balance metric. */
 BOOST_AUTO_TEST_CASE(partition_balance_metric) {
     auto graph = create_chance_tree();
     
     double balance = graph.partition_balance_metric();
-    // Balance metric should be non-negative (coefficient of variation)
+    /** Balance metric should be non-negative; coefficient of variation. */
     BOOST_CHECK_GE(balance, 0.0);
-    // For small graphs, balance might be perfect or close to 0
-    BOOST_CHECK_LT(balance, 10.0);  // Sanity check
+    /** For small graphs, balance might be perfect or close to 0. */
+    BOOST_CHECK_LT(balance, 10.0);  /**< Sanity check. */
 }
 
 BOOST_AUTO_TEST_CASE(multiple_partitions_balance) {
     graph_builder builder;
     
-    // Create a connected tree with 20 nodes to get multiple partitions
+    /** Create a connected tree with 20 nodes to get multiple partitions. */
     for (int i = 0; i < 20; ++i) {
-        builder.add_node(i == 0 ? node_kind::player : 
-                        i == 19 ? node_kind::terminal : node_kind::chance);
+        (void) builder.add_node(i == 0 ? node_kind::player :
+                                i == 19 ? node_kind::terminal : node_kind::chance);
     }
     
     for (int i = 0; i < 19; ++i) {
@@ -313,24 +341,24 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(cfr_edge_cases)
 
-// Edge cases and stress tests
+/** Edge cases and stress tests. */
 BOOST_AUTO_TEST_CASE(single_node_graph) {
     graph_builder builder;
-    builder.add_node(node_kind::terminal);
+    (void) builder.add_node(node_kind::terminal);
     
     auto graph = require_graph(builder.build());
     BOOST_CHECK_EQUAL(graph.node_count, 1u);
     BOOST_CHECK_EQUAL(graph.terminal_count, 1u);
-    BOOST_CHECK(graph_validator::validate(graph));
+    BOOST_CHECK(::zeta::holdem::cfr::graph_validation::validate(graph));
 }
 
 BOOST_AUTO_TEST_CASE(chain_graph) {
     graph_builder builder;
     
-    // Create linear chain: 0 -> 1 -> 2 -> ... -> 9
+    /** Create linear chain: 0 -> 1 -> 2 -> ... -> 9. */
     for (int i = 0; i < 10; ++i) {
-        builder.add_node(i == 0 ? node_kind::player : 
-                        i == 9 ? node_kind::terminal : node_kind::chance);
+        (void) builder.add_node(i == 0 ? node_kind::player :
+                                i == 9 ? node_kind::terminal : node_kind::chance);
     }
     
     for (int i = 0; i < 9; ++i) {
@@ -342,13 +370,13 @@ BOOST_AUTO_TEST_CASE(chain_graph) {
     auto graph = require_graph(builder.build());
     BOOST_CHECK_EQUAL(graph.node_count, 10u);
     BOOST_CHECK_EQUAL(graph.terminal_count, 1u);
-    BOOST_CHECK(graph_validator::validate(graph));
+    BOOST_CHECK(::zeta::holdem::cfr::graph_validation::validate(graph));
 }
 
 BOOST_AUTO_TEST_CASE(traversal_scan_throughput) {
     auto graph = create_chance_tree();
     
-    // Verify we can traverse all edges efficiently
+    /** Verify we can traverse all edges efficiently. */
     uint64_t total_edges = 0;
     for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
         auto edges = graph.out_edges(node_id);
@@ -379,6 +407,49 @@ BOOST_AUTO_TEST_CASE(build_reports_uninitialized_infoset) {
     BOOST_CHECK(result.error().kind == graph_build_error_kind::uninitialized_infoset);
 }
 
+BOOST_AUTO_TEST_CASE(build_reports_invalid_builder_edge_endpoint) {
+    graph_builder builder;
+    auto root = builder.add_node(node_kind::player);
+    (void) builder.add_node(node_kind::terminal);
+    builder.add_edge(root, 42, 0);
+    builder.set_infoset_id(root, 0);
+
+    auto result = builder.build();
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == graph_build_error_kind::invalid_graph);
+}
+
+BOOST_AUTO_TEST_CASE(validate_rejects_degree_larger_than_node_count_without_unsafe_action_indexing) {
+    game_graph graph;
+    graph.node_count = 3;
+    graph.terminal_count = 2;
+    graph.infoset_count = 1;
+    graph.root_node = 2;
+    graph.max_depth = 1;
+    graph.row_offsets = {0, 0, 0, 4};
+    graph.edges = {
+        {0, 0},
+        {1, 3},
+        {0, 1},
+        {1, 2}
+    };
+    graph.node_types = {
+        node_kind::terminal,
+        node_kind::terminal,
+        node_kind::player
+    };
+    graph.infoset_id = {
+        game_graph::INVALID_INFOSET,
+        game_graph::INVALID_INFOSET,
+        0
+    };
+    graph.node_depth = {1, 1, 0};
+    graph.subtree_size = {1, 1, 5};
+
+    BOOST_CHECK(!::zeta::holdem::cfr::graph_validation::validate(graph));
+}
+
 BOOST_AUTO_TEST_CASE(validate_rejects_multiple_parents) {
     game_graph graph;
     graph.node_count = 4;
@@ -407,7 +478,7 @@ BOOST_AUTO_TEST_CASE(validate_rejects_multiple_parents) {
     graph.node_depth = {2, 1, 1, 0};
     graph.subtree_size = {1, 2, 2, 5};
 
-    BOOST_CHECK(!graph_validator::validate(graph));
+    BOOST_CHECK(!::zeta::holdem::cfr::graph_validation::validate(graph));
 }
 
 BOOST_AUTO_TEST_CASE(validate_rejects_duplicate_destinations) {
@@ -434,7 +505,7 @@ BOOST_AUTO_TEST_CASE(validate_rejects_duplicate_destinations) {
     graph.node_depth = {1, 1, 0};
     graph.subtree_size = {1, 1, 3};
 
-    BOOST_CHECK(!graph_validator::validate(graph));
+    BOOST_CHECK(!::zeta::holdem::cfr::graph_validation::validate(graph));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -7,8 +7,10 @@ namespace zeta::holdem {
     struct terminal_workspace {
         std::array<river_reach_index, N> reach{};
 
-        // Materialize ranges into reach indices for the given board.
-        // Call this once per board before evaluating multiple nodes on that board.
+        /**
+         * Materialize ranges into reach indices for the given board.
+         * Call this once per board before evaluating multiple nodes on that board.
+         */
         void materialize(
             const river_terminal_cache& cache,
             const std::array<reach_vector, N>& ranges
