@@ -4,16 +4,53 @@
 #include "cfr/graph/graph.h"
 #include "cfr/graph/validation.h"
 #include "cfr/scheduler/dfs_partitioner.h"
+#include "cfr/scheduler/scheduler.h"
+#include "cfr/solver/iteration.h"
 #include "cfr/tables/delta_buffer.h"
+#include "cfr/traversal/traversal.h"
 
 #include <array>
+#include <atomic>
+#include <future>
+#include <type_traits>
 
 using namespace zeta::holdem::cfr;
 using namespace zeta::holdem::cfr::scheduler;
+using namespace zeta::holdem::cfr::solver;
+using namespace zeta::holdem::cfr::traversal;
 
 namespace {
     constexpr uint32_t DEFAULT_TEST_PARTITION_COUNT = 8;
     constexpr uint32_t DEFAULT_TEST_WORK_DEPTH_SHIFT = 16;
+
+    constexpr zeta::card_mask card(const int suit, const int rank)
+    {
+        return zeta::card_mask{1} << (suit * 13 + rank);
+    }
+
+    zeta::holdem::board deterministic_river_board()
+    {
+        return zeta::holdem::board{
+            card(0, 12) | card(1, 11) | card(2, 10) | card(3, 9) | card(0, 0)
+        };
+    }
+
+    std::pair<zeta::holdem::combination_index, zeta::holdem::combination_index> first_compatible_live_combos(
+        const zeta::holdem::river_terminal_cache& cache)
+    {
+        for (std::size_t lhs_order = 0; lhs_order < cache.rank_order_count; ++lhs_order) {
+            const auto lhs = cache.rank_order[lhs_order];
+            for (std::size_t rhs_order = lhs_order + 1; rhs_order < cache.rank_order_count; ++rhs_order) {
+                const auto rhs = cache.rank_order[rhs_order];
+                if ((cache.masks[lhs] & cache.masks[rhs]) == 0) {
+                    return {lhs, rhs};
+                }
+            }
+        }
+
+        BOOST_FAIL("compatible live combos not found");
+        return {0, 0};
+    }
 }
 
 game_graph require_graph(std::expected<game_graph, graph_build_error> result)
@@ -33,6 +70,26 @@ std::vector<graph_partition> require_partitions(
         return {};
     }
     return std::move(*result);
+}
+
+action_table_layout require_layout(std::expected<action_table_layout, table_layout_error> result)
+{
+    if (!result) {
+        BOOST_ERROR("layout build failed: " << result.error().kind);
+        return {};
+    }
+    return std::move(*result);
+}
+
+void require_prepared_worker(
+    worker_context& worker,
+    const game_graph& graph,
+    const regret_table& regrets)
+{
+    auto result = prepare_worker_context(worker, graph, regrets);
+    if (!result) {
+        BOOST_ERROR("worker context prepare failed: " << result.error().kind);
+    }
 }
 
 /**
@@ -355,6 +412,485 @@ BOOST_AUTO_TEST_CASE(delta_buffer_reduces_into_global_tables) {
     BOOST_CHECK_EQUAL(strategy_sums.value(0, 0), 0.0f);
     BOOST_CHECK_EQUAL(strategy_sums.value(0, 1), 0.25f);
     BOOST_CHECK_EQUAL(strategy_sums.value(1, 0), 0.75f);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(cfr_traversal)
+
+BOOST_AUTO_TEST_CASE(traversal_frame_is_compact_trivial_state) {
+    BOOST_CHECK(std::is_trivially_copyable_v<traversal_frame>);
+    BOOST_CHECK_LE(sizeof(traversal_frame), 32u);
+
+    traversal_frame frame{};
+    frame.node_id = 7;
+    frame.next_edge_offset = 3;
+    frame.reach_oop = 1.0f;
+    frame.reach_ip = 0.5f;
+    frame.chance_weight = 0.25f;
+    frame.phase = traversal_phase::visit_children;
+
+    BOOST_CHECK_EQUAL(frame.node_id, 7u);
+    BOOST_CHECK_EQUAL(frame.next_edge_offset, 3u);
+    BOOST_CHECK(frame.phase == traversal_phase::visit_children);
+}
+
+BOOST_AUTO_TEST_CASE(worker_context_is_cache_line_aligned) {
+    BOOST_CHECK_GE(alignof(worker_context), 64u);
+    BOOST_CHECK_GE(alignof(table_delta_buffer), 64u);
+}
+
+BOOST_AUTO_TEST_CASE(worker_context_binds_graph_tables_and_terminal_views) {
+    auto graph = create_chance_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    ::zeta::holdem::river_terminal_cache river_cache{};
+    std::array<::zeta::holdem::river_reach_index, 2> reach_indices{};
+
+    worker_context worker;
+    auto result = prepare_worker_context(worker, graph, regrets, &river_cache, reach_indices);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(worker.inputs.graph, &graph);
+    BOOST_CHECK_EQUAL(worker.inputs.regrets, &regrets);
+    BOOST_CHECK_EQUAL(worker.inputs.river_cache, &river_cache);
+    BOOST_CHECK_EQUAL(worker.inputs.river_reach_indices.size(), 2u);
+    BOOST_CHECK(worker.inputs.has_graph_tables());
+    BOOST_CHECK(worker.inputs.has_river_terminal_views());
+}
+
+BOOST_AUTO_TEST_CASE(traversal_rejects_unbound_worker_context) {
+    worker_context worker;
+
+    auto result = traverse_game_tree(worker);
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == traversal_error_kind::unbound_worker_context);
+}
+
+BOOST_AUTO_TEST_CASE(full_tree_traversal_counts_nodes_and_writes_local_deltas) {
+    auto graph = create_chance_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    regrets.value(0, 0) = 2.0f;
+    regrets.value(0, 1) = 1.0f;
+
+    worker_context worker;
+    require_prepared_worker(worker, graph, regrets);
+
+    traversal_config config;
+    config.initial_reach_oop = 2.0f;
+    config.initial_reach_ip = 1.0f;
+
+    auto result = traverse_game_tree(worker, config);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(result->root_node, graph.root_node);
+    BOOST_CHECK_SMALL(result->root_utility - 1.0f, 0.00001f);
+    BOOST_CHECK_EQUAL(result->diagnostics.nodes_visited, 7u);
+    BOOST_CHECK_EQUAL(result->diagnostics.edges_scanned, 6u);
+    BOOST_CHECK_EQUAL(result->diagnostics.terminal_nodes, 4u);
+    BOOST_CHECK_EQUAL(result->diagnostics.player_nodes, 1u);
+    BOOST_CHECK_EQUAL(result->diagnostics.chance_nodes, 2u);
+    BOOST_CHECK_EQUAL(result->diagnostics.max_stack_depth, 3u);
+    BOOST_CHECK_EQUAL(result->diagnostics.max_action_count, 2u);
+    BOOST_CHECK_EQUAL(result->diagnostics.local_delta_entries_touched, 1u);
+
+    BOOST_REQUIRE_EQUAL(worker.delta_buffer.entry_count(), 1u);
+    const auto entry = worker.delta_buffer.entries()[0];
+    BOOST_CHECK_EQUAL(entry.infoset_id, 0u);
+
+    auto strategy_deltas = worker.delta_buffer.strategy_deltas_for(entry);
+    BOOST_REQUIRE_EQUAL(strategy_deltas.size(), 2u);
+    BOOST_CHECK_SMALL(strategy_deltas[0] - 2.0f, 0.00001f);
+    BOOST_CHECK_SMALL(strategy_deltas[1] - 1.0f, 0.00001f);
+}
+
+BOOST_AUTO_TEST_CASE(traversal_uses_action_index_order_for_strategy_probabilities) {
+    graph_builder builder;
+
+    auto root = builder.add_node(node_kind::player);
+    auto action_one_terminal = builder.add_node(node_kind::terminal);
+    auto action_zero_terminal = builder.add_node(node_kind::terminal);
+
+    builder.add_edge(root, action_one_terminal, 1);
+    builder.add_edge(root, action_zero_terminal, 0);
+    builder.set_infoset_id(root, 0);
+
+    auto graph = require_graph(builder.build());
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    regrets.value(0, 0) = 0.0f;
+    regrets.value(0, 1) = 4.0f;
+
+    worker_context worker;
+    require_prepared_worker(worker, graph, regrets);
+
+    auto result = traverse_game_tree(worker);
+
+    BOOST_REQUIRE(result.has_value());
+    const auto begin = graph.row_offsets[graph.root_node];
+    BOOST_REQUIRE_EQUAL(graph.row_offsets[graph.root_node + 1] - begin, 2u);
+    BOOST_CHECK_EQUAL(graph.edges[begin].action_index, 0u);
+    BOOST_CHECK_EQUAL(graph.edges[begin + 1].action_index, 1u);
+    BOOST_CHECK_SMALL(worker.edge_probability[begin], 0.00001f);
+    BOOST_CHECK_SMALL(worker.edge_probability[begin + 1] - 1.0f, 0.00001f);
+}
+
+BOOST_AUTO_TEST_CASE(traversal_rejects_too_small_stack_without_overflowing) {
+    auto graph = create_chance_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+
+    worker_context worker;
+    require_prepared_worker(worker, graph, regrets);
+    worker.stack.resize(2);
+
+    auto result = traverse_game_tree(worker);
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == traversal_error_kind::stack_capacity_exceeded);
+    BOOST_CHECK_EQUAL(result.error().required_capacity, 3u);
+    BOOST_CHECK_EQUAL(result.error().available_capacity, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(traversal_keeps_worker_storage_capacity_stable_after_setup) {
+    auto graph = create_chance_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+
+    worker_context worker;
+    require_prepared_worker(worker, graph, regrets);
+
+    const auto stack_capacity = worker.stack.capacity();
+    const auto node_utility_capacity = worker.node_utility.capacity();
+    const auto edge_probability_capacity = worker.edge_probability.capacity();
+    const auto delta_entry_capacity = worker.delta_buffer.entry_capacity();
+    const auto regret_delta_capacity = worker.delta_buffer.regret_delta_capacity();
+    const auto strategy_delta_capacity = worker.delta_buffer.strategy_delta_capacity();
+
+    for (int run = 0; run < 2; ++run) {
+        auto result = traverse_game_tree(worker);
+        BOOST_REQUIRE(result.has_value());
+        BOOST_CHECK_EQUAL(worker.stack.capacity(), stack_capacity);
+        BOOST_CHECK_EQUAL(worker.node_utility.capacity(), node_utility_capacity);
+        BOOST_CHECK_EQUAL(worker.edge_probability.capacity(), edge_probability_capacity);
+        BOOST_CHECK_EQUAL(worker.delta_buffer.entry_capacity(), delta_entry_capacity);
+        BOOST_CHECK_EQUAL(worker.delta_buffer.regret_delta_capacity(), regret_delta_capacity);
+        BOOST_CHECK_EQUAL(worker.delta_buffer.strategy_delta_capacity(), strategy_delta_capacity);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(traversal_runs_concurrently_with_worker_local_contexts) {
+    auto graph = create_chance_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    regrets.value(0, 0) = 2.0f;
+    regrets.value(0, 1) = 1.0f;
+
+    constexpr size_t worker_count = 4;
+    std::array<worker_context, worker_count> workers;
+    for (auto& worker : workers) {
+        require_prepared_worker(worker, graph, regrets);
+    }
+
+    traversal_config config;
+    config.initial_reach_oop = 2.0f;
+    config.initial_reach_ip = 1.0f;
+
+    std::array<std::future<std::expected<traversal_result, traversal_error>>, worker_count> futures;
+    for (size_t worker_id = 0; worker_id < worker_count; ++worker_id) {
+        futures[worker_id] = std::async(
+            std::launch::async,
+            [&workers, config, worker_id] {
+                return traverse_game_tree(workers[worker_id], config);
+            });
+    }
+
+    for (size_t worker_id = 0; worker_id < worker_count; ++worker_id) {
+        auto result = futures[worker_id].get();
+        BOOST_REQUIRE(result.has_value());
+        BOOST_CHECK_SMALL(result->root_utility - 1.0f, 0.00001f);
+        BOOST_CHECK_EQUAL(result->diagnostics.nodes_visited, graph.node_count);
+        BOOST_CHECK_EQUAL(result->diagnostics.edges_scanned, graph.edges.size());
+        BOOST_CHECK_EQUAL(workers[worker_id].delta_buffer.entry_count(), 1u);
+    }
+
+    BOOST_CHECK_EQUAL(regrets.value(0, 0), 2.0f);
+    BOOST_CHECK_EQUAL(regrets.value(0, 1), 1.0f);
+}
+
+BOOST_AUTO_TEST_CASE(traversal_evaluates_river_showdown_terminal_leaf) {
+    auto graph = create_simple_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    regrets.value(0, 0) = 1.0f;
+    regrets.value(0, 1) = 0.0f;
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+
+    std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+
+    std::vector<river_terminal_leaf> leaves(graph.node_count);
+    leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
+    leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
+
+    worker_context worker;
+    require_prepared_worker(worker, graph, regrets);
+
+    const river_terminal_leaf_policy policy{
+        .river_cache = &cache,
+        .reach_indices = reach_indices,
+        .terminal_leaves = leaves,
+        .perspective = zeta::holdem::heads_up_player::oop,
+        .combo = oop_combo
+    };
+
+    auto result = traverse_game_tree(worker, policy);
+    const auto values = zeta::holdem::evaluate_showdown_values(cache, reach_indices[0], reach_indices[1], context);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_SMALL(result->root_utility - values[zeta::holdem::heads_up_player::oop][oop_combo], 0.00001f);
+    BOOST_CHECK_EQUAL(result->diagnostics.terminal_nodes, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(traversal_evaluates_river_fold_terminal_leaf) {
+    auto graph = create_simple_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+
+    std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+
+    std::vector<river_terminal_leaf> leaves(graph.node_count);
+    leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
+    leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
+
+    worker_context worker;
+    require_prepared_worker(worker, graph, regrets);
+
+    const river_terminal_leaf_policy policy{
+        .river_cache = &cache,
+        .reach_indices = reach_indices,
+        .terminal_leaves = leaves,
+        .perspective = zeta::holdem::heads_up_player::oop,
+        .combo = oop_combo
+    };
+
+    auto result = traverse_game_tree(worker, policy);
+    const auto values = zeta::holdem::evaluate_fold_values(
+        cache,
+        reach_indices[0],
+        reach_indices[1],
+        context,
+        zeta::holdem::heads_up_player::ip);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_SMALL(result->root_utility - values[zeta::holdem::heads_up_player::oop][oop_combo], 0.00001f);
+}
+
+BOOST_AUTO_TEST_CASE(traversal_rejects_missing_river_terminal_leaf_metadata) {
+    auto graph = create_simple_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    worker_context worker;
+    require_prepared_worker(worker, graph, regrets);
+
+    const river_terminal_leaf_policy policy{};
+
+    auto result = traverse_game_tree(worker, policy);
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == traversal_error_kind::invalid_terminal_context);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(cfr_solver_iteration)
+
+BOOST_AUTO_TEST_CASE(deterministic_worker_reduction_applies_workers_in_plan_order) {
+    constexpr std::array<uint32_t, 1> action_counts{1u};
+    auto layout = require_layout(make_action_table_layout(std::span<const uint32_t>{action_counts}));
+
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 2> workers;
+    BOOST_REQUIRE(workers[0].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    BOOST_REQUIRE(workers[1].delta_buffer.reset_layout(layout.action_offsets).has_value());
+
+    workers[0].delta_buffer.add_regret_delta(0, 0, 1.0f);
+    workers[0].delta_buffer.add_strategy_delta(0, 0, 10.0f);
+    workers[1].delta_buffer.add_regret_delta(0, 0, 2.0f);
+    workers[1].delta_buffer.add_strategy_delta(0, 0, 20.0f);
+
+    std::array<const worker_context*, 2> worker_ptrs{&workers[1], &workers[0]};
+    const auto plan = make_deterministic_reduction_plan(static_cast<uint32_t>(worker_ptrs.size()));
+
+    auto result = apply_worker_reductions(regrets, strategy_sums, plan, std::span<const worker_context* const>{worker_ptrs});
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(regrets.value(0, 0), 3.0f);
+    BOOST_CHECK_EQUAL(strategy_sums.value(0, 0), 30.0f);
+}
+
+BOOST_AUTO_TEST_CASE(deterministic_worker_reduction_rejects_duplicate_worker_order) {
+    constexpr std::array<uint32_t, 1> action_counts{1u};
+    auto layout = require_layout(make_action_table_layout(std::span<const uint32_t>{action_counts}));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 2> workers;
+    BOOST_REQUIRE(workers[0].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    BOOST_REQUIRE(workers[1].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    std::array<const worker_context*, 2> worker_ptrs{&workers[0], &workers[1]};
+
+    deterministic_reduction_plan plan;
+    plan.worker_order = {0, 0};
+
+    auto result = apply_worker_reductions(regrets, strategy_sums, plan, std::span<const worker_context* const>{worker_ptrs});
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == iteration_error_kind::duplicate_worker_id);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(cfr_scheduler_runtime)
+
+BOOST_AUTO_TEST_CASE(board_partition_plan_maps_tasks_in_board_major_order) {
+    auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{2, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+
+    auto plan_result = make_board_partition_plan(3, partitions);
+
+    BOOST_REQUIRE(plan_result.has_value());
+    const auto& plan = *plan_result;
+    BOOST_REQUIRE_EQUAL(plan.board_count, 3u);
+    BOOST_REQUIRE_EQUAL(plan.partitions.size(), partitions.size());
+    BOOST_CHECK_EQUAL(plan.task_count(), 3u * partitions.size());
+
+    const auto first = plan.task_at(0);
+    BOOST_CHECK_EQUAL(first.board_index, 0u);
+    BOOST_CHECK_EQUAL(first.partition_index, 0u);
+    BOOST_CHECK_EQUAL(first.partition, &plan.partitions[0]);
+
+    const auto second_board = plan.task_at(partitions.size());
+    BOOST_CHECK_EQUAL(second_board.board_index, 1u);
+    BOOST_CHECK_EQUAL(second_board.partition_index, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(board_partition_plan_rejects_invalid_inputs) {
+    auto graph = create_simple_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+
+    auto no_boards = make_board_partition_plan(0, partitions);
+    BOOST_REQUIRE(!no_boards);
+    BOOST_CHECK(no_boards.error().kind == scheduler_error_kind::invalid_board_count);
+
+    auto no_partitions = make_board_partition_plan(1, std::span<const graph_partition>{});
+    BOOST_REQUIRE(!no_partitions);
+    BOOST_CHECK(no_partitions.error().kind == scheduler_error_kind::empty_partition_plan);
+}
+
+BOOST_AUTO_TEST_CASE(board_partition_scheduler_executes_each_task_once) {
+    auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{2, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    auto plan = make_board_partition_plan(16, partitions).value();
+
+    std::vector<std::atomic<uint32_t>> task_hits(plan.task_count());
+    for (auto& hit : task_hits) {
+        hit.store(0, std::memory_order_relaxed);
+    }
+
+    auto result = run_board_partition_scheduler(
+        plan,
+        scheduler_runtime_config{4},
+        [&task_hits, &plan](const scheduler_worker_state& worker, const board_partition_task& task) {
+            BOOST_CHECK_LT(worker.worker_id, 4u);
+            BOOST_CHECK_LT(task.board_index, plan.board_count);
+            BOOST_CHECK_LT(task.partition_index, plan.partitions.size());
+            BOOST_CHECK_EQUAL(task.partition, &plan.partitions[task.partition_index]);
+            task_hits[task.task_index].fetch_add(1, std::memory_order_relaxed);
+        });
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(result->tasks_executed, plan.task_count());
+    BOOST_CHECK_EQUAL(result->workers.size(), 4u);
+    BOOST_CHECK_EQUAL(result->estimated_work, plan.estimated_work());
+    for (const auto& hit : task_hits) {
+        BOOST_CHECK_EQUAL(hit.load(std::memory_order_relaxed), 1u);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(board_partition_scheduler_rejects_zero_workers) {
+    auto graph = create_simple_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    auto plan = make_board_partition_plan(1, partitions).value();
+
+    auto result = run_board_partition_scheduler(
+        plan,
+        scheduler_runtime_config{0},
+        [](const scheduler_worker_state&, const board_partition_task&) {});
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == scheduler_error_kind::invalid_worker_count);
+}
+
+BOOST_AUTO_TEST_CASE(board_partition_scheduler_reports_task_failure_context) {
+    auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{2, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    auto plan = make_board_partition_plan(2, partitions).value();
+
+    auto result = run_board_partition_scheduler(
+        plan,
+        scheduler_runtime_config{1},
+        [](const scheduler_worker_state&, const board_partition_task& task) -> std::expected<void, scheduler_error> {
+            if (task.task_index == 2u) {
+                return std::unexpected(scheduler_error{scheduler_error_kind::task_failed});
+            }
+            return {};
+        });
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == scheduler_error_kind::task_failed);
+    BOOST_CHECK_EQUAL(result.error().task_index, 2u);
+    BOOST_CHECK_EQUAL(result.error().board_index, 1u);
+    BOOST_CHECK_EQUAL(result.error().partition_index, 0u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

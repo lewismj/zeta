@@ -83,6 +83,40 @@ namespace zeta::holdem::cfr {
         }
 
         /**
+         * Reserve sparse storage for a worker before traversal begins.
+         */
+        void reserve_sparse_entries(const uint32_t entry_capacity, const uint32_t delta_value_capacity)
+        {
+            entries_.reserve(entry_capacity);
+            regret_deltas_.reserve(delta_value_capacity);
+            strategy_deltas_.reserve(delta_value_capacity);
+        }
+
+        /**
+         * Current sparse-entry capacity, exposed for no-hot-loop-allocation tests.
+         */
+        [[nodiscard]] uint32_t entry_capacity() const noexcept
+        {
+            return static_cast<uint32_t>(entries_.capacity());
+        }
+
+        /**
+         * Current regret-delta value capacity, exposed for traversal setup tests.
+         */
+        [[nodiscard]] uint32_t regret_delta_capacity() const noexcept
+        {
+            return static_cast<uint32_t>(regret_deltas_.capacity());
+        }
+
+        /**
+         * Current strategy-delta value capacity, exposed for traversal setup tests.
+         */
+        [[nodiscard]] uint32_t strategy_delta_capacity() const noexcept
+        {
+            return static_cast<uint32_t>(strategy_deltas_.capacity());
+        }
+
+        /**
          * Raw action-offset layout used by this buffer.
          */
         [[nodiscard]] std::span<const uint32_t> action_offsets() const noexcept
