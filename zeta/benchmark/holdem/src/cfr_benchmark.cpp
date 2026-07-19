@@ -4,13 +4,20 @@
 #include "cfr/graph/validation.h"
 #include "cfr/scheduler/dfs_partitioner.h"
 #include "cfr/scheduler/scheduler.h"
+#include "cfr/solver/context.h"
 #include "cfr/solver/iteration.h"
+#include "cfr/solver/river_context.h"
 #include "cfr/tables/regret_table.h"
 #include "cfr/tables/strategy_table.h"
 #include "cfr/traversal/traversal.h"
+#include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdlib>
+#include <functional>
+#include <mutex>
 #include <random>
+#include <thread>
 
 using namespace zeta::holdem::cfr;
 using namespace zeta::holdem::cfr::scheduler;
@@ -21,7 +28,196 @@ namespace {
     constexpr uint32_t SMALL_BENCHMARK_PARTITION_COUNT = 2;
     constexpr uint32_t MEDIUM_BENCHMARK_PARTITION_COUNT = 8;
     constexpr uint32_t LARGE_BENCHMARK_PARTITION_COUNT = 16;
+    constexpr uint32_t REALISTIC_BENCHMARK_BOARD_COUNT = 8192;
+    constexpr uint32_t REALISTIC_BENCHMARK_PARTITION_COUNT = 512;
+    constexpr uint32_t REALISTIC_BENCHMARK_TASK_CHUNK_SIZE = 64;
+    constexpr uint32_t REALISTIC_BENCHMARK_TASK_WORK_REPEATS = 8;
+    constexpr uint32_t CFR_ITERATION_BENCHMARK_BOARD_COUNT = 64;
     constexpr uint32_t BENCHMARK_WORK_DEPTH_SHIFT = 16;
+
+    struct alignas(64) benchmark_worker_counter {
+        uint64_t actions = 0;
+        uint64_t nodes = 0;
+        uint64_t terminal_leaves = 0;
+        uint64_t regret_updates = 0;
+        uint64_t strategy_updates = 0;
+    };
+
+    class benchmark_scheduler_pool {
+    public:
+        explicit benchmark_scheduler_pool(const uint32_t worker_count) :
+            workers_(worker_count)
+        {
+            for (uint32_t worker_id = 0; worker_id < worker_count; ++worker_id) {
+                workers_[worker_id].worker_id = worker_id;
+                threads_.emplace_back([this, worker_id] {
+                    worker_loop(worker_id);
+                });
+            }
+        }
+
+        benchmark_scheduler_pool(const benchmark_scheduler_pool&) = delete;
+        benchmark_scheduler_pool& operator=(const benchmark_scheduler_pool&) = delete;
+
+        ~benchmark_scheduler_pool()
+        {
+            {
+                const std::lock_guard lock{mutex_};
+                stop_ = true;
+                ++generation_;
+            }
+            work_cv_.notify_all();
+            for (auto& thread : threads_) {
+                thread.join();
+            }
+        }
+
+        template <typename TaskCallback>
+        [[nodiscard]] std::expected<scheduler_run_summary, scheduler_error> run(
+            const board_partition_plan& plan,
+            TaskCallback&& task_callback,
+            const uint32_t task_chunk_size = 1)
+        {
+            if (plan.board_count == 0u) {
+                return std::unexpected(scheduler_error{scheduler_error_kind::invalid_board_count});
+            }
+            if (plan.partitions.empty()) {
+                return std::unexpected(scheduler_error{scheduler_error_kind::empty_partition_plan});
+            }
+            if (workers_.empty()) {
+                return std::unexpected(scheduler_error{scheduler_error_kind::invalid_worker_count});
+            }
+
+            {
+                const std::lock_guard lock{mutex_};
+                for (auto& worker : workers_) {
+                    worker.tasks_executed = 0;
+                    worker.estimated_work = 0;
+                }
+
+                plan_ = &plan;
+                callback_ = [&task_callback](
+                    const scheduler_worker_state& worker,
+                    const board_partition_task& task) -> std::expected<void, scheduler_error> {
+                    using result_type = std::invoke_result_t<
+                        TaskCallback&,
+                        const scheduler_worker_state&,
+                        const board_partition_task&>;
+                    if constexpr (std::is_void_v<result_type>) {
+                        std::invoke(task_callback, worker, task);
+                        return {};
+                    } else {
+                        return std::invoke(task_callback, worker, task);
+                    }
+                };
+                next_task_.store(0, std::memory_order_relaxed);
+                completed_workers_ = 0;
+                first_error_ = {};
+                stop_requested_.store(false, std::memory_order_release);
+                task_chunk_size_ = std::max<uint32_t>(task_chunk_size, 1u);
+                ++generation_;
+            }
+
+            work_cv_.notify_all();
+
+            {
+                std::unique_lock lock{mutex_};
+                done_cv_.wait(lock, [this] {
+                    return completed_workers_ == workers_.size();
+                });
+            }
+
+            scheduler_run_summary summary;
+            summary.workers = workers_;
+            for (const auto& worker : summary.workers) {
+                summary.tasks_executed += worker.tasks_executed;
+                summary.estimated_work += worker.estimated_work;
+            }
+
+            if (!first_error_) {
+                return std::unexpected(first_error_.error());
+            }
+            return summary;
+        }
+
+    private:
+        std::vector<scheduler_worker_state> workers_;
+        std::vector<std::thread> threads_;
+        std::mutex mutex_;
+        std::condition_variable work_cv_;
+        std::condition_variable done_cv_;
+        std::function<std::expected<void, scheduler_error>(
+            const scheduler_worker_state&,
+            const board_partition_task&)> callback_;
+        const board_partition_plan* plan_ = nullptr;
+        std::atomic<uint64_t> next_task_{0};
+        std::size_t completed_workers_ = 0;
+        uint64_t generation_ = 0;
+        uint32_t task_chunk_size_ = 1;
+        bool stop_ = false;
+        std::atomic<bool> stop_requested_{false};
+        std::expected<void, scheduler_error> first_error_{};
+
+        void worker_loop(const uint32_t worker_id)
+        {
+            uint64_t observed_generation = 0;
+            while (true) {
+                const board_partition_plan* plan = nullptr;
+                {
+                    std::unique_lock lock{mutex_};
+                    work_cv_.wait(lock, [this, observed_generation] {
+                        return stop_ || generation_ != observed_generation;
+                    });
+                    if (stop_) {
+                        break;
+                    }
+                    observed_generation = generation_;
+                    plan = plan_;
+                }
+
+                auto& worker = workers_[worker_id];
+                while (true) {
+                    if (stop_requested_.load(std::memory_order_acquire)) {
+                        break;
+                    }
+                    const auto chunk_begin = next_task_.fetch_add(task_chunk_size_, std::memory_order_relaxed);
+                    if (chunk_begin >= plan->task_count()) {
+                        break;
+                    }
+
+                    const auto chunk_end = std::min<uint64_t>(chunk_begin + task_chunk_size_, plan->task_count());
+                    for (uint64_t task_index = chunk_begin; task_index < chunk_end; ++task_index) {
+                        if (stop_requested_.load(std::memory_order_acquire)) {
+                            break;
+                        }
+
+                        const auto task = plan->task_at(task_index);
+                        if (auto result = callback_(worker, task); !result) {
+                            const std::lock_guard lock{mutex_};
+                            if (first_error_.has_value()) {
+                                auto error = result.error();
+                                error.worker_id = worker.worker_id;
+                                error.task_index = task.task_index;
+                                error.board_index = task.board_index;
+                                error.partition_index = task.partition_index;
+                                first_error_ = std::unexpected(error);
+                            }
+                            stop_requested_.store(true, std::memory_order_release);
+                            break;
+                        }
+                        ++worker.tasks_executed;
+                        worker.estimated_work += task.partition->estimated_work;
+                    }
+                }
+
+                {
+                    const std::lock_guard lock{mutex_};
+                    ++completed_workers_;
+                }
+                done_cv_.notify_one();
+            }
+        }
+    };
 
     constexpr zeta::card_mask card(const int suit, const int rank)
     {
@@ -252,7 +448,29 @@ BENCHMARK(BM_PartitionComputeSmallTree);
 BENCHMARK(BM_PartitionComputeMediumTree);
 BENCHMARK(BM_PartitionComputeLargeTree);
 
-static void BM_BoardPartitionSchedulerRuntime(benchmark::State& state)
+void set_scheduler_counters(
+    benchmark::State& state,
+    const board_partition_plan& plan,
+    const scheduler_runtime_config config,
+    const scheduler_run_summary& summary,
+    const uint64_t actions_scanned,
+    const uint32_t task_work_repeats,
+    const uint32_t task_chunk_size)
+{
+    state.counters["workers"] = static_cast<double>(config.worker_count);
+    state.counters["boards"] = static_cast<double>(plan.board_count);
+    state.counters["partitions"] = static_cast<double>(plan.partitions.size());
+    state.counters["task_chunk_size"] = static_cast<double>(task_chunk_size);
+    state.counters["task_work_repeats"] = static_cast<double>(task_work_repeats);
+    state.counters["actions/s"] = benchmark::Counter(
+        static_cast<double>(actions_scanned),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["tasks/s"] = benchmark::Counter(
+        static_cast<double>(summary.tasks_executed),
+        benchmark::Counter::kIsIterationInvariantRate);
+}
+
+static void BM_BoardPartitionSchedulerOverhead(benchmark::State& state)
 {
     auto graph = create_benchmark_tree(4, 4);
     auto partitions = require_partitions(
@@ -263,33 +481,81 @@ static void BM_BoardPartitionSchedulerRuntime(benchmark::State& state)
     const scheduler_runtime_config config{static_cast<uint32_t>(state.range(0))};
 
     scheduler_run_summary last_summary;
+    uint64_t last_actions_scanned = 0;
     for (auto _ : state) {
-        std::atomic<uint64_t> scanned_actions{0};
+        std::vector<benchmark_worker_counter> counters(config.worker_count);
         auto summary = require_schedule_summary(
             run_board_partition_scheduler(
                 plan,
                 config,
-                [&graph, &scanned_actions](const scheduler_worker_state&, const board_partition_task& task) {
+                [&graph, &counters](const scheduler_worker_state& worker, const board_partition_task& task) {
                     uint64_t local_actions = 0;
                     for (uint32_t node_id = task.partition->begin_node; node_id < task.partition->end_node; ++node_id) {
                         local_actions += graph.action_count(node_id);
                     }
-                    scanned_actions.fetch_add(local_actions, std::memory_order_relaxed);
+                    counters[worker.worker_id].actions += local_actions;
                 }));
-        benchmark::DoNotOptimize(scanned_actions.load(std::memory_order_relaxed));
+        last_actions_scanned = 0;
+        for (const auto& counter : counters) {
+            last_actions_scanned += counter.actions;
+        }
+        benchmark::DoNotOptimize(last_actions_scanned);
         benchmark::ClobberMemory();
         last_summary = std::move(summary);
     }
 
-    state.counters["workers"] = static_cast<double>(config.worker_count);
-    state.counters["boards"] = static_cast<double>(plan.board_count);
-    state.counters["partitions"] = static_cast<double>(plan.partitions.size());
-    state.counters["tasks/s"] = benchmark::Counter(
-        static_cast<double>(last_summary.tasks_executed),
-        benchmark::Counter::kIsIterationInvariantRate);
+    set_scheduler_counters(state, plan, config, last_summary, last_actions_scanned, 1, config.task_chunk_size);
 }
 
-BENCHMARK(BM_BoardPartitionSchedulerRuntime)->Arg(1)->Arg(2)->Arg(4)->Arg(8);
+static void BM_BoardPartitionSchedulerRealistic(benchmark::State& state)
+{
+    auto graph = create_benchmark_tree(4, 5);
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{REALISTIC_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
+    auto plan = make_board_partition_plan(REALISTIC_BENCHMARK_BOARD_COUNT, partitions).value();
+    const scheduler_runtime_config config{static_cast<uint32_t>(state.range(0))};
+    benchmark_scheduler_pool pool(config.worker_count);
+
+    scheduler_run_summary last_summary;
+    uint64_t last_actions_scanned = 0;
+    for (auto _ : state) {
+        std::vector<benchmark_worker_counter> counters(config.worker_count);
+        auto summary = require_schedule_summary(
+            pool.run(
+                plan,
+                [&graph, &counters](const scheduler_worker_state& worker, const board_partition_task& task) {
+                    uint64_t local_actions = 0;
+                    for (uint32_t repeat = 0; repeat < REALISTIC_BENCHMARK_TASK_WORK_REPEATS; ++repeat) {
+                        for (uint32_t node_id = task.partition->begin_node; node_id < task.partition->end_node; ++node_id) {
+                            local_actions += graph.action_count(node_id);
+                        }
+                    }
+                    counters[worker.worker_id].actions += local_actions;
+                },
+                REALISTIC_BENCHMARK_TASK_CHUNK_SIZE));
+        last_actions_scanned = 0;
+        for (const auto& counter : counters) {
+            last_actions_scanned += counter.actions;
+        }
+        benchmark::DoNotOptimize(last_actions_scanned);
+        benchmark::ClobberMemory();
+        last_summary = std::move(summary);
+    }
+
+    set_scheduler_counters(
+        state,
+        plan,
+        config,
+        last_summary,
+        last_actions_scanned,
+        REALISTIC_BENCHMARK_TASK_WORK_REPEATS,
+        REALISTIC_BENCHMARK_TASK_CHUNK_SIZE);
+}
+
+BENCHMARK(BM_BoardPartitionSchedulerOverhead)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_BoardPartitionSchedulerRealistic)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 
 /**
  * Traversal scan throughput benchmark.
@@ -360,6 +626,115 @@ void set_traversal_counters(
     state.counters["stack_high_water"] = static_cast<double>(result.diagnostics.max_stack_depth);
     state.counters["delta_entries"] = static_cast<double>(worker.delta_buffer.entry_count());
     state.counters["node_scratch"] = static_cast<double>(worker.node_utility.size());
+}
+
+void set_cfr_iteration_counters(
+    benchmark::State& state,
+    const game_graph& graph,
+    const uint32_t worker_count,
+    const uint32_t board_count,
+    std::span<const benchmark_worker_counter> counters)
+{
+    benchmark_worker_counter total{};
+    for (const auto& counter : counters) {
+        total.nodes += counter.nodes;
+        total.terminal_leaves += counter.terminal_leaves;
+        total.regret_updates += counter.regret_updates;
+        total.strategy_updates += counter.strategy_updates;
+    }
+
+    state.counters["workers"] = static_cast<double>(worker_count);
+    state.counters["boards"] = static_cast<double>(board_count);
+    state.counters["iterations/s"] = benchmark::Counter(1.0, benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["nodes/s"] = benchmark::Counter(
+        static_cast<double>(total.nodes),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["terminal_leaves/s"] = benchmark::Counter(
+        static_cast<double>(total.terminal_leaves),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["regret_updates/s"] = benchmark::Counter(
+        static_cast<double>(total.regret_updates),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["strategy_updates/s"] = benchmark::Counter(
+        static_cast<double>(total.strategy_updates),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["graph_nodes"] = static_cast<double>(graph.node_count);
+}
+
+void run_cfr_iteration_benchmark(
+    benchmark::State& state,
+    const game_graph& graph,
+    const uint32_t board_count = CFR_ITERATION_BENCHMARK_BOARD_COUNT,
+    const uint32_t task_chunk_size = 1)
+{
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    const auto worker_count = static_cast<uint32_t>(state.range(0));
+    benchmark_scheduler_pool pool(worker_count);
+
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{1, BENCHMARK_WORK_DEPTH_SHIFT}));
+    auto plan = make_board_partition_plan(board_count, partitions).value();
+
+    std::vector<worker_context> workers(worker_count);
+    for (auto& worker : workers) {
+        if (!prepare_worker_context(worker, graph, regrets)) {
+            std::abort();
+        }
+    }
+
+    traversal_config traversal_cfg;
+    traversal_cfg.initial_reach_oop = 2.0f;
+    traversal_cfg.initial_reach_ip = 1.0f;
+
+    std::vector<benchmark_worker_counter> counters(worker_count);
+    for (auto _ : state) {
+        std::fill(counters.begin(), counters.end(), benchmark_worker_counter{});
+
+        auto schedule_result = pool.run(
+            plan,
+            [&workers, &counters, traversal_cfg](
+                const scheduler_worker_state& worker_state,
+                const board_partition_task&) -> std::expected<void, scheduler_error> {
+                auto& worker = workers[worker_state.worker_id];
+                auto result = traverse_game_tree(worker, traversal_cfg);
+                if (!result) {
+                    return std::unexpected(scheduler_error{scheduler_error_kind::task_failed});
+                }
+
+                auto& counter = counters[worker_state.worker_id];
+                counter.nodes += result->diagnostics.nodes_visited;
+                counter.terminal_leaves += result->diagnostics.terminal_nodes;
+                counter.strategy_updates += result->diagnostics.local_delta_entries_touched;
+                return std::expected<void, scheduler_error>{};
+            },
+            task_chunk_size);
+        if (!schedule_result) {
+            state.SkipWithError(to_string(schedule_result.error().kind));
+            break;
+        }
+
+        if (auto reduction_result = apply_worker_reductions(regrets, strategy_sums, std::span<const worker_context>{workers});
+            !reduction_result) {
+            state.SkipWithError(to_string(reduction_result.error().kind));
+            break;
+        }
+
+        benchmark::DoNotOptimize(regrets.regrets.data());
+        benchmark::DoNotOptimize(strategy_sums.sums.data());
+        benchmark::ClobberMemory();
+    }
+
+    set_cfr_iteration_counters(
+        state,
+        graph,
+        worker_count,
+        board_count,
+        counters);
+    state.counters["task_chunk_size"] = static_cast<double>(task_chunk_size);
 }
 
 static void BM_WorkerTraversalSmallTree(benchmark::State& state)
@@ -450,6 +825,35 @@ BENCHMARK(BM_WorkerTraversalSmallTree);
 BENCHMARK(BM_WorkerTraversalMediumTree);
 BENCHMARK(BM_WorkerTraversalLargeTree);
 
+static void BM_CFRIterationSmall(benchmark::State& state)
+{
+    run_cfr_iteration_benchmark(state, create_benchmark_tree(2, 2));
+}
+
+static void BM_CFRIterationMedium(benchmark::State& state)
+{
+    run_cfr_iteration_benchmark(state, create_benchmark_tree(4, 4));
+}
+
+static void BM_CFRIterationLarge(benchmark::State& state)
+{
+    run_cfr_iteration_benchmark(state, create_benchmark_tree(3, 6));
+}
+
+static void BM_CFRIterationLargeRealistic(benchmark::State& state)
+{
+    run_cfr_iteration_benchmark(
+        state,
+        create_benchmark_tree(3, 6),
+        REALISTIC_BENCHMARK_BOARD_COUNT,
+        REALISTIC_BENCHMARK_TASK_CHUNK_SIZE);
+}
+
+BENCHMARK(BM_CFRIterationSmall)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_CFRIterationMedium)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_CFRIterationLarge)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_CFRIterationLargeRealistic)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+
 static void BM_RiverTerminalLeafTraversal(benchmark::State& state)
 {
     auto graph = require_graph([] {
@@ -475,21 +879,15 @@ static void BM_RiverTerminalLeafTraversal(benchmark::State& state)
     zeta::holdem::reach_vector ip_reach{};
     oop_reach[oop_combo] = 1.0f;
     ip_reach[ip_combo] = 1.0f;
-    std::array<zeta::holdem::river_reach_index, 2> reach_indices{
-        zeta::holdem::make_river_reach_index(cache, oop_reach),
-        zeta::holdem::make_river_reach_index(cache, ip_reach)
-    };
     const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
     std::vector<river_terminal_leaf> leaves(graph.node_count);
     leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
     leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
-    const river_terminal_leaf_policy policy{
-        .river_cache = &cache,
-        .reach_indices = reach_indices,
-        .terminal_leaves = leaves,
-        .perspective = zeta::holdem::heads_up_player::oop,
-        .combo = oop_combo
-    };
+    const auto terminal_context = make_river_solver_context(
+        deterministic_river_board(),
+        std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        std::move(leaves));
+    const auto policy = terminal_context.terminal_policy(zeta::holdem::heads_up_player::oop, oop_combo);
 
     traversal_result last_result;
     for (auto _ : state) {
@@ -503,6 +901,208 @@ static void BM_RiverTerminalLeafTraversal(benchmark::State& state)
         benchmark::ClobberMemory();
     }
     set_traversal_counters(state, graph, last_result, worker);
+}
+
+static void BM_RebuildReachIndex(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+
+    for (auto _ : state) {
+        auto oop_index = zeta::holdem::make_river_reach_index(cache, oop_reach);
+        auto ip_index = zeta::holdem::make_river_reach_index(cache, ip_reach);
+        benchmark::DoNotOptimize(oop_index.active_count);
+        benchmark::DoNotOptimize(ip_index.active_count);
+        benchmark::ClobberMemory();
+    }
+}
+
+static void BM_FilterDeadCards(benchmark::State& state)
+{
+    const auto river = deterministic_river_board();
+
+    for (auto _ : state) {
+        uint32_t live_count = 0;
+        for (zeta::holdem::combination_index combo = 0; combo < zeta::holdem::combination_count; ++combo) {
+            live_count += (zeta::holdem::combination_mask(combo) & river.mask) == 0 ? 1u : 0u;
+        }
+        benchmark::DoNotOptimize(live_count);
+    }
+}
+
+static void BM_IterateActiveCombos(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    zeta::holdem::reach_vector reach{};
+    for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+        reach[cache.rank_order[order]] = 1.0f;
+    }
+    const auto index = zeta::holdem::make_river_reach_index(cache, reach);
+
+    for (auto _ : state) {
+        uint32_t checksum = 0;
+        for (uint16_t active = 0; active < index.active_count; ++active) {
+            checksum += index.active_indices[active];
+        }
+        benchmark::DoNotOptimize(checksum);
+    }
+
+    state.counters["active_combos"] = static_cast<double>(index.active_count);
+}
+
+static void BM_LoadWeights(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    zeta::holdem::reach_vector reach{};
+    for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+        reach[cache.rank_order[order]] = 1.0f;
+    }
+    const auto index = zeta::holdem::make_river_reach_index(cache, reach);
+
+    for (auto _ : state) {
+        float total = 0.0f;
+        for (zeta::holdem::combination_index combo = 0; combo < zeta::holdem::combination_count; ++combo) {
+            total += index.weights[combo];
+        }
+        benchmark::DoNotOptimize(total);
+    }
+}
+
+static void BM_CompatibleMass(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector opponent_reach{};
+    opponent_reach[ip_combo] = 1.0f;
+    const auto opponent_index = zeta::holdem::make_river_reach_index(cache, opponent_reach);
+
+    for (auto _ : state) {
+        auto compatible_mass = zeta::holdem::compatible_reach_mass(cache, opponent_index, oop_combo);
+        benchmark::DoNotOptimize(compatible_mass);
+    }
+}
+
+static void BM_TerminalActiveReachBatchLookup(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    zeta::holdem::reach_vector reach{};
+    for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+        reach[cache.rank_order[order]] = 1.0f;
+    }
+    const auto index = zeta::holdem::make_river_reach_index(cache, reach);
+
+    for (auto _ : state) {
+        float total = 0.0f;
+        for (uint16_t active = 0; active < index.active_count; ++active) {
+            const auto combo = index.active_indices[active];
+            total += index.weights[combo];
+        }
+        benchmark::DoNotOptimize(total);
+    }
+
+    state.counters["active_combos"] = static_cast<double>(index.active_count);
+}
+
+static void BM_TerminalShowdown(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+
+    for (auto _ : state) {
+        auto values = zeta::holdem::evaluate_showdown_values(cache, reach_indices[0], reach_indices[1], context);
+        benchmark::DoNotOptimize(values[zeta::holdem::heads_up_player::oop][oop_combo]);
+        benchmark::ClobberMemory();
+    }
+}
+
+static void BM_TerminalFold(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+
+    for (auto _ : state) {
+        auto values = zeta::holdem::evaluate_fold_values(
+            cache,
+            reach_indices[0],
+            reach_indices[1],
+            context,
+            zeta::holdem::heads_up_player::ip);
+        benchmark::DoNotOptimize(values[zeta::holdem::heads_up_player::oop][oop_combo]);
+        benchmark::ClobberMemory();
+    }
+}
+
+static void BM_TerminalAccumulate(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    const auto values = zeta::holdem::evaluate_showdown_values(cache, reach_indices[0], reach_indices[1], context);
+
+    for (auto _ : state) {
+        float total = 0.0f;
+        for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+            const auto combo = cache.rank_order[order];
+            total += values[zeta::holdem::heads_up_player::oop][combo] * oop_reach[combo];
+        }
+        benchmark::DoNotOptimize(total);
+        benchmark::ClobberMemory();
+    }
+}
+
+static void BM_TerminalFusedLoadAccumulate(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    zeta::holdem::reach_vector reach{};
+    for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+        reach[cache.rank_order[order]] = 1.0f;
+    }
+    const auto index = zeta::holdem::make_river_reach_index(cache, reach);
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{index, index};
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    const auto values = zeta::holdem::evaluate_showdown_values(cache, reach_indices[0], reach_indices[1], context);
+
+    for (auto _ : state) {
+        float total = 0.0f;
+        for (uint16_t active = 0; active < index.active_count; ++active) {
+            const auto combo = index.active_indices[active];
+            total += index.weights[combo] * values[zeta::holdem::heads_up_player::oop][combo];
+        }
+        benchmark::DoNotOptimize(total);
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["active_combos"] = static_cast<double>(index.active_count);
 }
 
 static void BM_DeterministicWorkerReduction(benchmark::State& state)
@@ -542,7 +1142,17 @@ static void BM_DeterministicWorkerReduction(benchmark::State& state)
 }
 
 BENCHMARK(BM_RiverTerminalLeafTraversal);
-BENCHMARK(BM_DeterministicWorkerReduction)->Arg(2)->Arg(4)->Arg(8);
+BENCHMARK(BM_RebuildReachIndex);
+BENCHMARK(BM_FilterDeadCards);
+BENCHMARK(BM_IterateActiveCombos);
+BENCHMARK(BM_LoadWeights);
+BENCHMARK(BM_CompatibleMass);
+BENCHMARK(BM_TerminalActiveReachBatchLookup);
+BENCHMARK(BM_TerminalShowdown);
+BENCHMARK(BM_TerminalFold);
+BENCHMARK(BM_TerminalAccumulate);
+BENCHMARK(BM_TerminalFusedLoadAccumulate);
+BENCHMARK(BM_DeterministicWorkerReduction)->Arg(2)->Arg(4)->Arg(8)->Arg(12);
 
 /**
  * Validation throughput benchmark.

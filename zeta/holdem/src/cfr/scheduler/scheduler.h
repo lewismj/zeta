@@ -118,7 +118,8 @@ namespace zeta::holdem::cfr::scheduler {
     }
 
     struct scheduler_runtime_config {
-        uint32_t worker_count = 1;    /**< Number of OS worker threads to launch. */
+        uint32_t worker_count = 1;       /**< Number of OS worker threads to launch. */
+        uint32_t task_chunk_size = 1;    /**< Number of contiguous tasks claimed per queue operation. */
     };
 
     struct alignas(64) scheduler_worker_state {
@@ -196,6 +197,7 @@ namespace zeta::holdem::cfr::scheduler {
         }
 
         const auto total_tasks = plan.task_count();
+        const auto task_chunk_size = std::max<uint32_t>(config.task_chunk_size, 1u);
         const auto active_worker_count = std::min<uint32_t>(
             config.worker_count,
             static_cast<uint32_t>(std::min<uint64_t>(total_tasks, std::numeric_limits<uint32_t>::max())));
@@ -214,23 +216,30 @@ namespace zeta::holdem::cfr::scheduler {
         auto worker_main = [&](const uint32_t worker_id) {
             auto& worker = summary.workers[worker_id];
             while (!stop_requested.load(std::memory_order_acquire)) {
-                const auto task_index = next_task.fetch_add(1, std::memory_order_relaxed);
-                if (task_index >= total_tasks) {
+                const auto chunk_begin = next_task.fetch_add(task_chunk_size, std::memory_order_relaxed);
+                if (chunk_begin >= total_tasks) {
                     break;
                 }
 
-                const auto task = plan.task_at(task_index);
-                if (auto result = detail::invoke_scheduler_task(task_callback, worker, task); !result) {
-                    const std::lock_guard lock{error_mutex};
-                    if (first_error.has_value()) {
-                        first_error = std::unexpected(detail::contextualize_error(result.error(), worker, task));
+                const auto chunk_end = std::min<uint64_t>(chunk_begin + task_chunk_size, total_tasks);
+                for (uint64_t task_index = chunk_begin; task_index < chunk_end; ++task_index) {
+                    if (stop_requested.load(std::memory_order_acquire)) {
+                        break;
                     }
-                    stop_requested.store(true, std::memory_order_release);
-                    break;
-                }
 
-                ++worker.tasks_executed;
-                worker.estimated_work += task.partition->estimated_work;
+                    const auto task = plan.task_at(task_index);
+                    if (auto result = detail::invoke_scheduler_task(task_callback, worker, task); !result) {
+                        const std::lock_guard lock{error_mutex};
+                        if (first_error.has_value()) {
+                            first_error = std::unexpected(detail::contextualize_error(result.error(), worker, task));
+                        }
+                        stop_requested.store(true, std::memory_order_release);
+                        break;
+                    }
+
+                    ++worker.tasks_executed;
+                    worker.estimated_work += task.partition->estimated_work;
+                }
             }
         };
 

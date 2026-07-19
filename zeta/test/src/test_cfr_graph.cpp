@@ -5,7 +5,9 @@
 #include "cfr/graph/validation.h"
 #include "cfr/scheduler/dfs_partitioner.h"
 #include "cfr/scheduler/scheduler.h"
+#include "cfr/solver/context.h"
 #include "cfr/solver/iteration.h"
+#include "cfr/solver/river_context.h"
 #include "cfr/tables/delta_buffer.h"
 #include "cfr/traversal/traversal.h"
 
@@ -635,29 +637,27 @@ BOOST_AUTO_TEST_CASE(traversal_evaluates_river_showdown_terminal_leaf) {
     oop_reach[oop_combo] = 1.0f;
     ip_reach[ip_combo] = 1.0f;
 
-    std::array<zeta::holdem::river_reach_index, 2> reach_indices{
-        zeta::holdem::make_river_reach_index(cache, oop_reach),
-        zeta::holdem::make_river_reach_index(cache, ip_reach)
-    };
     const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
 
     std::vector<river_terminal_leaf> leaves(graph.node_count);
     leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
     leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
+    const auto terminal_context = make_river_solver_context(
+        deterministic_river_board(),
+        std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        std::move(leaves));
 
     worker_context worker;
     require_prepared_worker(worker, graph, regrets);
 
-    const river_terminal_leaf_policy policy{
-        .river_cache = &cache,
-        .reach_indices = reach_indices,
-        .terminal_leaves = leaves,
-        .perspective = zeta::holdem::heads_up_player::oop,
-        .combo = oop_combo
-    };
+    const auto policy = terminal_context.terminal_policy(zeta::holdem::heads_up_player::oop, oop_combo);
 
     auto result = traverse_game_tree(worker, policy);
-    const auto values = zeta::holdem::evaluate_showdown_values(cache, reach_indices[0], reach_indices[1], context);
+    const auto values = zeta::holdem::evaluate_showdown_values(
+        terminal_context.cache,
+        terminal_context.workspace.reach[0],
+        terminal_context.workspace.reach[1],
+        context);
 
     BOOST_REQUIRE(result.has_value());
     BOOST_CHECK_SMALL(result->root_utility - values[zeta::holdem::heads_up_player::oop][oop_combo], 0.00001f);
@@ -728,6 +728,31 @@ BOOST_AUTO_TEST_CASE(traversal_rejects_missing_river_terminal_leaf_metadata) {
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(cfr_solver_iteration)
+
+BOOST_AUTO_TEST_CASE(cfr_context_owns_graph_tables_and_cached_river_reach) {
+    auto graph = create_simple_tree();
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+
+    const auto terminal_context = make_river_solver_context(
+        deterministic_river_board(),
+        std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        std::vector<river_terminal_leaf>(graph.node_count));
+
+    auto context_result = make_cfr_context(std::move(graph), terminal_context);
+
+    BOOST_REQUIRE(context_result.has_value());
+    BOOST_CHECK_EQUAL(context_result->graph.node_count, 3u);
+    BOOST_CHECK_EQUAL(context_result->layout.infoset_count(), 1u);
+    BOOST_CHECK_EQUAL(context_result->regrets.value_count(), 2u);
+    BOOST_CHECK_EQUAL(context_result->strategy_sums.value_count(), 2u);
+    BOOST_CHECK_EQUAL(context_result->river.workspace.reach[0].active_count, 1u);
+    BOOST_CHECK_EQUAL(context_result->river.workspace.reach[1].active_count, 1u);
+}
 
 BOOST_AUTO_TEST_CASE(deterministic_worker_reduction_applies_workers_in_plan_order) {
     constexpr std::array<uint32_t, 1> action_counts{1u};
@@ -833,7 +858,7 @@ BOOST_AUTO_TEST_CASE(board_partition_scheduler_executes_each_task_once) {
 
     auto result = run_board_partition_scheduler(
         plan,
-        scheduler_runtime_config{4},
+        scheduler_runtime_config{4, 3},
         [&task_hits, &plan](const scheduler_worker_state& worker, const board_partition_task& task) {
             BOOST_CHECK_LT(worker.worker_id, 4u);
             BOOST_CHECK_LT(task.board_index, plan.board_count);
