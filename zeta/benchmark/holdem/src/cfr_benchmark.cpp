@@ -1,11 +1,31 @@
 #include <benchmark/benchmark.h>
-#include "cfr/graph.h"
+#include "cfr/graph/builder.h"
+#include "cfr/graph/graph.h"
+#include "cfr/graph/validation.h"
+#include "cfr/scheduler/dfs_partitioner.h"
 #include <cstdlib>
 #include <random>
 
 using namespace zeta::holdem::cfr;
+using namespace zeta::holdem::cfr::scheduler;
+
+namespace {
+    constexpr uint32_t SMALL_BENCHMARK_PARTITION_COUNT = 2;
+    constexpr uint32_t MEDIUM_BENCHMARK_PARTITION_COUNT = 8;
+    constexpr uint32_t LARGE_BENCHMARK_PARTITION_COUNT = 16;
+    constexpr uint32_t BENCHMARK_WORK_DEPTH_SHIFT = 16;
+}
 
 game_graph require_graph(std::expected<game_graph, graph_build_error> result)
+{
+    if (!result) {
+        std::abort();
+    }
+    return std::move(*result);
+}
+
+std::vector<graph_partition> require_partitions(
+    std::expected<std::vector<graph_partition>, dfs_partitioner_error> result)
 {
     if (!result) {
         std::abort();
@@ -142,10 +162,10 @@ static void BM_PartitionComputeSmallTree(benchmark::State& state)
     auto graph = create_benchmark_tree(2, 2);
     
     for (auto _ : state) {
-        partition_strategy strategy;
-        strategy.target_partition_count = 2;
-        
-        auto partitions = compute_partitions(graph, strategy);
+        auto partitions = require_partitions(
+            compute_dfs_partitions(
+                graph,
+                dfs_partition_strategy{SMALL_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
         benchmark::DoNotOptimize(partitions);
     }
 }
@@ -155,10 +175,10 @@ static void BM_PartitionComputeMediumTree(benchmark::State& state)
     auto graph = create_benchmark_tree(4, 4);
     
     for (auto _ : state) {
-        partition_strategy strategy;
-        strategy.target_partition_count = 8;
-        
-        auto partitions = compute_partitions(graph, strategy);
+        auto partitions = require_partitions(
+            compute_dfs_partitions(
+                graph,
+                dfs_partition_strategy{MEDIUM_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
         benchmark::DoNotOptimize(partitions);
     }
 }
@@ -168,10 +188,10 @@ static void BM_PartitionComputeLargeTree(benchmark::State& state)
     auto graph = create_benchmark_tree(3, 6);
     
     for (auto _ : state) {
-        partition_strategy strategy;
-        strategy.target_partition_count = 16;
-        
-        auto partitions = compute_partitions(graph, strategy);
+        auto partitions = require_partitions(
+            compute_dfs_partitions(
+                graph,
+                dfs_partition_strategy{LARGE_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
         benchmark::DoNotOptimize(partitions);
     }
 }
@@ -275,9 +295,13 @@ BENCHMARK(BM_ValidateLargeTree);
 static void BM_BalanceMetricSmallTree(benchmark::State& state)
 {
     auto graph = create_benchmark_tree(2, 2);
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{SMALL_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
     
     for (auto _ : state) {
-        double balance = graph.partition_balance_metric();
+        double balance = dfs_partition_balance_metric(partitions);
         benchmark::DoNotOptimize(balance);
     }
 }
@@ -285,9 +309,13 @@ static void BM_BalanceMetricSmallTree(benchmark::State& state)
 static void BM_BalanceMetricMediumTree(benchmark::State& state)
 {
     auto graph = create_benchmark_tree(4, 4);
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{MEDIUM_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
     
     for (auto _ : state) {
-        double balance = graph.partition_balance_metric();
+        double balance = dfs_partition_balance_metric(partitions);
         benchmark::DoNotOptimize(balance);
     }
 }
@@ -295,9 +323,13 @@ static void BM_BalanceMetricMediumTree(benchmark::State& state)
 static void BM_BalanceMetricLargeTree(benchmark::State& state)
 {
     auto graph = create_benchmark_tree(3, 6);
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{LARGE_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
     
     for (auto _ : state) {
-        double balance = graph.partition_balance_metric();
+        double balance = dfs_partition_balance_metric(partitions);
         benchmark::DoNotOptimize(balance);
     }
 }

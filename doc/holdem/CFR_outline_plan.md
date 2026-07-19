@@ -35,14 +35,68 @@ holdem/
     ├── terminal/           (river terminal evaluation subsystem)
     │   └── terminal.h
     │
-    └── cfr/                (CFR+ solver subsystem)
-        ├── graph.h         (game_graph, CSR topology + partitions)
-        ├── regret_table.h   (regret storage, contiguous layout)
-        ├── strategy_table.h (strategy storage, contiguous layout)
-        ├── traversal.h     (traversal stack, worker context)
-        ├── scheduler.h     (work scheduling, board-level partitioning)
-        ├── reduction.h     (reduction logic, batch updates)
-        └── solver.h        (top-level solver orchestration)
+    └── cfr/                         (CFR+ solver subsystem)
+        ├── graph/
+        │   ├── graph.h              (implemented)
+        │   ├── graph.cpp            (implemented)
+        │   ├── validation.h         (implemented)
+        │   ├── validation.cpp       (implemented)
+        │   ├── builder.h            (implemented)
+        │   └── builder.cpp          (implemented)
+        ├── scheduler/
+        │   ├── dfs_partitioner.h    (implemented)
+        │   ├── dfs_partitioner.cpp  (implemented)
+        │   └── scheduler.*          (planned)
+        ├── tables/
+        │   ├── regret_table.h       (implemented)
+        │   ├── strategy_table.h     (implemented)
+        │   ├── table_layout.h       (implemented)
+        │   └── delta_buffer.h       (implemented)
+        ├── traversal/
+        │   ├── traversal.h          (planned)
+        │   ├── external_sampling.h  (planned)
+        │   └── chance_sampling.h    (planned)
+        └── solver/
+            ├── cfr_plus.cpp         (planned)
+            └── iteration.cpp        (planned)
+```
+
+**Later subsystem expansion:**
+
+As the solver grows, split `cfr/` by subsystem rather than by file type:
+
+```text
+cfr/
+    graph/
+        graph.h
+        graph.cpp
+        builder.h
+        builder.cpp
+        validation.h
+        validation.cpp
+
+    scheduler/
+        dfs_partitioner.h
+        dfs_partitioner.cpp
+        scheduler.h
+        work_stealing.h
+        numa_scheduler.h
+        gpu_scheduler.h
+
+    tables/
+        table_layout.h
+        regret_table.h
+        strategy_table.h
+        delta_buffer.h
+
+    traversal/
+        traversal.h
+        external_sampling.h
+        chance_sampling.h
+
+    solver/
+        cfr_plus.cpp
+        iteration.cpp
 ```
 
 **Benefits of dedicated folder:**
@@ -55,8 +109,8 @@ holdem/
 
 **Include patterns:**
 
-- Internal CFR+ files use: `#include <holdem/cfr/graph.h>`
-- Solver client code uses: `#include <holdem/cfr/solver.h>`
+- Internal CFR+ files use subsystem paths such as `#include <holdem/cfr/graph/graph.h>`
+- Solver client code uses: `#include <holdem/cfr/solver/cfr_plus.h>` once the solver entry point exists.
 - No other holdem/ files should `#include <holdem/cfr/*>` except the solver entry point
 
 ---
@@ -202,13 +256,113 @@ struct traversal_frame {
 std::array<traversal_frame, MAX_DEPTH> stack;
 ```
 
+**S3.1 traversal stack prototype scope**
+
+The prototype is the first executable traversal path over `game_graph`; it should
+prove the memory layout and control flow before terminal evaluation and full CFR+
+math are attached. The goal is not a feature-complete solver yet. The goal is an
+allocation-free, deterministic, multithread-safe traversal kernel that can scan
+player/chance/terminal nodes with explicit stack frames and write only to
+thread-local scratch/update buffers.
+
+**Performance priorities:**
+
+1. **No heap allocation in traversal hot loops.**
+   - Allocate stack, value buffers, reach scratch, child utility scratch, and
+     delta buffers in the worker context before traversal begins.
+   - Traversal functions should accept spans/references to preallocated storage.
+   - Unit tests should include allocator instrumentation or capacity checks once
+     the worker context exists.
+
+2. **Frame size must stay cache-friendly.**
+   - Keep `traversal_frame` plain-old-data, trivially copyable, and compact.
+   - Prefer integer IDs and flat offsets over pointers.
+   - Avoid storing spans, vectors, or owning objects in each frame.
+   - Keep fields ordered to minimize padding; validate `sizeof(traversal_frame)`
+     with a unit test.
+   - Target 32 bytes or less initially; revisit if extra fields are justified by
+     measured branch or memory savings.
+
+3. **Worker state must be cache-line isolated.**
+   - The future `worker_context` that owns the stack should be `alignas(64)`.
+   - Frequently mutated per-thread counters, stack depth, local buffers, and
+     deltas must not share cache lines with other workers.
+   - Global immutable graph/table/cache memory is shared read-only; mutable
+     traversal state is strictly thread-local.
+
+4. **CSR access should be sequential and predictable.**
+   - Iterate children using `row_offsets[node]..row_offsets[node + 1]`.
+   - Avoid per-node dynamic lookup structures in the hot path.
+   - Use local references/pointers to `row_offsets`, `edges`, `node_types`, and
+     `infoset_id` arrays before entering the loop.
+   - Consider prefetching child rows only after profiling indicates graph reads
+     are a bottleneck; do not add speculative prefetch complexity blindly.
+
+5. **Branching should be simple and stable.**
+   - Dispatch on `node_kind` with a small switch or equivalent branch structure.
+   - Keep terminal/player/chance handling in small internal functions only if
+     inlining keeps the hot path clear.
+   - Measure branch misses before introducing more complex dispatch tables.
+
+6. **Traversal order must support bottom-up values.**
+   - The current graph uses DFS post-order node IDs, so children have lower IDs
+     than parents. The prototype can exploit this for bottom-up value buffers.
+   - The explicit stack is still needed for execution policy, reach propagation,
+     chance/player action iteration, and later sampling variants.
+   - The prototype should clearly separate storage order from execution order so
+     later external-sampling/chance-sampling traversals can reuse the same graph.
+
+7. **No global writes during node visits.**
+   - Regret and strategy updates go to `table_delta_buffer` or scratch buffers.
+   - Reduction into global `regret_table` / `strategy_sum_table` stays outside
+     the traversal loop.
+   - This avoids atomics, locks, and false sharing in the main traversal path.
+
+8. **Determinism is a correctness feature.**
+   - Same graph, same initial reach values, same partition/board, same seed
+     must produce identical local deltas and utility outputs.
+   - Iteration order over edges must remain action-index order.
+   - Floating-point reduction order should be stable inside the single-worker
+     prototype.
+
+9. **Multithread readiness must be designed into the API.**
+   - The traversal entry point should take immutable shared inputs plus one
+     mutable worker-local context.
+   - It should not use global mutable state, hidden singletons, static scratch,
+     shared RNG state, or thread-local globals that hide ownership.
+   - Future parallel callers should be able to run the same traversal function
+     concurrently on different contexts without synchronization.
+
+10. **Measure before optimizing beyond layout.**
+    - Initial benchmarks should capture traversal scans/sec, nodes/sec,
+      edges/sec, stack max depth, bytes touched per node, branch miss rate if
+      available, and allocator count.
+    - Keep hooks cheap enough to compile out or disable in release hot loops.
+
+11. **Avoid type-erased hot-path callbacks.**
+    - Do not put `std::function`, virtual dispatch, or heap-owned callback state
+      in the inner traversal loop.
+    - Prefer template policy objects, small concrete callback structs, or
+      function pointers only where profiling shows the call overhead is
+      irrelevant.
+    - Terminal/player/chance hooks should be replaceable without forcing dynamic
+      allocation or unpredictable indirect branches per node.
+
+12. **Keep partition and worker ownership explicit.**
+    - The traversal prototype should accept an optional node/partition range or
+      traversal root descriptor, even if S3.1 starts with full-root traversal.
+    - Worker-local buffers belong to exactly one worker for the entire traversal.
+    - Cross-worker sharing is limited to immutable graph/table/cache memory and
+      deterministic post-traversal reduction.
+
 ---
 
 ## 7) Infoset graph storage (CSR-like + partition metadata)
 
 `game_graph` is built once, then read extremely often during solving. That makes
 CSR the right base layout: contiguous, compact, cache-friendly, and immutable.
-Do not bolt scheduling on later — include partition metadata at construction.
+Do not bolt scheduling on later; build immutable topology first, then let scheduler
+modules derive explicit partition plans from it.
 
 ```cpp
 struct edge {
@@ -219,7 +373,7 @@ struct edge {
 struct graph_partition {
     uint32_t begin_node;       // inclusive
     uint32_t end_node;         // exclusive
-    uint32_t subtree_size;
+    uint32_t node_count;
     uint32_t terminal_count;
     uint32_t action_count;
     uint16_t min_depth;
@@ -233,9 +387,6 @@ struct game_graph {
     std::vector<edge> edges;             // flattened adjacency
     std::vector<uint8_t> node_kind;      // player/chance/terminal
     std::vector<uint32_t> infoset_id;    // mapping for player nodes
-
-    // Immutable scheduling metadata
-    std::vector<graph_partition> partitions;
 };
 ```
 
@@ -411,14 +562,16 @@ Current expectation: memory bandwidth, not CPU, will limit scaling at 16 threads
 
 ## Suggested implementation sequence
 
-1. Add immutable `game_graph` CSR storage **with partition metadata and estimated traversal cost**, plus validation tests.
-2. Add contiguous regret/strategy table types with indexed accessors and thread-local delta-buffer interfaces.
-3. Add iterative traversal stack prototype on the multithread-capable execution path (run with `threads=1` for parity and `threads>1` for scaling).
-4. Integrate terminal evaluator at river leaves.
-5. Add thread-local update buffers + deterministic reduction.
-6. Add multithread board-partition scheduler (consumes `game_graph.partitions` directly).
-7. Add solver correctness tests (small toy trees vs reference).
-8. Add performance benchmarks (single vs multi-thread scaling, reduction cost).
+1. **IMPLEMENTED**: Add immutable `game_graph` CSR storage, plus validation tests.
+2. **IMPLEMENTED**: Add DFS-order partition metadata and estimated traversal cost in `cfr/scheduler/dfs_partitioner.h`.
+3. **IMPLEMENTED**: Add contiguous regret/strategy table types with indexed accessors.
+4. **IMPLEMENTED**: Add sparse thread-local delta-buffer interfaces and deterministic reduction helpers.
+5. Add iterative traversal stack prototype on the multithread-capable execution path (run with `threads=1` for parity and `threads>1` for scaling).
+6. Integrate terminal evaluator at river leaves.
+7. Add solver-level deterministic reduction orchestration across workers.
+8. Add multithread board-partition scheduler runtime (consumes scheduler partition plans).
+9. Add solver correctness tests (small toy trees vs reference).
+10. Add performance benchmarks (single vs multi-thread scaling, reduction cost).
 
 ---
 
@@ -426,19 +579,69 @@ Current expectation: memory bandwidth, not CPU, will limit scaling at 16 threads
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` complete.
 
-### Step 1 — `game_graph` foundation (next)
+### Implemented status snapshot
 
-- [ ] **S1.1 Define immutable graph types**: `edge`, `graph_partition`, `game_graph` (CSR topology + partition metadata).
-- [ ] **S1.2 Build graph constructor**: produce `row_offsets`, `edges`, `node_kind`, `infoset_id` from source tree.
-- [ ] **S1.3 Build partition constructor**: compute `subtree_size`, `terminal_count`, `action_count`, depth bounds, and `estimated_work`.
-- [ ] **S1.4 Add graph validation tests**: CSR offset monotonicity, edge bounds, partition coverage/non-overlap, deterministic build.
-- [ ] **S1.5 Add scheduling sanity checks**: verify partition cost balance quality (cost-balanced, not node-ID balanced).
-- [ ] **S1.6 Add graph benchmark hooks**: graph build time, partition build time, and read-only traversal scan throughput.
+- [x] `cfr/graph/graph.h` / `cfr/graph/graph.cpp`: immutable CSR `game_graph` topology and metadata.
+- [x] `cfr/graph/builder.h` / `cfr/graph/builder.cpp`: DFS post-order graph construction from mutable source-tree input.
+- [x] `cfr/graph/validation.h` / `cfr/graph/validation.cpp`: graph structure, metadata, and infoset validation helpers.
+- [x] `cfr/scheduler/dfs_partitioner.h` / `cfr/scheduler/dfs_partitioner.cpp`: DFS-order greedy partition metadata, estimated-work heuristic, partition validation, balance metric, unit tests, and benchmark hooks.
+- [x] `cfr/tables/table_layout.h`: contiguous infoset-major action-offset layout, graph-derived layout construction, raw offset validation, and indexed offset helpers.
+- [x] `cfr/tables/regret_table.h`: contiguous global regret storage with infoset/action accessors.
+- [x] `cfr/tables/strategy_table.h`: contiguous global strategy-sum storage with infoset/action accessors.
+- [x] `cfr/tables/delta_buffer.h`: cache-line-aligned sparse thread-local regret/strategy delta buffer and deterministic reduction helpers into global tables.
+- [x] `test_cfr_graph.cpp`: focused unit tests for graph, partitions, contiguous tables, sparse delta buffers, clear/reset behavior, and reduction.
 
-### Immediate follow-on (after Step 1)
+### Step 1 — `game_graph` foundation
 
-- [ ] **S2.1 Regret/strategy table types** with contiguous storage and indexed accessors.
-- [ ] **S2.2 Thread-local delta buffers** + deterministic chunk reduction API.
+- [x] **S1.1 Define immutable graph types**: `edge`, `game_graph` (CSR topology) and scheduler `graph_partition`.
+- [x] **S1.2 Build graph constructor**: produce `row_offsets`, `edges`, `node_kind`, `infoset_id` from source tree.
+- [x] **S1.3 Build DFS partitioner**: compute `node_count`, `terminal_count`, `action_count`, depth bounds, and `estimated_work`.
+- [x] **S1.4 Add graph validation tests**: CSR offset monotonicity, edge bounds, partition coverage/non-overlap, deterministic build.
+- [x] **S1.5 Add scheduling sanity checks**: verify partition coverage, metadata, and balance metric behavior.
+- [x] **S1.6 Add graph benchmark hooks**: graph build, partition build, validation, and traversal-scan benchmark coverage.
+
+### Step 2 — table storage and local update buffers
+
+- [x] **S2.1 Regret/strategy table types** with contiguous storage and indexed accessors.
+- [x] **S2.2 Thread-local delta buffers** + deterministic chunk reduction API.
+
+### Step 3 — traversal prototype and worker-local execution
+
+#### S3.1 Traversal stack prototype with allocation-free iterative traversal
+
+- [ ] **S3.1.1 Define traversal module boundary**: add `cfr/traversal/traversal.h` for public traversal types and, if needed, `traversal.cpp` for non-template implementation. Keep the prototype independent of solver orchestration.
+- [ ] **S3.1.2 Define compact `traversal_frame`**: include only fields required to resume a node visit: `node_id`, next edge/action cursor, reach values, chance weight, and a phase/state byte. Keep it trivially copyable and test `sizeof`/alignment.
+- [ ] **S3.1.3 Decide frame phase model**: use explicit phases such as enter node, visit next child, reduce children, exit node. The phase model must avoid recursion and avoid re-scanning child lists unnecessarily.
+- [ ] **S3.1.4 Establish maximum depth policy**: derive stack capacity from graph metadata plus a safety margin, reject graphs deeper than supported capacity, and test overflow handling without undefined behavior.
+- [ ] **S3.1.5 Preallocate stack storage**: use caller-owned `std::span<traversal_frame>` or a fixed worker-context array. Do not allocate inside traversal. Do not resize vectors in the hot loop.
+- [ ] **S3.1.6 Preallocate node/value scratch**: provide flat scratch buffers for per-node utility, per-action child utility, and reach propagation. Size them once from `graph.node_count`, max action count, and infoset layout.
+- [ ] **S3.1.7 Define traversal input/output contract**: inputs are immutable graph/table/cache views plus worker-local mutable buffers; outputs are local utility roots, diagnostic counters, and local regret/strategy deltas only.
+- [ ] **S3.1.8 Implement deterministic full-tree DFS scan**: start with traversal that visits every reachable node from `root_node`, respects action-index order, and records node/edge/terminal/player/chance counts.
+- [ ] **S3.1.9 Add bottom-up value skeleton**: compute placeholder child-to-parent utility flow using preallocated buffers so later CFR math can plug in without changing stack mechanics.
+- [ ] **S3.1.10 Add player-node strategy hook**: read infoset/action offsets and current regrets/strategy values through contiguous table accessors; write placeholder deltas only to `table_delta_buffer`.
+- [ ] **S3.1.11 Add chance-node hook**: represent chance weighting in the frame and propagation path, but keep probability source abstract so board/card chance logic can be attached later.
+- [ ] **S3.1.12 Add terminal-node hook**: record terminal visits and invoke a placeholder terminal callback interface. Do not integrate river evaluator in S3.1; that belongs to S4.1.
+- [ ] **S3.1.13 Avoid global writes in traversal**: assert or review that traversal mutates only worker-local buffers and its output object. No atomics, locks, global counters, or writes to global tables inside node visits.
+- [ ] **S3.1.14 Keep hot data local**: cache pointers/spans to `row_offsets`, `edges`, `node_types`, `infoset_id`, and table offsets before the loop. Avoid repeated vector member lookups where they obscure the hot path.
+- [ ] **S3.1.15 Control branch shape**: use a small `node_kind` dispatch and keep per-kind handling short. Add comments only where the phase machine is non-obvious.
+- [ ] **S3.1.16 Add traversal diagnostics**: collect optional counters for nodes visited, edges scanned, stack high-water mark, max action count observed, terminal count, and local delta entries touched.
+- [ ] **S3.1.17 Add single-thread correctness tests**: verify visit order, node counts, stack high-water mark, action order, no stack overflow on normal graphs, overflow rejection on too-deep synthetic graphs, and deterministic outputs over repeated runs.
+- [ ] **S3.1.18 Add allocation tests**: verify traversal does not allocate after context setup. If allocator instrumentation is impractical initially, test buffer capacities before/after and keep a follow-up benchmark allocator counter.
+- [ ] **S3.1.19 Add multithread-readiness tests**: run the same immutable graph concurrently with multiple worker-local stacks/buffers and verify independent deterministic outputs and no shared mutable state.
+- [ ] **S3.1.20 Add microbenchmarks**: measure traversal-only nodes/sec and edges/sec on small, medium, and deep synthetic graphs; include stack high-water mark and local buffer sizes in benchmark counters.
+- [ ] **S3.1.21 Add perf guardrails**: document expected frame size, worker-context cache-line alignment, zero hot-loop allocations, and no global writes as non-negotiable review requirements.
+- [ ] **S3.1.22 Keep sampling variants out of the prototype**: design the stack state so external-sampling and chance-sampling can reuse it, but do not implement those algorithms until the deterministic full-tree traversal is correct and measured.
+- [ ] **S3.1.23 Avoid type-erased hot callbacks**: keep terminal/player/chance hooks concrete or template-driven for the prototype; no `std::function` allocation or virtual dispatch in the node loop.
+- [ ] **S3.1.24 Prepare partition-aware entry points**: allow traversal inputs to name root/range/partition context so later board-level and partition-level schedulers can reuse the same kernel.
+- [ ] **S3.1.25 Define done criteria**: S3.1 is complete when a deterministic full-tree traversal can run on toy graphs with preallocated stack/scratch, produce stable local diagnostics/deltas, pass single-thread and concurrent read-only tests, and report traversal benchmark numbers.
+
+#### S3.2 Worker context
+
+- [ ] **S3.2 Worker context** tying graph views, terminal caches, reach indices, scratch arrays, traversal stack, diagnostics, and delta buffers together.
+- [ ] **S4.1 Terminal evaluator integration** at river terminal leaves.
+- [ ] **S5.1 Solver-level reduction orchestration** across worker-local buffers and board batches.
+- [ ] **S6.1 Runtime scheduler** for multithread board/partition execution.
+- [ ] **S6.2 Scheduler strategy split** for work-stealing, NUMA-aware, and GPU scheduler modules when needed.
 
 ---
 

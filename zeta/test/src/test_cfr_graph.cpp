@@ -1,13 +1,35 @@
 #include <boost/test/unit_test.hpp>
 
-#include "cfr/graph.h"
+#include "cfr/graph/builder.h"
+#include "cfr/graph/graph.h"
+#include "cfr/graph/validation.h"
+#include "cfr/scheduler/dfs_partitioner.h"
+#include "cfr/tables/delta_buffer.h"
+
+#include <array>
 
 using namespace zeta::holdem::cfr;
+using namespace zeta::holdem::cfr::scheduler;
+
+namespace {
+    constexpr uint32_t DEFAULT_TEST_PARTITION_COUNT = 8;
+    constexpr uint32_t DEFAULT_TEST_WORK_DEPTH_SHIFT = 16;
+}
 
 game_graph require_graph(std::expected<game_graph, graph_build_error> result)
 {
     if (!result) {
         BOOST_ERROR("graph build failed: " << result.error().kind);
+        return {};
+    }
+    return std::move(*result);
+}
+
+std::vector<graph_partition> require_partitions(
+    std::expected<std::vector<graph_partition>, dfs_partitioner_error> result)
+{
+    if (!result) {
+        BOOST_ERROR("partition build failed: " << result.error().kind);
         return {};
     }
     return std::move(*result);
@@ -192,17 +214,166 @@ BOOST_AUTO_TEST_CASE(builder_canonicalizes_edges_by_action_index) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+BOOST_AUTO_TEST_SUITE(cfr_tables)
+
+BOOST_AUTO_TEST_CASE(action_layout_from_counts_is_infoset_major) {
+    constexpr std::array<uint32_t, 3> action_counts{2u, 0u, 3u};
+
+    auto result = make_action_table_layout(std::span<const uint32_t>{action_counts});
+
+    BOOST_REQUIRE(result.has_value());
+    const auto& layout = *result;
+    BOOST_REQUIRE_EQUAL(layout.action_offsets.size(), 4u);
+    BOOST_CHECK_EQUAL(layout.action_offsets[0], 0u);
+    BOOST_CHECK_EQUAL(layout.action_offsets[1], 2u);
+    BOOST_CHECK_EQUAL(layout.action_offsets[2], 2u);
+    BOOST_CHECK_EQUAL(layout.action_offsets[3], 5u);
+    BOOST_CHECK_EQUAL(layout.infoset_count(), 3u);
+    BOOST_CHECK_EQUAL(layout.value_count(), 5u);
+    BOOST_CHECK_EQUAL(layout.action_count(0), 2u);
+    BOOST_CHECK_EQUAL(layout.action_count(1), 0u);
+    BOOST_CHECK_EQUAL(layout.action_count(2), 3u);
+    BOOST_CHECK_EQUAL(layout.offset(2, 2), 4u);
+}
+
+BOOST_AUTO_TEST_CASE(action_layout_from_graph_uses_player_infosets) {
+    auto graph = create_simple_tree();
+
+    auto result = make_action_table_layout(graph);
+
+    BOOST_REQUIRE(result.has_value());
+    const auto& layout = *result;
+    BOOST_REQUIRE_EQUAL(layout.action_offsets.size(), 2u);
+    BOOST_CHECK_EQUAL(layout.infoset_count(), 1u);
+    BOOST_CHECK_EQUAL(layout.value_count(), 2u);
+    BOOST_CHECK_EQUAL(layout.action_count(0), 2u);
+}
+
+BOOST_AUTO_TEST_CASE(regret_and_strategy_tables_have_indexed_accessors) {
+    constexpr std::array<uint32_t, 2> action_counts{2u, 3u};
+    auto layout_result = make_action_table_layout(std::span<const uint32_t>{action_counts});
+    BOOST_REQUIRE(layout_result.has_value());
+    const auto& layout = *layout_result;
+
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+
+    BOOST_CHECK_EQUAL(regrets.infoset_count(), 2u);
+    BOOST_CHECK_EQUAL(regrets.value_count(), 5u);
+    BOOST_CHECK_EQUAL(strategy_sums.infoset_count(), 2u);
+    BOOST_CHECK_EQUAL(strategy_sums.value_count(), 5u);
+
+    regrets.value(0, 1) = 1.5f;
+    regrets.value(1, 2) = -2.0f;
+    strategy_sums.value(1, 0) = 0.25f;
+    strategy_sums.value(1, 2) = 0.75f;
+
+    auto regret_span = regrets.infoset_regrets(1);
+    auto strategy_span = strategy_sums.infoset_sums(1);
+
+    BOOST_REQUIRE_EQUAL(regret_span.size(), 3u);
+    BOOST_REQUIRE_EQUAL(strategy_span.size(), 3u);
+    BOOST_CHECK_EQUAL(regrets.offset(1, 2), 4u);
+    BOOST_CHECK_EQUAL(regret_span[2], -2.0f);
+    BOOST_CHECK_EQUAL(strategy_span[0], 0.25f);
+    BOOST_CHECK_EQUAL(strategy_span[2], 0.75f);
+}
+
+BOOST_AUTO_TEST_CASE(delta_buffer_accumulates_sparse_thread_local_entries) {
+    constexpr std::array<uint32_t, 2> action_counts{2u, 3u};
+    auto layout_result = make_action_table_layout(std::span<const uint32_t>{action_counts});
+    BOOST_REQUIRE(layout_result.has_value());
+
+    table_delta_buffer buffer(layout_result->action_offsets);
+
+    BOOST_CHECK_GE(alignof(table_delta_buffer), 64u);
+    BOOST_CHECK_EQUAL(buffer.infoset_count(), 2u);
+    BOOST_CHECK_EQUAL(buffer.entry_count(), 0u);
+
+    buffer.add_regret_delta(1, 2, 3.0f);
+    buffer.add_regret_delta(1, 2, 1.0f);
+    buffer.add_strategy_delta(1, 0, 0.5f);
+
+    BOOST_REQUIRE_EQUAL(buffer.entry_count(), 1u);
+    const auto entry = buffer.entries()[0];
+    BOOST_CHECK_EQUAL(entry.infoset_id, 1u);
+
+    auto regret_deltas = buffer.regret_deltas_for(entry);
+    auto strategy_deltas = buffer.strategy_deltas_for(entry);
+
+    BOOST_REQUIRE_EQUAL(regret_deltas.size(), 3u);
+    BOOST_REQUIRE_EQUAL(strategy_deltas.size(), 3u);
+    BOOST_CHECK_EQUAL(regret_deltas[0], 0.0f);
+    BOOST_CHECK_EQUAL(regret_deltas[2], 4.0f);
+    BOOST_CHECK_EQUAL(strategy_deltas[0], 0.5f);
+    BOOST_CHECK_EQUAL(strategy_deltas[2], 0.0f);
+}
+
+BOOST_AUTO_TEST_CASE(delta_buffer_clear_preserves_layout_and_resets_sparse_index) {
+    constexpr std::array<uint32_t, 2> action_counts{1u, 2u};
+    auto layout_result = make_action_table_layout(std::span<const uint32_t>{action_counts});
+    BOOST_REQUIRE(layout_result.has_value());
+
+    table_delta_buffer buffer(layout_result->action_offsets);
+    buffer.add_regret_delta(1, 1, 2.0f);
+    BOOST_REQUIRE_EQUAL(buffer.entry_count(), 1u);
+
+    buffer.clear();
+
+    BOOST_CHECK_EQUAL(buffer.entry_count(), 0u);
+    BOOST_CHECK_EQUAL(buffer.infoset_count(), 2u);
+
+    buffer.add_regret_delta(1, 1, 3.0f);
+
+    BOOST_REQUIRE_EQUAL(buffer.entry_count(), 1u);
+    auto deltas = buffer.regret_deltas_for(buffer.entries()[0]);
+    BOOST_REQUIRE_EQUAL(deltas.size(), 2u);
+    BOOST_CHECK_EQUAL(deltas[1], 3.0f);
+}
+
+BOOST_AUTO_TEST_CASE(delta_buffer_reduces_into_global_tables) {
+    constexpr std::array<uint32_t, 2> action_counts{2u, 1u};
+    auto layout_result = make_action_table_layout(std::span<const uint32_t>{action_counts});
+    BOOST_REQUIRE(layout_result.has_value());
+    const auto& layout = *layout_result;
+
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    table_delta_buffer buffer(layout.action_offsets);
+
+    buffer.add_regret_delta(0, 0, 1.0f);
+    buffer.add_regret_delta(0, 1, -0.5f);
+    buffer.add_regret_delta(1, 0, 2.0f);
+    buffer.add_strategy_delta(0, 1, 0.25f);
+    buffer.add_strategy_delta(1, 0, 0.75f);
+
+    apply_delta_buffer(regrets, strategy_sums, buffer);
+
+    BOOST_CHECK_EQUAL(regrets.value(0, 0), 1.0f);
+    BOOST_CHECK_EQUAL(regrets.value(0, 1), -0.5f);
+    BOOST_CHECK_EQUAL(regrets.value(1, 0), 2.0f);
+    BOOST_CHECK_EQUAL(strategy_sums.value(0, 0), 0.0f);
+    BOOST_CHECK_EQUAL(strategy_sums.value(0, 1), 0.25f);
+    BOOST_CHECK_EQUAL(strategy_sums.value(1, 0), 0.75f);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 BOOST_AUTO_TEST_SUITE(cfr_partitions)
 
 /** Test partition construction and metadata. */
 BOOST_AUTO_TEST_CASE(partition_coverage) {
     auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
     
-    BOOST_CHECK(!graph.partitions.empty());
+    BOOST_CHECK(!partitions.empty());
     
     /** Check coverage: all nodes should be in exactly one partition. */
     uint32_t prev_end = 0;
-    for (const auto& p : graph.partitions) {
+    for (const auto& p : partitions) {
         BOOST_CHECK_EQUAL(p.begin_node, prev_end);
         BOOST_CHECK_LT(p.begin_node, p.end_node);
         BOOST_CHECK_LE(p.end_node, graph.node_count);
@@ -213,16 +384,24 @@ BOOST_AUTO_TEST_CASE(partition_coverage) {
 
 BOOST_AUTO_TEST_CASE(partition_no_overlap) {
     auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
     
-    for (size_t i = 1; i < graph.partitions.size(); ++i) {
-        BOOST_CHECK_EQUAL(graph.partitions[i].begin_node, graph.partitions[i - 1].end_node);
+    for (size_t i = 1; i < partitions.size(); ++i) {
+        BOOST_CHECK_EQUAL(partitions[i].begin_node, partitions[i - 1].end_node);
     }
 }
 
 BOOST_AUTO_TEST_CASE(partition_metadata_consistency) {
     auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
     
-    for (const auto& p : graph.partitions) {
+    for (const auto& p : partitions) {
         /** node_count should be consistent. */
         uint32_t expected_size = p.end_node - p.begin_node;
         BOOST_CHECK_EQUAL(p.node_count, expected_size);
@@ -237,11 +416,48 @@ BOOST_AUTO_TEST_CASE(partition_metadata_consistency) {
 
 BOOST_AUTO_TEST_CASE(validate_rejects_partition_estimated_work_mismatch) {
     auto graph = create_simple_tree();
-    BOOST_REQUIRE(!graph.partitions.empty());
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    BOOST_REQUIRE(!partitions.empty());
 
-    ++graph.partitions.front().estimated_work;
+    ++partitions.front().estimated_work;
 
-    BOOST_CHECK(!::zeta::holdem::cfr::graph_validation::validate_partitions(graph));
+    BOOST_CHECK(!::zeta::holdem::cfr::scheduler::validate_dfs_partitions(
+        graph,
+        partitions,
+        dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+}
+
+BOOST_AUTO_TEST_CASE(dfs_partition_strategy_rejects_zero_count) {
+    auto graph = create_simple_tree();
+
+    auto result = compute_dfs_partitions(graph, dfs_partition_strategy{0, DEFAULT_TEST_WORK_DEPTH_SHIFT});
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == dfs_partitioner_error_kind::invalid_partition_count);
+}
+
+BOOST_AUTO_TEST_CASE(dfs_partition_strategy_rejects_unrepresentable_depth_shift) {
+    auto graph = create_simple_tree();
+
+    auto result = compute_dfs_partitions(
+        graph,
+        dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, MAX_REPRESENTABLE_WORK_DEPTH_SHIFT + 1});
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == dfs_partitioner_error_kind::invalid_work_depth_shift);
+}
+
+BOOST_AUTO_TEST_CASE(dfs_partition_strategy_accepts_larger_representable_depth_shift) {
+    auto graph = create_simple_tree();
+
+    auto result = compute_dfs_partitions(
+        graph,
+        dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, 32});
+
+    BOOST_CHECK(result.has_value());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -297,10 +513,14 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(cfr_balance)
 
 /** Test partition balance metric. */
-BOOST_AUTO_TEST_CASE(partition_balance_metric) {
+BOOST_AUTO_TEST_CASE(dfs_partition_balance_metric) {
     auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
     
-    double balance = graph.partition_balance_metric();
+    double balance = ::zeta::holdem::cfr::scheduler::dfs_partition_balance_metric(partitions);
     /** Balance metric should be non-negative; coefficient of variation. */
     BOOST_CHECK_GE(balance, 0.0);
     /** For small graphs, balance might be perfect or close to 0. */
@@ -323,18 +543,24 @@ BOOST_AUTO_TEST_CASE(multiple_partitions_balance) {
     builder.set_infoset_id(0, 0);
     
     auto graph = require_graph(builder.build());
-    double balance = graph.partition_balance_metric();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{DEFAULT_TEST_PARTITION_COUNT, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    double balance = ::zeta::holdem::cfr::scheduler::dfs_partition_balance_metric(partitions);
     BOOST_CHECK_GE(balance, 0.0);
     BOOST_CHECK_LT(balance, 10.0);
 }
 
-BOOST_AUTO_TEST_CASE(partition_strategy_custom_count) {
+BOOST_AUTO_TEST_CASE(dfs_partition_strategy_custom_count) {
     auto graph = create_chance_tree();
     
-    partition_strategy strategy;
-    strategy.target_partition_count = 2;
-    auto partitions = compute_partitions(graph, strategy);
-    BOOST_CHECK_LE(partitions.size(), strategy.target_partition_count + 1u);
+    constexpr uint32_t target_partition_count = 2;
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{target_partition_count, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    BOOST_CHECK_LE(partitions.size(), target_partition_count + 1u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

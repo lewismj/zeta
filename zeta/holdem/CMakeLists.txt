@@ -15,8 +15,18 @@ add_library(zeta-holdem STATIC
     src/terminal/reach_index.h
     src/terminal/showdown.h
     src/terminal/workspace.h
-    src/cfr/graph.h
-    src/cfr/graph.cpp
+    src/cfr/graph/graph.h
+    src/cfr/graph/graph.cpp
+    src/cfr/graph/builder.h
+    src/cfr/graph/builder.cpp
+    src/cfr/graph/validation.h
+    src/cfr/graph/validation.cpp
+    src/cfr/tables/table_layout.h
+    src/cfr/tables/regret_table.h
+    src/cfr/tables/strategy_table.h
+    src/cfr/tables/delta_buffer.h
+    src/cfr/scheduler/dfs_partitioner.h
+    src/cfr/scheduler/dfs_partitioner.cpp
 )
 add_library(zeta_holdem ALIAS zeta-holdem)
 
