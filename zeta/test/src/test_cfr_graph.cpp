@@ -442,6 +442,15 @@ BOOST_AUTO_TEST_CASE(worker_context_is_cache_line_aligned) {
     BOOST_CHECK_GE(alignof(table_delta_buffer), 64u);
 }
 
+BOOST_AUTO_TEST_CASE(river_reach_index_copy_characteristics_are_explicit) {
+    using reach_index = zeta::holdem::river_reach_index;
+
+    static_assert(std::is_trivially_copyable_v<reach_index>);
+    BOOST_CHECK(std::is_trivially_copyable_v<reach_index>);
+    BOOST_TEST_MESSAGE("river_reach_index bytes: " << sizeof(reach_index));
+    BOOST_CHECK_GT(sizeof(reach_index), 64u * 1024u);
+}
+
 BOOST_AUTO_TEST_CASE(worker_context_binds_graph_tables_and_terminal_views) {
     auto graph = create_chance_tree();
     auto layout = require_layout(make_action_table_layout(graph));

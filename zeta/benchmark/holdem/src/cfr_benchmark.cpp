@@ -33,7 +33,14 @@ namespace {
     constexpr uint32_t REALISTIC_BENCHMARK_TASK_CHUNK_SIZE = 64;
     constexpr uint32_t REALISTIC_BENCHMARK_TASK_WORK_REPEATS = 8;
     constexpr uint32_t CFR_ITERATION_BENCHMARK_BOARD_COUNT = 64;
+    constexpr uint32_t CACHED_TERMINAL_BATCH_SIZE = 1024;
     constexpr uint32_t BENCHMARK_WORK_DEPTH_SHIFT = 16;
+
+    struct terminal_combo_work_item {
+        zeta::holdem::combination_index combo = 0;
+        float reach = 0.0f;
+        uint16_t payoff_index = 0;
+    };
 
     struct alignas(64) benchmark_worker_counter {
         uint64_t actions = 0;
@@ -903,6 +910,108 @@ static void BM_RiverTerminalLeafTraversal(benchmark::State& state)
     set_traversal_counters(state, graph, last_result, worker);
 }
 
+static void BM_RiverTerminalLeafTraversalCachedReach(benchmark::State& state)
+{
+    auto graph = require_graph([] {
+        graph_builder builder;
+        auto root = builder.add_node(node_kind::player);
+        auto showdown = builder.add_node(node_kind::terminal);
+        auto fold = builder.add_node(node_kind::terminal);
+        builder.add_edge(root, showdown, 0);
+        builder.add_edge(root, fold, 1);
+        builder.set_infoset_id(root, 0);
+        return builder.build();
+    }());
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    std::vector<river_terminal_leaf> leaves(graph.node_count);
+    leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
+    leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
+    const auto terminal_context = make_river_solver_context(
+        deterministic_river_board(),
+        std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        std::move(leaves));
+    const auto policy = terminal_context.terminal_policy(zeta::holdem::heads_up_player::oop, oop_combo);
+
+    const traversal_frame frame{
+        .node_id = 0,
+        .next_edge_offset = 0,
+        .reach_oop = 1.0f,
+        .reach_ip = 1.0f,
+        .chance_weight = 1.0f,
+        .accumulated_utility = 0.0f,
+        .phase = traversal_phase::enter,
+        .reserved = {}
+    };
+
+    for (auto _ : state) {
+        auto value = policy(0, frame);
+        benchmark::DoNotOptimize(value);
+        benchmark::ClobberMemory();
+    }
+}
+
+static void BM_RiverTerminalLeafTraversalCachedReachBatch(benchmark::State& state)
+{
+    auto graph = require_graph([] {
+        graph_builder builder;
+        auto root = builder.add_node(node_kind::player);
+        auto showdown = builder.add_node(node_kind::terminal);
+        auto fold = builder.add_node(node_kind::terminal);
+        builder.add_edge(root, showdown, 0);
+        builder.add_edge(root, fold, 1);
+        builder.set_infoset_id(root, 0);
+        return builder.build();
+    }());
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    std::vector<river_terminal_leaf> leaves(graph.node_count);
+    leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
+    leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
+    const auto terminal_context = make_river_solver_context(
+        deterministic_river_board(),
+        std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        std::move(leaves));
+    const auto policy = terminal_context.terminal_policy(zeta::holdem::heads_up_player::oop, oop_combo);
+
+    const traversal_frame frame{
+        .node_id = 0,
+        .next_edge_offset = 0,
+        .reach_oop = 1.0f,
+        .reach_ip = 1.0f,
+        .chance_weight = 1.0f,
+        .accumulated_utility = 0.0f,
+        .phase = traversal_phase::enter,
+        .reserved = {}
+    };
+
+    for (auto _ : state) {
+        float total = 0.0f;
+        for (uint32_t leaf = 0; leaf < CACHED_TERMINAL_BATCH_SIZE; ++leaf) {
+            const auto node_id = leaf & 1u;
+            total += policy(node_id, frame);
+        }
+        benchmark::DoNotOptimize(total);
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["terminal_leaves/s"] = benchmark::Counter(
+        static_cast<double>(CACHED_TERMINAL_BATCH_SIZE),
+        benchmark::Counter::kIsIterationInvariantRate);
+}
+
 static void BM_RebuildReachIndex(benchmark::State& state)
 {
     const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
@@ -1105,6 +1214,132 @@ static void BM_TerminalFusedLoadAccumulate(benchmark::State& state)
     state.counters["active_combos"] = static_cast<double>(index.active_count);
 }
 
+static void BM_TerminalAccumulate_NoLookup(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    zeta::holdem::reach_vector reach{};
+    for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+        reach[cache.rank_order[order]] = 1.0f;
+    }
+    const auto index = zeta::holdem::make_river_reach_index(cache, reach);
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{index, index};
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    const auto values = zeta::holdem::evaluate_showdown_values(cache, reach_indices[0], reach_indices[1], context);
+
+    std::vector<terminal_combo_work_item> work_items;
+    work_items.reserve(index.active_count);
+    for (uint16_t active = 0; active < index.active_count; ++active) {
+        const auto combo = index.active_indices[active];
+        work_items.push_back(terminal_combo_work_item{
+            .combo = combo,
+            .reach = index.weights[combo],
+            .payoff_index = combo
+        });
+    }
+
+    for (auto _ : state) {
+        float total = 0.0f;
+        for (const auto& item : work_items) {
+            total += item.reach * values[zeta::holdem::heads_up_player::oop][item.payoff_index];
+        }
+        benchmark::DoNotOptimize(total);
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["active_combos"] = static_cast<double>(work_items.size());
+}
+
+static void BM_TerminalAccumulate_WithLookup(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    zeta::holdem::reach_vector reach{};
+    for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+        reach[cache.rank_order[order]] = 1.0f;
+    }
+    const auto index = zeta::holdem::make_river_reach_index(cache, reach);
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{index, index};
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    const auto values = zeta::holdem::evaluate_showdown_values(cache, reach_indices[0], reach_indices[1], context);
+
+    for (auto _ : state) {
+        float total = 0.0f;
+        for (uint16_t active = 0; active < index.active_count; ++active) {
+            const auto combo = index.active_indices[active];
+            total += index.weights[combo] * values[zeta::holdem::heads_up_player::oop][combo];
+        }
+        benchmark::DoNotOptimize(total);
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["active_combos"] = static_cast<double>(index.active_count);
+}
+
+static void BM_TerminalAccumulate_WithPrefetchedReach(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    zeta::holdem::reach_vector reach{};
+    for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+        reach[cache.rank_order[order]] = 1.0f;
+    }
+    const auto index = zeta::holdem::make_river_reach_index(cache, reach);
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{index, index};
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    const auto values = zeta::holdem::evaluate_showdown_values(cache, reach_indices[0], reach_indices[1], context);
+
+    std::vector<float> active_reach;
+    std::vector<zeta::holdem::combination_index> active_combos;
+    active_reach.reserve(index.active_count);
+    active_combos.reserve(index.active_count);
+    for (uint16_t active = 0; active < index.active_count; ++active) {
+        const auto combo = index.active_indices[active];
+        active_combos.push_back(combo);
+        active_reach.push_back(index.weights[combo]);
+    }
+
+    for (auto _ : state) {
+        float total = 0.0f;
+        for (std::size_t active = 0; active < active_combos.size(); ++active) {
+            total += active_reach[active] * values[zeta::holdem::heads_up_player::oop][active_combos[active]];
+        }
+        benchmark::DoNotOptimize(total);
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["active_combos"] = static_cast<double>(active_combos.size());
+}
+
+static void BM_TerminalAccumulate_WithStackLocalReach(benchmark::State& state)
+{
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    zeta::holdem::reach_vector reach{};
+    for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
+        reach[cache.rank_order[order]] = 1.0f;
+    }
+    const auto index = zeta::holdem::make_river_reach_index(cache, reach);
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{index, index};
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    const auto values = zeta::holdem::evaluate_showdown_values(cache, reach_indices[0], reach_indices[1], context);
+
+    std::array<float, zeta::holdem::river_live_combination_count> active_reach{};
+    std::array<zeta::holdem::combination_index, zeta::holdem::river_live_combination_count> active_combos{};
+    for (uint16_t active = 0; active < index.active_count; ++active) {
+        const auto combo = index.active_indices[active];
+        active_combos[active] = combo;
+        active_reach[active] = index.weights[combo];
+    }
+
+    for (auto _ : state) {
+        float total = 0.0f;
+        for (uint16_t active = 0; active < index.active_count; ++active) {
+            total += active_reach[active] * values[zeta::holdem::heads_up_player::oop][active_combos[active]];
+        }
+        benchmark::DoNotOptimize(total);
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["active_combos"] = static_cast<double>(index.active_count);
+}
+
 static void BM_DeterministicWorkerReduction(benchmark::State& state)
 {
     auto graph = create_benchmark_tree(4, 4);
@@ -1141,7 +1376,153 @@ static void BM_DeterministicWorkerReduction(benchmark::State& state)
     state.counters["delta_entries"] = static_cast<double>(workers.front().delta_buffer.entry_count() * worker_count);
 }
 
+static void BM_RegretMatching(benchmark::State& state)
+{
+    auto graph = create_benchmark_tree(4, 4);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    std::vector<float> strategy(layout.value_count(), 0.0f);
+
+    for (uint32_t infoset_id = 0; infoset_id < regrets.infoset_count(); ++infoset_id) {
+        for (uint32_t action = 0; action < regrets.action_count(infoset_id); ++action) {
+            regrets.value(infoset_id, action) = action % 2u == 0u
+                ? static_cast<float>(action + 1u)
+                : -static_cast<float>(action + 1u);
+        }
+    }
+
+    for (auto _ : state) {
+        for (uint32_t infoset_id = 0; infoset_id < regrets.infoset_count(); ++infoset_id) {
+            const auto regrets_span = regrets.infoset_regrets(infoset_id);
+            const auto begin = regrets.action_offsets[infoset_id];
+            float positive_sum = 0.0f;
+            for (const auto regret : regrets_span) {
+                positive_sum += std::max(regret, 0.0f);
+            }
+
+            const auto action_count = static_cast<uint32_t>(regrets_span.size());
+            const auto uniform = action_count == 0u ? 0.0f : 1.0f / static_cast<float>(action_count);
+            for (uint32_t action = 0; action < action_count; ++action) {
+                strategy[begin + action] = positive_sum > 0.0f
+                    ? std::max(regrets_span[action], 0.0f) / positive_sum
+                    : uniform;
+            }
+        }
+        benchmark::DoNotOptimize(strategy.data());
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["infosets/s"] = benchmark::Counter(
+        static_cast<double>(regrets.infoset_count()),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["actions/s"] = benchmark::Counter(
+        static_cast<double>(regrets.value_count()),
+        benchmark::Counter::kIsIterationInvariantRate);
+}
+
+static void BM_RegretUpdate(benchmark::State& state)
+{
+    auto graph = create_benchmark_tree(4, 4);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    std::vector<float> deltas(layout.value_count(), 0.125f);
+
+    for (auto _ : state) {
+        for (uint32_t value = 0; value < regrets.value_count(); ++value) {
+            regrets.regrets[value] = std::max(regrets.regrets[value] + deltas[value], 0.0f);
+        }
+        benchmark::DoNotOptimize(regrets.regrets.data());
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["regret_updates/s"] = benchmark::Counter(
+        static_cast<double>(regrets.value_count()),
+        benchmark::Counter::kIsIterationInvariantRate);
+}
+
+static void BM_StrategyAverage(benchmark::State& state)
+{
+    auto graph = create_benchmark_tree(4, 4);
+    auto layout = require_layout(make_action_table_layout(graph));
+    strategy_sum_table strategy_sums(layout);
+    std::vector<float> average(layout.value_count(), 0.0f);
+
+    for (uint32_t value = 0; value < strategy_sums.value_count(); ++value) {
+        strategy_sums.sums[value] = static_cast<float>((value % 7u) + 1u);
+    }
+
+    for (auto _ : state) {
+        for (uint32_t infoset_id = 0; infoset_id < strategy_sums.infoset_count(); ++infoset_id) {
+            const auto sums = strategy_sums.infoset_sums(infoset_id);
+            const auto begin = strategy_sums.action_offsets[infoset_id];
+            float total = 0.0f;
+            for (const auto value : sums) {
+                total += value;
+            }
+            const auto scale = total > 0.0f ? 1.0f / total : 0.0f;
+            for (uint32_t action = 0; action < sums.size(); ++action) {
+                average[begin + action] = sums[action] * scale;
+            }
+        }
+        benchmark::DoNotOptimize(average.data());
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["strategy_values/s"] = benchmark::Counter(
+        static_cast<double>(strategy_sums.value_count()),
+        benchmark::Counter::kIsIterationInvariantRate);
+}
+
+static void BM_CFRIterationWithUpdates(benchmark::State& state)
+{
+    auto graph = create_benchmark_tree(4, 4);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::vector<float> strategy(layout.value_count(), 0.0f);
+
+    for (auto _ : state) {
+        for (uint32_t infoset_id = 0; infoset_id < layout.infoset_count(); ++infoset_id) {
+            auto regrets_span = regrets.infoset_regrets(infoset_id);
+            auto strategy_span = strategy_sums.infoset_sums(infoset_id);
+            const auto begin = layout.action_offsets[infoset_id];
+
+            float positive_sum = 0.0f;
+            for (const auto regret : regrets_span) {
+                positive_sum += std::max(regret, 0.0f);
+            }
+
+            const auto action_count = static_cast<uint32_t>(regrets_span.size());
+            const auto uniform = action_count == 0u ? 0.0f : 1.0f / static_cast<float>(action_count);
+            for (uint32_t action = 0; action < action_count; ++action) {
+                const auto probability = positive_sum > 0.0f
+                    ? std::max(regrets_span[action], 0.0f) / positive_sum
+                    : uniform;
+                strategy[begin + action] = probability;
+                strategy_span[action] += probability;
+                const auto action_delta = static_cast<float>(action + 1u) * 0.01f;
+                regrets_span[action] = std::max(regrets_span[action] + action_delta - probability, 0.0f);
+            }
+        }
+        benchmark::DoNotOptimize(regrets.regrets.data());
+        benchmark::DoNotOptimize(strategy_sums.sums.data());
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["infosets/s"] = benchmark::Counter(
+        static_cast<double>(layout.infoset_count()),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["regret_updates/s"] = benchmark::Counter(
+        static_cast<double>(layout.value_count()),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["strategy_updates/s"] = benchmark::Counter(
+        static_cast<double>(layout.value_count()),
+        benchmark::Counter::kIsIterationInvariantRate);
+}
+
 BENCHMARK(BM_RiverTerminalLeafTraversal);
+BENCHMARK(BM_RiverTerminalLeafTraversalCachedReach);
+BENCHMARK(BM_RiverTerminalLeafTraversalCachedReachBatch);
 BENCHMARK(BM_RebuildReachIndex);
 BENCHMARK(BM_FilterDeadCards);
 BENCHMARK(BM_IterateActiveCombos);
@@ -1152,7 +1533,15 @@ BENCHMARK(BM_TerminalShowdown);
 BENCHMARK(BM_TerminalFold);
 BENCHMARK(BM_TerminalAccumulate);
 BENCHMARK(BM_TerminalFusedLoadAccumulate);
+BENCHMARK(BM_TerminalAccumulate_NoLookup);
+BENCHMARK(BM_TerminalAccumulate_WithLookup);
+BENCHMARK(BM_TerminalAccumulate_WithPrefetchedReach);
+BENCHMARK(BM_TerminalAccumulate_WithStackLocalReach);
 BENCHMARK(BM_DeterministicWorkerReduction)->Arg(2)->Arg(4)->Arg(8)->Arg(12);
+BENCHMARK(BM_RegretMatching);
+BENCHMARK(BM_RegretUpdate);
+BENCHMARK(BM_StrategyAverage);
+BENCHMARK(BM_CFRIterationWithUpdates);
 
 /**
  * Validation throughput benchmark.
