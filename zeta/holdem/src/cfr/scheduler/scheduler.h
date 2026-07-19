@@ -264,4 +264,103 @@ namespace zeta::holdem::cfr::scheduler {
         return summary;
     }
 
+    /**
+     * Execute board/partition tasks with static board ownership.
+     *
+     * Each worker receives a contiguous board range and processes every graph
+     * partition for those boards. This avoids queue traffic when boards have
+     * uniform or pre-balanced work and keeps board-local traversal state hot.
+     */
+    template <typename TaskCallback>
+    [[nodiscard]] std::expected<scheduler_run_summary, scheduler_error> run_static_board_partition_scheduler(
+        const board_partition_plan& plan,
+        scheduler_runtime_config config,
+        TaskCallback&& task_callback)
+    {
+        if (plan.board_count == 0u) {
+            return std::unexpected(scheduler_error{scheduler_error_kind::invalid_board_count});
+        }
+        if (plan.partitions.empty()) {
+            return std::unexpected(scheduler_error{scheduler_error_kind::empty_partition_plan});
+        }
+        if (config.worker_count == 0u) {
+            return std::unexpected(scheduler_error{scheduler_error_kind::invalid_worker_count});
+        }
+
+        const auto active_worker_count = std::min(config.worker_count, plan.board_count);
+        const auto partition_count = static_cast<uint32_t>(plan.partitions.size());
+
+        scheduler_run_summary summary;
+        summary.workers.resize(active_worker_count);
+        for (uint32_t worker_id = 0; worker_id < active_worker_count; ++worker_id) {
+            summary.workers[worker_id].worker_id = worker_id;
+        }
+
+        std::atomic<bool> stop_requested{false};
+        std::mutex error_mutex;
+        std::expected<void, scheduler_error> first_error{};
+
+        auto worker_main = [&](const uint32_t worker_id) {
+            auto& worker = summary.workers[worker_id];
+            const auto base_board_count = plan.board_count / active_worker_count;
+            const auto remainder_board_count = plan.board_count % active_worker_count;
+            const auto begin_board = worker_id * base_board_count + std::min(worker_id, remainder_board_count);
+            const auto end_board = begin_board + base_board_count + (worker_id < remainder_board_count ? 1u : 0u);
+
+            for (uint32_t board_index = begin_board; board_index < end_board; ++board_index) {
+                if (stop_requested.load(std::memory_order_acquire)) {
+                    break;
+                }
+
+                for (uint32_t partition_index = 0; partition_index < partition_count; ++partition_index) {
+                    if (stop_requested.load(std::memory_order_acquire)) {
+                        break;
+                    }
+
+                    const auto task_index =
+                        static_cast<uint64_t>(board_index) * static_cast<uint64_t>(partition_count) +
+                        static_cast<uint64_t>(partition_index);
+                    const board_partition_task task{
+                        .task_index = task_index,
+                        .board_index = board_index,
+                        .partition_index = partition_index,
+                        .partition = &plan.partitions[partition_index]
+                    };
+
+                    if (auto result = detail::invoke_scheduler_task(task_callback, worker, task); !result) {
+                        const std::lock_guard lock{error_mutex};
+                        if (first_error.has_value()) {
+                            first_error = std::unexpected(detail::contextualize_error(result.error(), worker, task));
+                        }
+                        stop_requested.store(true, std::memory_order_release);
+                        break;
+                    }
+
+                    ++worker.tasks_executed;
+                    worker.estimated_work += task.partition->estimated_work;
+                }
+            }
+        };
+
+        std::vector<std::thread> threads;
+        threads.reserve(active_worker_count);
+        for (uint32_t worker_id = 0; worker_id < active_worker_count; ++worker_id) {
+            threads.emplace_back(worker_main, worker_id);
+        }
+        for (auto& thread : threads) {
+            thread.join();
+        }
+
+        if (!first_error) {
+            return std::unexpected(first_error.error());
+        }
+
+        for (const auto& worker : summary.workers) {
+            summary.tasks_executed += worker.tasks_executed;
+            summary.estimated_work += worker.estimated_work;
+        }
+
+        return summary;
+    }
+
 }

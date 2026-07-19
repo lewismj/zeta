@@ -17,6 +17,21 @@ endif()
 option(ZETA_NATIVE_OPTIMIZATIONS "Build with CPU-native instruction selection/tuning for local benchmarks" OFF)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options("$<$<CONFIG:Release>:-O3>")
+elseif(MSVC)
+    add_compile_options(
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/Oi>"
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/Ot>"
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/Oy>"
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/GL>"
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/Gw>"
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/Gy>"
+    )
+    add_link_options(
+        "$<$<CONFIG:Release>:/LTCG>"
+        "$<$<CONFIG:Release>:/OPT:REF>"
+        "$<$<CONFIG:Release>:/OPT:ICF>"
+        "$<$<CONFIG:Release>:/STACK:8388608>"
+    )
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -28,6 +43,11 @@ if(ZETA_NATIVE_OPTIMIZATIONS AND (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE
         "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-march=native>"
         "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-mtune=native>"
         "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-fomit-frame-pointer>"
+    )
+elseif(ZETA_NATIVE_OPTIMIZATIONS AND MSVC)
+    add_compile_options(
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/arch:AVX2>"
+        "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/favor:INTEL64>"
     )
 endif()
 

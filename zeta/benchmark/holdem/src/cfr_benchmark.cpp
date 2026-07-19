@@ -11,13 +11,28 @@
 #include "cfr/tables/strategy_table.h"
 #include "cfr/traversal/traversal.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cerrno>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <random>
+#include <span>
+#include <string>
 #include <thread>
+#include <type_traits>
+#include <vector>
+#if defined(__linux__)
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 using namespace zeta::holdem::cfr;
 using namespace zeta::holdem::cfr::scheduler;
@@ -35,11 +50,17 @@ namespace {
     constexpr uint32_t CFR_ITERATION_BENCHMARK_BOARD_COUNT = 64;
     constexpr uint32_t CACHED_TERMINAL_BATCH_SIZE = 1024;
     constexpr uint32_t BENCHMARK_WORK_DEPTH_SHIFT = 16;
+    constexpr uint64_t HARDWARE_COUNTER_CACHE_LINE_BYTES = 64;
 
     struct terminal_combo_work_item {
         zeta::holdem::combination_index combo = 0;
         float reach = 0.0f;
         uint16_t payoff_index = 0;
+    };
+
+    struct regret_strategy_value {
+        float regret = 0.0f;
+        float strategy_sum = 0.0f;
     };
 
     struct alignas(64) benchmark_worker_counter {
@@ -49,6 +70,164 @@ namespace {
         uint64_t regret_updates = 0;
         uint64_t strategy_updates = 0;
     };
+
+    enum class cfr_iteration_hardware_measurement {
+        l1_miss_rate,
+        llc_miss_rate,
+        memory_bandwidth,
+    };
+
+    struct hardware_counter_sample {
+        uint64_t references = 0;
+        uint64_t misses = 0;
+        uint64_t cycles = 0;
+        uint64_t instructions = 0;
+    };
+
+#if defined(__linux__)
+    struct perf_counter_spec {
+        uint32_t type = 0;
+        uint64_t config = 0;
+    };
+
+    uint64_t perf_cache_config(const uint64_t cache_id, const uint64_t operation, const uint64_t result)
+    {
+        return cache_id | (operation << 8u) | (result << 16u);
+    }
+
+    int perf_event_open(perf_event_attr& attr, const pid_t pid, const int cpu, const int group_fd, const unsigned long flags)
+    {
+        return static_cast<int>(::syscall(__NR_perf_event_open, &attr, pid, cpu, group_fd, flags));
+    }
+
+    class perf_counter_group {
+    public:
+        explicit perf_counter_group(std::span<const perf_counter_spec> specs)
+        {
+            fds_.reserve(specs.size());
+
+            for (const auto& spec : specs) {
+                perf_event_attr attr{};
+                attr.size = sizeof(attr);
+                attr.type = spec.type;
+                attr.config = spec.config;
+                attr.disabled = fds_.empty() ? 1u : 0u;
+                attr.exclude_kernel = 1u;
+                attr.exclude_hv = 1u;
+                attr.read_format = PERF_FORMAT_GROUP;
+
+                const int group_fd = fds_.empty() ? -1 : fds_.front();
+                const int fd = perf_event_open(attr, 0, -1, group_fd, 0);
+                if (fd == -1) {
+                    error_ = std::strerror(errno);
+                    close_fds();
+                    return;
+                }
+
+                fds_.push_back(fd);
+            }
+        }
+
+        perf_counter_group(const perf_counter_group&) = delete;
+        perf_counter_group& operator=(const perf_counter_group&) = delete;
+
+        ~perf_counter_group()
+        {
+            close_fds();
+        }
+
+        [[nodiscard]] bool valid() const
+        {
+            return !fds_.empty() && error_.empty();
+        }
+
+        [[nodiscard]] const std::string& error() const
+        {
+            return error_;
+        }
+
+        [[nodiscard]] bool start()
+        {
+            if (::ioctl(fds_.front(), PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP) == -1) {
+                error_ = std::strerror(errno);
+                return false;
+            }
+            if (::ioctl(fds_.front(), PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP) == -1) {
+                error_ = std::strerror(errno);
+                return false;
+            }
+            return true;
+        }
+
+        [[nodiscard]] std::optional<std::vector<uint64_t>> stop_and_read()
+        {
+            if (::ioctl(fds_.front(), PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP) == -1) {
+                error_ = std::strerror(errno);
+                return std::nullopt;
+            }
+
+            std::vector<uint64_t> read_buffer(fds_.size() + 1u, 0);
+            const auto bytes_to_read = static_cast<ssize_t>(read_buffer.size() * sizeof(uint64_t));
+            const auto bytes_read = ::read(fds_.front(), read_buffer.data(), static_cast<size_t>(bytes_to_read));
+            if (bytes_read != bytes_to_read) {
+                error_ = bytes_read == -1 ? std::strerror(errno) : "short perf counter read";
+                return std::nullopt;
+            }
+            if (read_buffer.front() != fds_.size()) {
+                error_ = "unexpected perf counter group size";
+                return std::nullopt;
+            }
+
+            return std::vector<uint64_t>{read_buffer.begin() + 1, read_buffer.end()};
+        }
+
+    private:
+        std::vector<int> fds_;
+        std::string error_;
+
+        void close_fds()
+        {
+            for (const auto fd : fds_) {
+                ::close(fd);
+            }
+            fds_.clear();
+        }
+    };
+
+    std::array<perf_counter_spec, 4> make_miss_rate_perf_specs(const bool llc)
+    {
+        if (llc) {
+            return {{
+                {PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES},
+                {PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES},
+                {PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES},
+                {PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS},
+            }};
+        }
+
+        return {{
+            {PERF_TYPE_HW_CACHE, perf_cache_config(
+                PERF_COUNT_HW_CACHE_L1D,
+                PERF_COUNT_HW_CACHE_OP_READ,
+                PERF_COUNT_HW_CACHE_RESULT_ACCESS)},
+            {PERF_TYPE_HW_CACHE, perf_cache_config(
+                PERF_COUNT_HW_CACHE_L1D,
+                PERF_COUNT_HW_CACHE_OP_READ,
+                PERF_COUNT_HW_CACHE_RESULT_MISS)},
+            {PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES},
+            {PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS},
+        }};
+    }
+
+    std::array<perf_counter_spec, 3> make_memory_bandwidth_perf_specs()
+    {
+        return {{
+            {PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES},
+            {PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES},
+            {PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS},
+        }};
+    }
+#endif
 
     class benchmark_scheduler_pool {
     public:
@@ -117,6 +296,7 @@ namespace {
                         return std::invoke(task_callback, worker, task);
                     }
                 };
+
                 next_task_.store(0, std::memory_order_relaxed);
                 completed_workers_ = 0;
                 first_error_ = {};
@@ -216,6 +396,101 @@ namespace {
                         worker.estimated_work += task.partition->estimated_work;
                     }
                 }
+
+                {
+                    const std::lock_guard lock{mutex_};
+                    ++completed_workers_;
+                }
+                done_cv_.notify_one();
+            }
+        }
+    };
+
+    class benchmark_board_range_pool {
+    public:
+        explicit benchmark_board_range_pool(const uint32_t worker_count) :
+            worker_count_(worker_count)
+        {
+            for (uint32_t worker_id = 0; worker_id < worker_count; ++worker_id) {
+                threads_.emplace_back([this, worker_id] {
+                    worker_loop(worker_id);
+                });
+            }
+        }
+
+        benchmark_board_range_pool(const benchmark_board_range_pool&) = delete;
+        benchmark_board_range_pool& operator=(const benchmark_board_range_pool&) = delete;
+
+        ~benchmark_board_range_pool()
+        {
+            {
+                const std::lock_guard lock{mutex_};
+                stop_ = true;
+                ++generation_;
+            }
+            work_cv_.notify_all();
+            for (auto& thread : threads_) {
+                thread.join();
+            }
+        }
+
+        template <typename TaskCallback>
+        void run(const uint32_t board_count, TaskCallback&& task_callback)
+        {
+            {
+                const std::lock_guard lock{mutex_};
+                board_count_ = board_count;
+                completed_workers_ = 0;
+                callback_ = [&task_callback](const uint32_t worker_id, const uint32_t begin_board, const uint32_t end_board) {
+                    std::invoke(task_callback, worker_id, begin_board, end_board);
+                };
+                ++generation_;
+            }
+
+            work_cv_.notify_all();
+
+            std::unique_lock lock{mutex_};
+            done_cv_.wait(lock, [this] {
+                return completed_workers_ == worker_count_;
+            });
+        }
+
+    private:
+        uint32_t worker_count_ = 0;
+        uint32_t board_count_ = 0;
+        std::vector<std::thread> threads_;
+        std::mutex mutex_;
+        std::condition_variable work_cv_;
+        std::condition_variable done_cv_;
+        std::function<void(uint32_t, uint32_t, uint32_t)> callback_;
+        std::size_t completed_workers_ = 0;
+        uint64_t generation_ = 0;
+        bool stop_ = false;
+
+        void worker_loop(const uint32_t worker_id)
+        {
+            uint64_t observed_generation = 0;
+            while (true) {
+                uint32_t board_count = 0;
+                std::function<void(uint32_t, uint32_t, uint32_t)> callback;
+                {
+                    std::unique_lock lock{mutex_};
+                    work_cv_.wait(lock, [this, observed_generation] {
+                        return stop_ || generation_ != observed_generation;
+                    });
+                    if (stop_) {
+                        break;
+                    }
+                    observed_generation = generation_;
+                    board_count = board_count_;
+                    callback = callback_;
+                }
+
+                const auto base = board_count / worker_count_;
+                const auto remainder = board_count % worker_count_;
+                const auto begin_board = worker_id * base + std::min(worker_id, remainder);
+                const auto end_board = begin_board + base + (worker_id < remainder ? 1u : 0u);
+                callback(worker_id, begin_board, end_board);
 
                 {
                     const std::lock_guard lock{mutex_};
@@ -561,8 +836,56 @@ static void BM_BoardPartitionSchedulerRealistic(benchmark::State& state)
         REALISTIC_BENCHMARK_TASK_CHUNK_SIZE);
 }
 
+static void BM_BoardPartitionStaticRangeRealistic(benchmark::State& state)
+{
+    auto graph = create_benchmark_tree(4, 5);
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{REALISTIC_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
+    const auto worker_count = static_cast<uint32_t>(state.range(0));
+    benchmark_board_range_pool pool(worker_count);
+
+    uint64_t last_actions_scanned = 0;
+    for (auto _ : state) {
+        std::vector<benchmark_worker_counter> counters(worker_count);
+        pool.run(
+            REALISTIC_BENCHMARK_BOARD_COUNT,
+            [&graph, &partitions, &counters](const uint32_t worker_id, const uint32_t begin_board, const uint32_t end_board) {
+                uint64_t local_actions = 0;
+                for (uint32_t board = begin_board; board < end_board; ++board) {
+                    benchmark::DoNotOptimize(board);
+                    for (const auto& partition : partitions) {
+                        for (uint32_t repeat = 0; repeat < REALISTIC_BENCHMARK_TASK_WORK_REPEATS; ++repeat) {
+                            for (uint32_t node_id = partition.begin_node; node_id < partition.end_node; ++node_id) {
+                                local_actions += graph.action_count(node_id);
+                            }
+                        }
+                    }
+                }
+                counters[worker_id].actions += local_actions;
+            });
+
+        last_actions_scanned = 0;
+        for (const auto& counter : counters) {
+            last_actions_scanned += counter.actions;
+        }
+        benchmark::DoNotOptimize(last_actions_scanned);
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["workers"] = static_cast<double>(worker_count);
+    state.counters["boards"] = static_cast<double>(REALISTIC_BENCHMARK_BOARD_COUNT);
+    state.counters["partitions"] = static_cast<double>(partitions.size());
+    state.counters["task_work_repeats"] = static_cast<double>(REALISTIC_BENCHMARK_TASK_WORK_REPEATS);
+    state.counters["actions/s"] = benchmark::Counter(
+        static_cast<double>(last_actions_scanned),
+        benchmark::Counter::kIsIterationInvariantRate);
+}
+
 BENCHMARK(BM_BoardPartitionSchedulerOverhead)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_BoardPartitionSchedulerRealistic)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_BoardPartitionStaticRangeRealistic)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 
 /**
  * Traversal scan throughput benchmark.
@@ -668,11 +991,14 @@ void set_cfr_iteration_counters(
     state.counters["graph_nodes"] = static_cast<double>(graph.node_count);
 }
 
-void run_cfr_iteration_benchmark(
+template <typename BeforeBenchmark, typename AfterBenchmark>
+void run_cfr_iteration_benchmark_impl(
     benchmark::State& state,
     const game_graph& graph,
     const uint32_t board_count = CFR_ITERATION_BENCHMARK_BOARD_COUNT,
-    const uint32_t task_chunk_size = 1)
+    const uint32_t task_chunk_size = 1,
+    BeforeBenchmark&& before_benchmark = [] {},
+    AfterBenchmark&& after_benchmark = [] {})
 {
     auto layout = require_layout(make_action_table_layout(graph));
     regret_table regrets(layout);
@@ -698,6 +1024,18 @@ void run_cfr_iteration_benchmark(
     traversal_cfg.initial_reach_ip = 1.0f;
 
     std::vector<benchmark_worker_counter> counters(worker_count);
+    const auto should_run = [&] {
+        if constexpr (std::is_same_v<std::invoke_result_t<BeforeBenchmark>, bool>) {
+            return std::invoke(before_benchmark);
+        } else {
+            std::invoke(before_benchmark);
+            return true;
+        }
+    }();
+    if (!should_run) {
+        return;
+    }
+
     for (auto _ : state) {
         std::fill(counters.begin(), counters.end(), benchmark_worker_counter{});
 
@@ -734,6 +1072,7 @@ void run_cfr_iteration_benchmark(
         benchmark::DoNotOptimize(strategy_sums.sums.data());
         benchmark::ClobberMemory();
     }
+    std::invoke(after_benchmark);
 
     set_cfr_iteration_counters(
         state,
@@ -742,6 +1081,170 @@ void run_cfr_iteration_benchmark(
         board_count,
         counters);
     state.counters["task_chunk_size"] = static_cast<double>(task_chunk_size);
+}
+
+void run_cfr_iteration_benchmark(
+    benchmark::State& state,
+    const game_graph& graph,
+    const uint32_t board_count = CFR_ITERATION_BENCHMARK_BOARD_COUNT,
+    const uint32_t task_chunk_size = 1)
+{
+    run_cfr_iteration_benchmark_impl(state, graph, board_count, task_chunk_size, [] {}, [] {});
+}
+
+#if defined(__linux__)
+void set_common_hardware_counters(benchmark::State& state, const hardware_counter_sample& sample)
+{
+    state.counters["cycles/iter"] = benchmark::Counter(
+        static_cast<double>(sample.cycles),
+        benchmark::Counter::kAvgIterations);
+    state.counters["instructions/iter"] = benchmark::Counter(
+        static_cast<double>(sample.instructions),
+        benchmark::Counter::kAvgIterations);
+    state.counters["instructions/cycle"] = sample.cycles == 0u
+        ? 0.0
+        : static_cast<double>(sample.instructions) / static_cast<double>(sample.cycles);
+}
+
+void set_miss_rate_counters(
+    benchmark::State& state,
+    const hardware_counter_sample& sample,
+    const char* reference_counter_name,
+    const char* miss_counter_name,
+    const char* miss_rate_counter_name)
+{
+    state.counters[reference_counter_name] = benchmark::Counter(
+        static_cast<double>(sample.references),
+        benchmark::Counter::kAvgIterations);
+    state.counters[miss_counter_name] = benchmark::Counter(
+        static_cast<double>(sample.misses),
+        benchmark::Counter::kAvgIterations);
+    state.counters[miss_rate_counter_name] = sample.references == 0u
+        ? 0.0
+        : static_cast<double>(sample.misses) / static_cast<double>(sample.references);
+    set_common_hardware_counters(state, sample);
+}
+#endif
+
+void run_cfr_iteration_hardware_benchmark(
+    benchmark::State& state,
+    const cfr_iteration_hardware_measurement measurement)
+{
+#if defined(__linux__)
+    std::optional<hardware_counter_sample> sample;
+    auto graph = create_benchmark_tree(3, 6);
+
+    switch (measurement) {
+    case cfr_iteration_hardware_measurement::l1_miss_rate: {
+        const auto specs = make_miss_rate_perf_specs(false);
+        perf_counter_group counters{specs};
+        if (!counters.valid()) {
+            state.SkipWithError(counters.error().c_str());
+            return;
+        }
+        run_cfr_iteration_benchmark_impl(
+            state,
+            graph,
+            REALISTIC_BENCHMARK_BOARD_COUNT,
+            REALISTIC_BENCHMARK_TASK_CHUNK_SIZE,
+            [&] {
+                if (!counters.start()) {
+                    state.SkipWithError(counters.error().c_str());
+                    return false;
+                }
+                return true;
+            },
+            [&] {
+                if (auto values = counters.stop_and_read()) {
+                    sample = hardware_counter_sample{(*values)[0], (*values)[1], (*values)[2], (*values)[3]};
+                } else {
+                    state.SkipWithError(counters.error().c_str());
+                }
+            });
+        if (sample) {
+            set_miss_rate_counters(state, *sample, "L1_loads/iter", "L1_load_misses/iter", "L1_miss_rate");
+        }
+        return;
+    }
+    case cfr_iteration_hardware_measurement::llc_miss_rate: {
+        const auto specs = make_miss_rate_perf_specs(true);
+        perf_counter_group counters{specs};
+        if (!counters.valid()) {
+            state.SkipWithError(counters.error().c_str());
+            return;
+        }
+        run_cfr_iteration_benchmark_impl(
+            state,
+            graph,
+            REALISTIC_BENCHMARK_BOARD_COUNT,
+            REALISTIC_BENCHMARK_TASK_CHUNK_SIZE,
+            [&] {
+                if (!counters.start()) {
+                    state.SkipWithError(counters.error().c_str());
+                    return false;
+                }
+                return true;
+            },
+            [&] {
+                if (auto values = counters.stop_and_read()) {
+                    sample = hardware_counter_sample{(*values)[0], (*values)[1], (*values)[2], (*values)[3]};
+                } else {
+                    state.SkipWithError(counters.error().c_str());
+                }
+            });
+        if (sample) {
+            set_miss_rate_counters(state, *sample, "cache_references/iter", "cache_misses/iter", "cache_miss_rate");
+        }
+        return;
+    }
+    case cfr_iteration_hardware_measurement::memory_bandwidth: {
+        const auto specs = make_memory_bandwidth_perf_specs();
+        perf_counter_group counters{specs};
+        if (!counters.valid()) {
+            state.SkipWithError(counters.error().c_str());
+            return;
+        }
+        run_cfr_iteration_benchmark_impl(
+            state,
+            graph,
+            REALISTIC_BENCHMARK_BOARD_COUNT,
+            REALISTIC_BENCHMARK_TASK_CHUNK_SIZE,
+            [&] {
+                if (!counters.start()) {
+                    state.SkipWithError(counters.error().c_str());
+                    return false;
+                }
+                return true;
+            },
+            [&] {
+                if (auto values = counters.stop_and_read()) {
+                    sample = hardware_counter_sample{
+                        0,
+                        (*values)[0],
+                        (*values)[1],
+                        (*values)[2],
+                    };
+                } else {
+                    state.SkipWithError(counters.error().c_str());
+                }
+            });
+        if (sample) {
+            const auto bytes = sample->misses * HARDWARE_COUNTER_CACHE_LINE_BYTES;
+            state.counters["cache_miss_bytes/s"] = benchmark::Counter(
+                static_cast<double>(bytes),
+                benchmark::Counter::kIsRate);
+            state.counters["cache_misses/iter"] = benchmark::Counter(
+                static_cast<double>(sample->misses),
+                benchmark::Counter::kAvgIterations);
+            set_common_hardware_counters(state, *sample);
+        }
+        return;
+    }
+    }
+#else
+    (void) measurement;
+    state.SkipWithError("CFR iteration hardware measurements require Linux perf_event_open");
+#endif
 }
 
 static void BM_WorkerTraversalSmallTree(benchmark::State& state)
@@ -856,10 +1359,32 @@ static void BM_CFRIterationLargeRealistic(benchmark::State& state)
         REALISTIC_BENCHMARK_TASK_CHUNK_SIZE);
 }
 
+#if defined(__linux__)
+static void BM_CFRIteration_L1MissRate(benchmark::State& state)
+{
+    run_cfr_iteration_hardware_benchmark(state, cfr_iteration_hardware_measurement::l1_miss_rate);
+}
+
+static void BM_CFRIteration_LLCMissRate(benchmark::State& state)
+{
+    run_cfr_iteration_hardware_benchmark(state, cfr_iteration_hardware_measurement::llc_miss_rate);
+}
+
+static void BM_CFRIteration_MemoryBandwidth(benchmark::State& state)
+{
+    run_cfr_iteration_hardware_benchmark(state, cfr_iteration_hardware_measurement::memory_bandwidth);
+}
+#endif
+
 BENCHMARK(BM_CFRIterationSmall)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIterationMedium)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIterationLarge)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIterationLargeRealistic)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+#if defined(__linux__)
+BENCHMARK(BM_CFRIteration_L1MissRate)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_CFRIteration_LLCMissRate)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_CFRIteration_MemoryBandwidth)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+#endif
 
 static void BM_RiverTerminalLeafTraversal(benchmark::State& state)
 {
@@ -1520,6 +2045,55 @@ static void BM_CFRIterationWithUpdates(benchmark::State& state)
         benchmark::Counter::kIsIterationInvariantRate);
 }
 
+static void BM_CFRUpdateSeparateStorage(benchmark::State& state)
+{
+    auto graph = create_benchmark_tree(4, 4);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::vector<float> deltas(layout.value_count(), 0.125f);
+    std::vector<float> probabilities(layout.value_count(), 0.25f);
+
+    for (auto _ : state) {
+        for (uint32_t value = 0; value < layout.value_count(); ++value) {
+            regrets.regrets[value] = std::max(regrets.regrets[value] + deltas[value], 0.0f);
+        }
+        for (uint32_t value = 0; value < layout.value_count(); ++value) {
+            strategy_sums.sums[value] += probabilities[value];
+        }
+        benchmark::DoNotOptimize(regrets.regrets.data());
+        benchmark::DoNotOptimize(strategy_sums.sums.data());
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["values/s"] = benchmark::Counter(
+        static_cast<double>(layout.value_count()),
+        benchmark::Counter::kIsIterationInvariantRate);
+}
+
+static void BM_CFRUpdateInterleavedStorage(benchmark::State& state)
+{
+    auto graph = create_benchmark_tree(4, 4);
+    auto layout = require_layout(make_action_table_layout(graph));
+    std::vector<regret_strategy_value> values(layout.value_count());
+    std::vector<float> deltas(layout.value_count(), 0.125f);
+    std::vector<float> probabilities(layout.value_count(), 0.25f);
+
+    for (auto _ : state) {
+        for (uint32_t value = 0; value < layout.value_count(); ++value) {
+            auto& entry = values[value];
+            entry.regret = std::max(entry.regret + deltas[value], 0.0f);
+            entry.strategy_sum += probabilities[value];
+        }
+        benchmark::DoNotOptimize(values.data());
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["values/s"] = benchmark::Counter(
+        static_cast<double>(layout.value_count()),
+        benchmark::Counter::kIsIterationInvariantRate);
+}
+
 BENCHMARK(BM_RiverTerminalLeafTraversal);
 BENCHMARK(BM_RiverTerminalLeafTraversalCachedReach);
 BENCHMARK(BM_RiverTerminalLeafTraversalCachedReachBatch);
@@ -1542,6 +2116,8 @@ BENCHMARK(BM_RegretMatching);
 BENCHMARK(BM_RegretUpdate);
 BENCHMARK(BM_StrategyAverage);
 BENCHMARK(BM_CFRIterationWithUpdates);
+BENCHMARK(BM_CFRUpdateSeparateStorage);
+BENCHMARK(BM_CFRUpdateInterleavedStorage);
 
 /**
  * Validation throughput benchmark.

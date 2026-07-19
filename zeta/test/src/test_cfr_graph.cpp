@@ -885,6 +885,64 @@ BOOST_AUTO_TEST_CASE(board_partition_scheduler_executes_each_task_once) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(static_board_partition_scheduler_executes_each_task_once) {
+    auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{2, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    auto plan = make_board_partition_plan(16, partitions).value();
+
+    std::vector<std::atomic<uint32_t>> task_hits(plan.task_count());
+    for (auto& hit : task_hits) {
+        hit.store(0, std::memory_order_relaxed);
+    }
+
+    auto result = run_static_board_partition_scheduler(
+        plan,
+        scheduler_runtime_config{4},
+        [&task_hits, &plan](const scheduler_worker_state& worker, const board_partition_task& task) {
+            BOOST_CHECK_LT(worker.worker_id, 4u);
+            BOOST_CHECK_LT(task.board_index, plan.board_count);
+            BOOST_CHECK_LT(task.partition_index, plan.partitions.size());
+            BOOST_CHECK_EQUAL(task.partition, &plan.partitions[task.partition_index]);
+            task_hits[task.task_index].fetch_add(1, std::memory_order_relaxed);
+        });
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(result->tasks_executed, plan.task_count());
+    BOOST_CHECK_EQUAL(result->workers.size(), 4u);
+    BOOST_CHECK_EQUAL(result->estimated_work, plan.estimated_work());
+    for (const auto& hit : task_hits) {
+        BOOST_CHECK_EQUAL(hit.load(std::memory_order_relaxed), 1u);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(static_board_partition_scheduler_reports_task_failure_context) {
+    auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{2, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    auto plan = make_board_partition_plan(3, partitions).value();
+
+    auto result = run_static_board_partition_scheduler(
+        plan,
+        scheduler_runtime_config{2},
+        [](const scheduler_worker_state&, const board_partition_task& task) -> std::expected<void, scheduler_error> {
+            if (task.board_index == 2u && task.partition_index == 1u) {
+                return std::unexpected(scheduler_error{scheduler_error_kind::task_failed});
+            }
+            return {};
+        });
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == scheduler_error_kind::task_failed);
+    BOOST_CHECK_EQUAL(result.error().task_index, 2u * plan.partitions.size() + 1u);
+    BOOST_CHECK_EQUAL(result.error().board_index, 2u);
+    BOOST_CHECK_EQUAL(result.error().partition_index, 1u);
+}
+
 BOOST_AUTO_TEST_CASE(board_partition_scheduler_rejects_zero_workers) {
     auto graph = create_simple_tree();
     auto partitions = require_partitions(

@@ -109,3 +109,18 @@ add_custom_target(zeta-bench-holdem-cfr-json
     VERBATIM
     COMMENT "Running Google Benchmark Hold'em CFR suite and writing JSON baseline"
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_program(PERF_EXECUTABLE perf)
+    if(PERF_EXECUTABLE)
+        add_custom_target(zeta-bench-holdem-cfr-perf
+            COMMAND ${PERF_EXECUTABLE} stat -e cache-misses,LLC-load-misses,cycles,instructions
+                $<TARGET_FILE:zeta-bench-holdem-cfr>
+                --benchmark_filter=BM_CFRIteration
+            DEPENDS zeta-bench-holdem-cfr
+            USES_TERMINAL
+            VERBATIM
+            COMMENT "Profiling Hold'em CFR iteration benchmarks with perf stat"
+        )
+    endif()
+endif()
