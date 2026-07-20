@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cfr/chance/chance.h"
 #include "cfr/graph/graph.h"
 #include "cfr/tables/delta_buffer.h"
 #include "cfr/tables/regret_table.h"
@@ -63,6 +64,7 @@ namespace zeta::holdem::cfr::traversal {
         float initial_reach_oop = 1.0f;
         float initial_reach_ip = 1.0f;
         float initial_chance_weight = 1.0f;
+        const chance_event_table* chance_events = nullptr;
     };
 
     struct traversal_diagnostics {
@@ -75,6 +77,11 @@ namespace zeta::holdem::cfr::traversal {
         uint32_t max_stack_depth = 0;
         uint32_t max_action_count = 0;
         uint32_t local_delta_entries_touched = 0;
+        uint64_t chance_outcomes = 0;
+        uint64_t regret_updates = 0;
+        uint64_t strategy_updates = 0;
+        uint64_t terminal_evaluations = 0;
+        uint64_t reduction_values = 0;
     };
 
     struct traversal_result {
@@ -145,6 +152,7 @@ namespace zeta::holdem::cfr::traversal {
         worker_input_views inputs{};
         std::vector<traversal_frame> stack;
         std::vector<float> node_utility;
+        std::vector<float> child_action_value;
         std::vector<float> edge_probability;
         table_delta_buffer delta_buffer;
         traversal_diagnostics diagnostics{};
@@ -162,6 +170,11 @@ namespace zeta::holdem::cfr::traversal {
         [[nodiscard]] uint32_t edge_probability_capacity() const noexcept
         {
             return static_cast<uint32_t>(edge_probability.size());
+        }
+
+        [[nodiscard]] uint32_t child_action_value_capacity() const noexcept
+        {
+            return static_cast<uint32_t>(child_action_value.size());
         }
     };
 
@@ -271,6 +284,7 @@ namespace zeta::holdem::cfr::traversal {
         };
         worker.stack.resize(static_cast<size_t>(graph.max_depth) + 1u + stack_margin);
         worker.node_utility.resize(graph.node_count);
+        worker.child_action_value.resize(graph.edges.size());
         worker.edge_probability.resize(graph.edges.size());
         worker.diagnostics = {};
 
@@ -376,15 +390,28 @@ namespace zeta::holdem::cfr::traversal {
             }
         }
 
+        [[nodiscard]] inline float chance_probability_for_edge(
+            const game_graph& graph,
+            const traversal_config& config,
+            const uint32_t node_id,
+            const edge child_edge) noexcept
+        {
+            const auto action_count = graph.row_offsets[node_id + 1u] - graph.row_offsets[node_id];
+            if (config.chance_events != nullptr) {
+                return config.chance_events->probability_for_edge(node_id, child_edge);
+            }
+            return action_count == 0u ? 0.0f : 1.0f / static_cast<float>(action_count);
+        }
+
         [[nodiscard]] inline traversal_frame make_child_frame(
             const game_graph& graph,
             const worker_context& worker,
             const traversal_frame& parent,
             const edge child_edge,
-            const uint32_t edge_offset) noexcept
+            const uint32_t edge_offset,
+            const traversal_config& config) noexcept
         {
             const auto kind = graph.node_types[parent.node_id];
-            const auto action_count = graph.row_offsets[parent.node_id + 1u] - graph.row_offsets[parent.node_id];
 
             auto child = traversal_frame{};
             child.node_id = child_edge.child_node;
@@ -397,8 +424,8 @@ namespace zeta::holdem::cfr::traversal {
                 const auto probability = worker.edge_probability[edge_offset];
                 child.reach_oop *= probability;
                 child.reach_ip *= probability;
-            } else if (kind == node_kind::chance && action_count > 0u) {
-                child.chance_weight *= 1.0f / static_cast<float>(action_count);
+            } else if (kind == node_kind::chance) {
+                child.chance_weight *= chance_probability_for_edge(graph, config, parent.node_id, child_edge);
             }
 
             return child;
@@ -443,6 +470,7 @@ namespace zeta::holdem::cfr::traversal {
         }
         const auto required_edge_scratch = static_cast<uint32_t>(graph.edges.size());
         if (worker.node_utility_capacity() < graph.node_count
+            || worker.child_action_value_capacity() < required_edge_scratch
             || worker.edge_probability_capacity() < required_edge_scratch) {
             return detail::traversal_failure(
                 traversal_error_kind::scratch_capacity_exceeded,
@@ -491,6 +519,7 @@ namespace zeta::holdem::cfr::traversal {
 
                     const auto kind = graph.node_types[frame.node_id];
                     if (kind == node_kind::terminal) {
+                        ++worker.diagnostics.terminal_evaluations;
                         frame.accumulated_utility = terminal_policy(frame.node_id, frame);
                         frame.phase = exit;
                     } else {
@@ -520,8 +549,11 @@ namespace zeta::holdem::cfr::traversal {
                     const auto edge_offset = frame.next_edge_offset++;
                     const auto child_edge = graph.edges[edge_offset];
                     ++worker.diagnostics.edges_scanned;
+                    if (graph.node_types[frame.node_id] == node_kind::chance) {
+                        ++worker.diagnostics.chance_outcomes;
+                    }
 
-                    stack[stack_size] = detail::make_child_frame(graph, worker, frame, child_edge, edge_offset);
+                    stack[stack_size] = detail::make_child_frame(graph, worker, frame, child_edge, edge_offset, config);
                     ++stack_size;
                     worker.diagnostics.max_stack_depth = std::max(worker.diagnostics.max_stack_depth, stack_size);
                     break;

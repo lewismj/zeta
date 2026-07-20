@@ -63,8 +63,11 @@ namespace {
         uint64_t actions = 0;
         uint64_t nodes = 0;
         uint64_t terminal_leaves = 0;
+        uint64_t chance_outcomes = 0;
         uint64_t regret_updates = 0;
         uint64_t strategy_updates = 0;
+        uint64_t terminal_evaluations = 0;
+        uint64_t reduction_values = 0;
     };
 
     enum class cfr_iteration_hardware_measurement {
@@ -637,6 +640,49 @@ game_graph create_benchmark_tree(uint32_t branching_factor, uint32_t depth)
     return require_graph(builder.build());
 }
 
+solver_graph_annotations make_benchmark_annotations(const game_graph& graph)
+{
+    solver_graph_annotations annotations;
+    annotations.actor_by_node.assign(graph.node_count, INVALID_PLAYER);
+    annotations.chance_event_id_by_node.assign(graph.node_count, INVALID_METADATA_ID);
+    annotations.terminal_leaf_id_by_node.assign(graph.node_count, INVALID_METADATA_ID);
+    annotations.state_by_node.assign(
+        graph.node_count,
+        solver_node_state_metadata{
+            .street = holdem_street::river,
+            .public_state_id = 1,
+            .betting_state_id = 1
+        });
+
+    uint32_t chance_event_id = 0;
+    uint32_t terminal_leaf_id = 0;
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (graph.is_player_node(node_id)) {
+            annotations.actor_by_node[node_id] = 0;
+        }
+        if (graph.node_types[node_id] == node_kind::chance) {
+            annotations.chance_event_id_by_node[node_id] = chance_event_id++;
+        }
+        if (graph.is_terminal(node_id)) {
+            annotations.terminal_leaf_id_by_node[node_id] = terminal_leaf_id++;
+        }
+    }
+
+    return annotations;
+}
+
+game_graph create_solver_iteration_tree()
+{
+    graph_builder builder;
+    const auto root = builder.add_node(node_kind::player);
+    const auto left = builder.add_node(node_kind::terminal);
+    const auto right = builder.add_node(node_kind::terminal);
+    builder.add_edge(root, left, 0);
+    builder.add_edge(root, right, 1);
+    builder.set_infoset_id(root, 0);
+    return require_graph(builder.build());
+}
+
 /**
  * Graph build time benchmark.
  */
@@ -959,14 +1005,18 @@ void set_cfr_iteration_counters(
     const game_graph& graph,
     const uint32_t worker_count,
     const uint32_t board_count,
-    std::span<const benchmark_worker_counter> counters)
+    std::span<const benchmark_worker_counter> counters,
+    const reduction_diagnostics& reduction)
 {
     benchmark_worker_counter total{};
     for (const auto& counter : counters) {
         total.nodes += counter.nodes;
         total.terminal_leaves += counter.terminal_leaves;
+        total.chance_outcomes += counter.chance_outcomes;
         total.regret_updates += counter.regret_updates;
         total.strategy_updates += counter.strategy_updates;
+        total.terminal_evaluations += counter.terminal_evaluations;
+        total.reduction_values += counter.reduction_values;
     }
 
     state.counters["workers"] = static_cast<double>(worker_count);
@@ -978,13 +1028,31 @@ void set_cfr_iteration_counters(
     state.counters["terminal_leaves/s"] = benchmark::Counter(
         static_cast<double>(total.terminal_leaves),
         benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["chance_outcomes/s"] = benchmark::Counter(
+        static_cast<double>(total.chance_outcomes),
+        benchmark::Counter::kIsIterationInvariantRate);
     state.counters["regret_updates/s"] = benchmark::Counter(
         static_cast<double>(total.regret_updates),
         benchmark::Counter::kIsIterationInvariantRate);
     state.counters["strategy_updates/s"] = benchmark::Counter(
         static_cast<double>(total.strategy_updates),
         benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["terminal_evaluations/s"] = benchmark::Counter(
+        static_cast<double>(total.terminal_evaluations),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["reduction_values/s"] = benchmark::Counter(
+        static_cast<double>(total.reduction_values),
+        benchmark::Counter::kIsIterationInvariantRate);
     state.counters["graph_nodes"] = static_cast<double>(graph.node_count);
+    state.counters["graph_edges"] = static_cast<double>(graph.edges.size());
+    state.counters["remote_delta_count"] = static_cast<double>(reduction.remote_delta_count);
+    state.counters["remote_delta_bytes"] = static_cast<double>(reduction.remote_delta_bytes);
+    state.counters["reduction_entries"] = static_cast<double>(reduction.reduction_entries);
+    uint64_t owner_touched_values = 0;
+    for (const auto touched_values : reduction.per_owner_touched_values) {
+        owner_touched_values += touched_values;
+    }
+    state.counters["owner_touched_values"] = static_cast<double>(owner_touched_values);
 }
 
 template <typename BeforeBenchmark, typename AfterBenchmark>
@@ -1000,6 +1068,7 @@ void run_cfr_iteration_benchmark_impl(
     regret_table regrets(layout);
     strategy_sum_table strategy_sums(layout);
     const auto worker_count = static_cast<uint32_t>(state.range(0));
+    auto owner_map = make_even_infoset_owner_map(layout, worker_count).value();
     benchmark_scheduler_pool pool(worker_count);
 
     auto partitions = require_partitions(
@@ -1020,6 +1089,7 @@ void run_cfr_iteration_benchmark_impl(
     traversal_cfg.initial_reach_ip = 1.0f;
 
     std::vector<benchmark_worker_counter> counters(worker_count);
+    reduction_diagnostics last_reduction;
     const auto should_run = [&] {
         if constexpr (std::is_same_v<std::invoke_result_t<BeforeBenchmark>, bool>) {
             return std::invoke(before_benchmark);
@@ -1049,7 +1119,10 @@ void run_cfr_iteration_benchmark_impl(
                 auto& counter = counters[worker_state.worker_id];
                 counter.nodes += result->diagnostics.nodes_visited;
                 counter.terminal_leaves += result->diagnostics.terminal_nodes;
-                counter.strategy_updates += result->diagnostics.local_delta_entries_touched;
+                counter.chance_outcomes += result->diagnostics.chance_outcomes;
+                counter.regret_updates += result->diagnostics.regret_updates;
+                counter.strategy_updates += result->diagnostics.strategy_updates;
+                counter.terminal_evaluations += result->diagnostics.terminal_evaluations;
                 return std::expected<void, scheduler_error>{};
             },
             task_chunk_size);
@@ -1058,7 +1131,20 @@ void run_cfr_iteration_benchmark_impl(
             break;
         }
 
-        if (auto reduction_result = apply_worker_reductions(regrets, strategy_sums, std::span<const worker_context>{workers});
+        std::vector<const worker_context*> worker_ptrs;
+        worker_ptrs.reserve(workers.size());
+        for (const auto& worker : workers) {
+            worker_ptrs.push_back(&worker);
+        }
+        if (auto reduction_result = apply_worker_reductions(
+                regrets,
+                strategy_sums,
+                make_deterministic_reduction_plan(static_cast<uint32_t>(worker_ptrs.size())),
+                std::span<const worker_context* const>{worker_ptrs},
+                reduction_policy{.order = reduction_order::owner_range_then_worker},
+                &owner_map,
+                &last_reduction,
+                cfr_variant::vanilla);
             !reduction_result) {
             state.SkipWithError(to_string(reduction_result.error().kind));
             break;
@@ -1068,6 +1154,9 @@ void run_cfr_iteration_benchmark_impl(
         benchmark::DoNotOptimize(strategy_sums.sums.data());
         benchmark::ClobberMemory();
     }
+    if (!counters.empty()) {
+        counters.front().reduction_values = last_reduction.reduction_values;
+    }
     std::invoke(after_benchmark);
 
     set_cfr_iteration_counters(
@@ -1075,7 +1164,8 @@ void run_cfr_iteration_benchmark_impl(
         graph,
         worker_count,
         board_count,
-        counters);
+        counters,
+        last_reduction);
     state.counters["task_chunk_size"] = static_cast<double>(task_chunk_size);
 }
 
@@ -1355,6 +1445,62 @@ static void BM_CFRIterationLargeRealistic(benchmark::State& state)
         REALISTIC_BENCHMARK_TASK_CHUNK_SIZE);
 }
 
+static void BM_CFRSolverIterationTinyReference(benchmark::State& state)
+{
+    auto graph = create_solver_iteration_tree();
+    auto annotations = make_benchmark_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    terminal_utility[0] = 1.0f;
+    terminal_utility[1] = -1.0f;
+    std::vector<worker_context> workers(static_cast<uint32_t>(state.range(0)));
+    auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    context.terminal_utility_by_node = terminal_utility;
+
+    iteration_result last_result;
+    for (auto _ : state) {
+        auto result = run_cfr_iteration(
+            context,
+            iteration_config{
+                .variant = cfr_variant::vanilla,
+                .update_mode = cfr_update_mode::alternating,
+                .iteration = static_cast<uint64_t>(state.iterations()),
+                .updating_player = 0,
+                .strategy_weight = 1.0f
+            },
+            std::span<worker_context>{workers});
+        if (!result) {
+            state.SkipWithError(to_string(result.error().kind));
+            break;
+        }
+        last_result = *result;
+        benchmark::DoNotOptimize(last_result.root_utility);
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["workers"] = static_cast<double>(workers.size());
+    state.counters["nodes/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.nodes_visited),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["regret_updates/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.regret_updates),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["strategy_updates/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.strategy_updates),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["terminal_evaluations/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.terminal_evaluations),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["reduction_values/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.reduction_values),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["average_strategy_mass"] = last_result.quality.average_strategy_mass;
+    state.counters["regret_norm"] = last_result.quality.regret_norm;
+    state.counters["positive_regrets"] = static_cast<double>(last_result.quality.positive_regret_count);
+}
+
 #if defined(__linux__)
 static void BM_CFRIteration_L1MissRate(benchmark::State& state)
 {
@@ -1376,6 +1522,7 @@ BENCHMARK(BM_CFRIterationSmall)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRea
 BENCHMARK(BM_CFRIterationMedium)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIterationLarge)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIterationLargeRealistic)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_CFRSolverIterationTinyReference)->Arg(1)->Arg(2)->Arg(4)->UseRealTime();
 #if defined(__linux__)
 BENCHMARK(BM_CFRIteration_L1MissRate)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIteration_LLCMissRate)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
@@ -1933,8 +2080,25 @@ static void BM_CFRMemoryPlan(benchmark::State& state)
     }
 
     state.counters["workers"] = static_cast<double>(worker_count);
-    state.counters["planned_bytes"] = static_cast<double>(
-        estimate_cfr_memory(graph, layout, cfr_memory_plan_options{.worker_count = worker_count})->total_bytes);
+    const auto estimate = estimate_cfr_memory(
+        graph,
+        layout,
+        cfr_memory_plan_options{
+            .worker_count = worker_count,
+            .terminal_state_count = graph.terminal_count,
+            .chance_event_count = graph.terminal_count
+        }).value();
+    state.counters["planned_bytes"] = static_cast<double>(estimate.total_bytes);
+    state.counters["nodes_bytes"] = static_cast<double>(estimate.node_bytes);
+    state.counters["infoset_bytes"] = static_cast<double>(estimate.infoset_bytes);
+    state.counters["regret_bytes"] = static_cast<double>(estimate.regret_bytes);
+    state.counters["strategy_sum_bytes"] = static_cast<double>(estimate.strategy_sum_bytes);
+    state.counters["owner_map_bytes"] = static_cast<double>(estimate.owner_map_bytes);
+    state.counters["worker_delta_bytes"] = static_cast<double>(estimate.worker_delta_bytes);
+    state.counters["terminal_state_bytes"] = static_cast<double>(estimate.terminal_state_bytes);
+    state.counters["chance_event_bytes"] = static_cast<double>(estimate.chance_event_bytes);
+    state.counters["scratch_bytes"] = static_cast<double>(estimate.scratch_bytes);
+    state.counters["checkpoint_bytes"] = static_cast<double>(estimate.checkpoint_bytes);
 }
 
 static void BM_RegretMatching(benchmark::State& state)

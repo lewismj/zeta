@@ -15,7 +15,9 @@
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <future>
+#include <sstream>
 #include <type_traits>
 
 using namespace zeta::holdem::cfr;
@@ -930,6 +932,7 @@ BOOST_AUTO_TEST_CASE(traversal_keeps_worker_storage_capacity_stable_after_setup)
 
     const auto stack_capacity = worker.stack.capacity();
     const auto node_utility_capacity = worker.node_utility.capacity();
+    const auto child_action_value_capacity = worker.child_action_value.capacity();
     const auto edge_probability_capacity = worker.edge_probability.capacity();
     const auto delta_entry_capacity = worker.delta_buffer.entry_capacity();
     const auto regret_delta_capacity = worker.delta_buffer.regret_delta_capacity();
@@ -940,6 +943,7 @@ BOOST_AUTO_TEST_CASE(traversal_keeps_worker_storage_capacity_stable_after_setup)
         BOOST_REQUIRE(result.has_value());
         BOOST_CHECK_EQUAL(worker.stack.capacity(), stack_capacity);
         BOOST_CHECK_EQUAL(worker.node_utility.capacity(), node_utility_capacity);
+        BOOST_CHECK_EQUAL(worker.child_action_value.capacity(), child_action_value_capacity);
         BOOST_CHECK_EQUAL(worker.edge_probability.capacity(), edge_probability_capacity);
         BOOST_CHECK_EQUAL(worker.delta_buffer.entry_capacity(), delta_entry_capacity);
         BOOST_CHECK_EQUAL(worker.delta_buffer.regret_delta_capacity(), regret_delta_capacity);
@@ -1142,6 +1146,96 @@ BOOST_AUTO_TEST_CASE(traversal_rejects_invalid_terminal_state_reference) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+BOOST_AUTO_TEST_SUITE(cfr_chance_events)
+
+BOOST_AUTO_TEST_CASE(chance_event_table_validates_graph_child_alignment_and_probability_sum) {
+    auto graph = create_chance_tree();
+    auto chance_events = make_uniform_chance_event_table(graph);
+
+    auto result = validate_chance_event_table(graph, chance_events);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(chance_events.events.size(), 2u);
+    BOOST_CHECK_EQUAL(chance_events.outcomes.size(), 4u);
+    for (const auto& event : chance_events.events) {
+        double probability_sum = 0.0;
+        for (const auto& outcome : chance_events.event_outcomes(event)) {
+            probability_sum += outcome.probability;
+            BOOST_CHECK_EQUAL(outcome.board_partition_id, outcome.action_index);
+        }
+        BOOST_CHECK_SMALL(probability_sum - 1.0, 0.00001);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(chance_event_table_rejects_dead_card_collisions) {
+    auto graph = create_chance_tree();
+    auto chance_events = make_uniform_chance_event_table(graph);
+    chance_events.outcomes.front().cards = card(0, 0);
+    chance_events.outcomes.front().dead_cards = card(0, 0);
+
+    auto result = validate_chance_event_table(graph, chance_events);
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == chance_table_error_kind::dead_card_collision);
+}
+
+BOOST_AUTO_TEST_CASE(chance_traversal_uses_enumerated_outcome_probabilities) {
+    graph_builder builder;
+    const auto root = builder.add_node(node_kind::chance);
+    const auto low = builder.add_node(node_kind::terminal);
+    const auto high = builder.add_node(node_kind::terminal);
+    builder.add_edge(root, low, 0);
+    builder.add_edge(root, high, 1);
+    auto graph = require_graph(builder.build());
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    worker_context worker;
+    require_prepared_worker(worker, graph, regrets);
+
+    auto chance_events = make_uniform_chance_event_table(graph);
+    auto& first = chance_events.outcomes[chance_events.events.front().first_outcome];
+    auto& second = chance_events.outcomes[chance_events.events.front().first_outcome + 1u];
+    first.probability = 0.25f;
+    second.probability = 0.75f;
+
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    terminal_utility[0] = 2.0f;
+    terminal_utility[1] = 10.0f;
+    traversal_config config;
+    config.chance_events = &chance_events;
+    config.initial_reach_ip = 0.0f;
+
+    auto result = traverse_game_tree(worker, table_terminal_policy{terminal_utility}, config);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_SMALL(result->root_utility - 8.0f, 0.00001f);
+    BOOST_CHECK_EQUAL(result->diagnostics.chance_outcomes, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(public_card_chance_enumeration_is_blocker_safe) {
+    const auto dead_cards = card(0, 0) | card(1, 1);
+    const auto flop_outcomes = enumerate_flop_outcomes(dead_cards);
+    const auto turn_outcomes = enumerate_turn_outcomes(card(2, 2) | card(2, 3) | card(2, 4), dead_cards);
+
+    BOOST_CHECK_EQUAL(flop_outcomes.size(), 19600u);
+    BOOST_CHECK_EQUAL(turn_outcomes.size(), 47u);
+    for (const auto& outcome : turn_outcomes) {
+        BOOST_CHECK_EQUAL(outcome.cards & dead_cards, 0u);
+        BOOST_CHECK_EQUAL(outcome.cards & (card(2, 2) | card(2, 3) | card(2, 4)), 0u);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(chance_board_partition_count_tracks_enumerated_outcomes) {
+    auto graph = create_chance_tree();
+    auto chance_events = make_uniform_chance_event_table(graph);
+    chance_events.outcomes[0].board_partition_id = 4;
+    chance_events.outcomes[1].board_partition_id = 7;
+
+    BOOST_CHECK_EQUAL(chance_board_partition_count(chance_events), 8u);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 BOOST_AUTO_TEST_SUITE(cfr_solver_iteration)
 
 BOOST_AUTO_TEST_CASE(cfr_context_owns_graph_tables_and_cached_river_reach) {
@@ -1170,6 +1264,316 @@ BOOST_AUTO_TEST_CASE(cfr_context_owns_graph_tables_and_cached_river_reach) {
     BOOST_CHECK_EQUAL(context_result->river.workspace.reach[1].active_count, 1u);
 }
 
+BOOST_AUTO_TEST_CASE(cfr_engine_selects_heads_up_and_nway_kernels_at_compile_time) {
+    static_assert(cfr_engine<2>::heads_up);
+    static_assert(!cfr_engine<3>::heads_up);
+    static_assert(std::is_same_v<cfr_engine<2>::reach_state, hu_reach_state>);
+    static_assert(std::is_same_v<cfr_engine<3>::reach_state, nway_reach_state<3>>);
+    static_assert(std::is_trivially_copyable_v<cfr_traversal_frame>);
+
+    BOOST_CHECK(cfr_engine<2>::heads_up);
+    BOOST_CHECK(!cfr_engine<3>::heads_up);
+
+    std::array<float, 2> hu_reach{0.25f, 0.75f};
+    BOOST_CHECK_SMALL(cfr_engine<2>::counterfactual_reach(hu_reach, 2.0f, 0) - 1.5f, 0.00001f);
+    cfr_engine<2>::propagate_player_action(hu_reach, 0, 0.5f);
+    BOOST_CHECK_SMALL(hu_reach[0] - 0.125f, 0.00001f);
+
+    std::array<float, 3> nway_reach{0.25f, 0.5f, 0.75f};
+    BOOST_CHECK_SMALL(cfr_engine<3>::counterfactual_reach(nway_reach, 2.0f, 0) - 0.75f, 0.00001f);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_traverses_reduces_and_reports_diagnostics) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 2> workers;
+    auto context = make_cfr_solver_context<2>(
+        graph,
+        annotations,
+        layout,
+        regrets,
+        strategy_sums);
+
+    auto result = run_cfr_iteration(
+        context,
+        iteration_config{
+            .variant = cfr_variant::vanilla,
+            .update_mode = cfr_update_mode::alternating,
+            .iteration = 1,
+            .updating_player = 0,
+            .strategy_weight = 1.0f
+        },
+        std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(result->traversals_run, 1u);
+    BOOST_CHECK_EQUAL(result->workers_used, 1u);
+    BOOST_CHECK_EQUAL(result->diagnostics.nodes_visited, graph.node_count);
+    BOOST_CHECK_EQUAL(result->diagnostics.local_delta_entries_touched, 1u);
+    BOOST_CHECK_SMALL(strategy_sums.value(0, 0) - 0.5f, 0.00001f);
+    BOOST_CHECK_SMALL(strategy_sums.value(0, 1) - 0.5f, 0.00001f);
+    BOOST_CHECK_EQUAL(result->quality.average_strategy_mass, 1.0);
+    BOOST_REQUIRE_EQUAL(result->quality.strategy_sum_mass_by_player.size(), 2u);
+    BOOST_CHECK_EQUAL(result->quality.strategy_sum_mass_by_player[0], 1.0);
+    BOOST_CHECK_EQUAL(result->quality.max_regret_infoset_id, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(quality_diagnostics_identify_regret_and_strategy_locations) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    regrets.value(0, 0) = -1.0f;
+    regrets.value(0, 1) = 3.0f;
+    strategy_sums.value(0, 0) = 1.0f;
+    strategy_sums.value(0, 1) = 9.0f;
+
+    const auto diagnostics = compute_quality_diagnostics(graph, annotations, regrets, strategy_sums, 2);
+
+    BOOST_CHECK_SMALL(diagnostics.regret_norm - std::sqrt(10.0), 0.00001);
+    BOOST_CHECK_EQUAL(diagnostics.positive_regret_count, 1u);
+    BOOST_CHECK_EQUAL(diagnostics.max_regret, 3.0f);
+    BOOST_CHECK_EQUAL(diagnostics.max_regret_location.infoset_id, 0u);
+    BOOST_CHECK_EQUAL(diagnostics.max_regret_location.action_index, 1u);
+    BOOST_CHECK_EQUAL(diagnostics.largest_strategy_change_location.action_index, 1u);
+    BOOST_CHECK_GT(diagnostics.largest_strategy_entropy_drop, 0.0);
+}
+
+BOOST_AUTO_TEST_CASE(cfr_checkpoint_round_trips_tables_and_resume_metadata) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    regrets.value(0, 0) = 1.25f;
+    regrets.value(0, 1) = -0.5f;
+    strategy_sums.value(0, 0) = 3.0f;
+    strategy_sums.value(0, 1) = 7.0f;
+    auto owner_map = make_even_infoset_owner_map(layout, 1).value();
+    auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    context.owner_map = &owner_map;
+    context.reduction = reduction_policy{.order = reduction_order::owner_range_then_worker};
+    const iteration_config config{
+        .variant = cfr_variant::cfr_plus,
+        .update_mode = cfr_update_mode::alternating,
+        .iteration = 42,
+        .updating_player = 0,
+        .strategy_weight = 1.0f
+    };
+
+    std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+    auto saved = save_cfr_checkpoint(stream, context, config);
+    BOOST_REQUIRE(saved.has_value());
+
+    regrets.value(0, 0) = 0.0f;
+    regrets.value(0, 1) = 0.0f;
+    strategy_sums.value(0, 0) = 0.0f;
+    strategy_sums.value(0, 1) = 0.0f;
+    stream.seekg(0);
+
+    auto loaded = load_cfr_checkpoint(stream, context, config);
+
+    BOOST_REQUIRE(loaded.has_value());
+    BOOST_CHECK_EQUAL(loaded->header.iteration, 42u);
+    BOOST_CHECK_EQUAL(regrets.value(0, 0), 1.25f);
+    BOOST_CHECK_EQUAL(regrets.value(0, 1), -0.5f);
+    BOOST_CHECK_EQUAL(strategy_sums.value(0, 0), 3.0f);
+    BOOST_CHECK_EQUAL(strategy_sums.value(0, 1), 7.0f);
+}
+
+BOOST_AUTO_TEST_CASE(cfr_checkpoint_rejects_incompatible_owner_ranges) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    auto owner_map = make_even_infoset_owner_map(layout, 1).value();
+    auto saving_context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    saving_context.owner_map = &owner_map;
+
+    std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+    BOOST_REQUIRE(save_cfr_checkpoint(stream, saving_context, iteration_config{}).has_value());
+    stream.seekg(0);
+
+    auto loading_context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    auto loaded = load_cfr_checkpoint(stream, loading_context, iteration_config{});
+
+    BOOST_REQUIRE(!loaded);
+    BOOST_CHECK(loaded.error().kind == checkpoint_error_kind::incompatible_owner_ranges);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_writes_counterfactual_regret_only_for_updating_player) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 1> workers;
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    terminal_utility[0] = 1.0f;
+    terminal_utility[1] = -1.0f;
+    auto context = make_cfr_solver_context<2>(
+        graph,
+        annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.terminal_utility_by_node = terminal_utility;
+
+    auto result = run_cfr_iteration(
+        context,
+        iteration_config{
+            .variant = cfr_variant::vanilla,
+            .update_mode = cfr_update_mode::alternating,
+            .iteration = 1,
+            .updating_player = 0,
+            .strategy_weight = 2.0f
+        },
+        std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_SMALL(result->root_utility, 0.00001f);
+    BOOST_CHECK_SMALL(regrets.value(0, 0) - 1.0f, 0.00001f);
+    BOOST_CHECK_SMALL(regrets.value(0, 1) + 1.0f, 0.00001f);
+    BOOST_CHECK_SMALL(strategy_sums.value(0, 0) - 1.0f, 0.00001f);
+    BOOST_CHECK_SMALL(strategy_sums.value(0, 1) - 1.0f, 0.00001f);
+    BOOST_CHECK_EQUAL(result->diagnostics.regret_updates, 2u);
+    BOOST_CHECK_EQUAL(result->diagnostics.strategy_updates, 2u);
+    BOOST_CHECK_EQUAL(result->diagnostics.terminal_evaluations, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_uses_chance_probabilities_in_counterfactual_values) {
+    graph_builder builder;
+    const auto root = builder.add_node(node_kind::chance);
+    const auto player = builder.add_node(node_kind::player);
+    const auto terminal = builder.add_node(node_kind::terminal);
+    builder.add_edge(root, player, 0);
+    builder.add_edge(player, terminal, 0);
+    builder.set_infoset_id(player, 0);
+    auto graph = require_graph(builder.build());
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 1> workers;
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    terminal_utility[0] = 4.0f;
+    auto chance_events = make_uniform_chance_event_table(graph);
+    chance_events.outcomes.front().probability = 1.0f;
+    auto context = make_cfr_solver_context<2>(
+        graph,
+        annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.chance_events = &chance_events;
+    context.terminal_utility_by_node = terminal_utility;
+
+    auto result = run_cfr_iteration(context, iteration_config{.updating_player = 0}, std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_SMALL(result->root_utility - 4.0f, 0.00001f);
+    BOOST_CHECK_SMALL(strategy_sums.value(0, 0) - 1.0f, 0.00001f);
+    BOOST_CHECK_EQUAL(result->diagnostics.chance_outcomes, 1u);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_uses_three_player_counterfactual_reach_product) {
+    graph_builder builder;
+    const auto root = builder.add_node(node_kind::player);
+    const auto updating_player = builder.add_node(node_kind::player);
+    const auto skipped_terminal = builder.add_node(node_kind::terminal);
+    const auto win_terminal = builder.add_node(node_kind::terminal);
+    const auto lose_terminal = builder.add_node(node_kind::terminal);
+    builder.add_edge(root, updating_player, 0);
+    builder.add_edge(root, skipped_terminal, 1);
+    builder.add_edge(updating_player, win_terminal, 0);
+    builder.add_edge(updating_player, lose_terminal, 1);
+    builder.set_infoset_id(root, 0);
+    builder.set_infoset_id(updating_player, 1);
+    auto graph = require_graph(builder.build());
+    auto annotations = make_default_annotations(graph);
+    annotations.actor_by_node[graph.root_node] = 2;
+
+    const auto p0_node = graph.out_edges(graph.root_node)[0].child_node;
+    annotations.actor_by_node[p0_node] = 0;
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    const auto p0_edges = graph.out_edges(p0_node);
+    terminal_utility[p0_edges[0].child_node] = 4.0f;
+    terminal_utility[p0_edges[1].child_node] = -2.0f;
+
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 1> workers;
+    auto context = make_cfr_solver_context<3>(
+        graph,
+        annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.terminal_utility_by_node = terminal_utility;
+
+    auto result = run_cfr_iteration(
+        context,
+        iteration_config{.updating_player = 0},
+        std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_SMALL(regrets.value(1, 0) - 1.5f, 0.00001f);
+    BOOST_CHECK_SMALL(regrets.value(1, 1) + 1.5f, 0.00001f);
+    BOOST_CHECK_SMALL(strategy_sums.value(1, 0) - 0.5f, 0.00001f);
+    BOOST_CHECK_SMALL(strategy_sums.value(1, 1) - 0.5f, 0.00001f);
+    BOOST_CHECK_EQUAL(result->diagnostics.regret_updates, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_rejects_chance_graph_without_enumerated_events) {
+    auto graph = create_chance_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 1> workers;
+    auto context = make_cfr_solver_context<2>(
+        graph,
+        annotations,
+        layout,
+        regrets,
+        strategy_sums);
+
+    auto result = run_cfr_iteration(context, iteration_config{.updating_player = 0}, std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == iteration_error_kind::chance_table);
+    BOOST_CHECK(result.error().chance_table.kind == chance_table_error_kind::missing_chance_event);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_rejects_invalid_updating_player) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 1> workers;
+    auto context = make_cfr_solver_context<2>(
+        graph,
+        annotations,
+        layout,
+        regrets,
+        strategy_sums);
+
+    auto result = run_cfr_iteration(
+        context,
+        iteration_config{.updating_player = 2},
+        std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == iteration_error_kind::invalid_update_player);
+}
+
 BOOST_AUTO_TEST_CASE(deterministic_worker_reduction_applies_workers_in_plan_order) {
     constexpr std::array<uint32_t, 1> action_counts{1u};
     auto layout = require_layout(make_action_table_layout(std::span<const uint32_t>{action_counts}));
@@ -1195,6 +1599,29 @@ BOOST_AUTO_TEST_CASE(deterministic_worker_reduction_applies_workers_in_plan_orde
     BOOST_CHECK_EQUAL(strategy_sums.value(0, 0), 30.0f);
 }
 
+BOOST_AUTO_TEST_CASE(cfr_plus_reduction_clips_once_after_raw_worker_merge) {
+    constexpr std::array<uint32_t, 1> action_counts{1u};
+    auto layout = require_layout(make_action_table_layout(std::span<const uint32_t>{action_counts}));
+
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 2> workers;
+    BOOST_REQUIRE(workers[0].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    BOOST_REQUIRE(workers[1].delta_buffer.reset_layout(layout.action_offsets).has_value());
+
+    workers[0].delta_buffer.add_regret_delta(0, 0, 10.0f);
+    workers[1].delta_buffer.add_regret_delta(0, 0, -20.0f);
+
+    auto result = apply_worker_reductions(
+        regrets,
+        strategy_sums,
+        std::span<const worker_context>{workers},
+        cfr_variant::cfr_plus);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(regrets.value(0, 0), 0.0f);
+}
+
 BOOST_AUTO_TEST_CASE(deterministic_worker_reduction_rejects_duplicate_worker_order) {
     constexpr std::array<uint32_t, 1> action_counts{1u};
     auto layout = require_layout(make_action_table_layout(std::span<const uint32_t>{action_counts}));
@@ -1212,6 +1639,152 @@ BOOST_AUTO_TEST_CASE(deterministic_worker_reduction_rejects_duplicate_worker_ord
 
     BOOST_REQUIRE(!result);
     BOOST_CHECK(result.error().kind == iteration_error_kind::duplicate_worker_id);
+}
+
+BOOST_AUTO_TEST_CASE(infoset_owner_map_builds_contiguous_shards) {
+    constexpr std::array<uint32_t, 5> action_counts{1u, 2u, 3u, 4u, 5u};
+    auto layout = require_layout(make_action_table_layout(std::span<const uint32_t>{action_counts}));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+
+    auto owner_map_result = make_even_infoset_owner_map(layout, 2);
+
+    BOOST_REQUIRE(owner_map_result.has_value());
+    const auto& owner_map = *owner_map_result;
+    BOOST_REQUIRE_EQUAL(owner_map.ranges.size(), 2u);
+    BOOST_CHECK_EQUAL(owner_map.owner_for_infoset(0), 0u);
+    BOOST_CHECK_EQUAL(owner_map.owner_for_infoset(2), 0u);
+    BOOST_CHECK_EQUAL(owner_map.owner_for_infoset(3), 1u);
+
+    const auto shard = make_table_shard_view(regrets, strategy_sums, owner_map.ranges[1]);
+    BOOST_CHECK(shard.contains_infoset(3));
+    BOOST_CHECK(!shard.contains_infoset(2));
+    BOOST_CHECK_EQUAL(shard.begin_value, layout.action_offsets[3]);
+    BOOST_CHECK_EQUAL(shard.end_value, layout.action_offsets[5]);
+}
+
+BOOST_AUTO_TEST_CASE(owner_routed_reduction_tracks_remote_deltas_and_owner_hits) {
+    constexpr std::array<uint32_t, 3> action_counts{1u, 1u, 1u};
+    auto layout = require_layout(make_action_table_layout(std::span<const uint32_t>{action_counts}));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 2> workers;
+    BOOST_REQUIRE(workers[0].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    BOOST_REQUIRE(workers[1].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    workers[0].delta_buffer.add_regret_delta(0, 0, 1.0f);
+    workers[0].delta_buffer.add_strategy_delta(0, 0, 10.0f);
+    workers[1].delta_buffer.add_regret_delta(0, 0, 2.0f);
+    workers[1].delta_buffer.add_strategy_delta(0, 0, 20.0f);
+    workers[1].delta_buffer.add_regret_delta(2, 0, 3.0f);
+    workers[1].delta_buffer.add_strategy_delta(2, 0, 30.0f);
+
+    auto owner_map = make_even_infoset_owner_map(layout, 2).value();
+    std::array<const worker_context*, 2> worker_ptrs{&workers[0], &workers[1]};
+    reduction_diagnostics diagnostics;
+
+    auto result = apply_owner_routed_worker_reductions(
+        regrets,
+        strategy_sums,
+        make_deterministic_reduction_plan(2),
+        std::span<const worker_context* const>{worker_ptrs},
+        owner_map,
+        &diagnostics);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(regrets.value(0, 0), 3.0f);
+    BOOST_CHECK_EQUAL(strategy_sums.value(0, 0), 30.0f);
+    BOOST_CHECK_EQUAL(regrets.value(2, 0), 3.0f);
+    BOOST_CHECK_EQUAL(diagnostics.remote_delta_count, 1u);
+    BOOST_CHECK_EQUAL(diagnostics.remote_delta_bytes, sizeof(float) * 2u);
+    BOOST_REQUIRE_EQUAL(diagnostics.owner_hit_distribution.size(), 2u);
+    BOOST_CHECK_EQUAL(diagnostics.owner_hit_distribution[0], 2u);
+    BOOST_CHECK_EQUAL(diagnostics.owner_hit_distribution[1], 1u);
+    BOOST_CHECK_EQUAL(diagnostics.owner_remote_hit_distribution[0], 1u);
+    BOOST_CHECK_EQUAL(diagnostics.per_owner_touched_values[0], 2u);
+}
+
+BOOST_AUTO_TEST_CASE(owner_routed_cfr_plus_clips_after_all_worker_deltas_merge) {
+    constexpr std::array<uint32_t, 1> action_counts{1u};
+    auto layout = require_layout(make_action_table_layout(std::span<const uint32_t>{action_counts}));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::array<worker_context, 2> workers;
+    BOOST_REQUIRE(workers[0].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    BOOST_REQUIRE(workers[1].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    workers[0].delta_buffer.add_regret_delta(0, 0, -5.0f);
+    workers[1].delta_buffer.add_regret_delta(0, 0, 3.0f);
+
+    auto owner_map = make_even_infoset_owner_map(layout, 1).value();
+    std::array<const worker_context*, 2> worker_ptrs{&workers[0], &workers[1]};
+    reduction_diagnostics diagnostics;
+
+    auto result = apply_worker_reductions(
+        regrets,
+        strategy_sums,
+        make_deterministic_reduction_plan(2),
+        std::span<const worker_context* const>{worker_ptrs},
+        reduction_policy{.order = reduction_order::owner_range_then_worker},
+        &owner_map,
+        &diagnostics,
+        cfr_variant::cfr_plus);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(regrets.value(0, 0), 0.0f);
+    BOOST_CHECK_EQUAL(diagnostics.remote_delta_count, 1u);
+}
+
+BOOST_AUTO_TEST_CASE(owner_routed_reduction_preserves_worker_count_determinism) {
+    constexpr std::array<uint32_t, 2> action_counts{2u, 1u};
+    auto layout = require_layout(make_action_table_layout(std::span<const uint32_t>{action_counts}));
+    auto owner_map = make_even_infoset_owner_map(layout, 2).value();
+
+    regret_table one_worker_regrets(layout);
+    strategy_sum_table one_worker_strategies(layout);
+    std::array<worker_context, 1> one_worker;
+    BOOST_REQUIRE(one_worker[0].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    one_worker[0].delta_buffer.add_regret_delta(0, 0, 1.0f);
+    one_worker[0].delta_buffer.add_regret_delta(0, 1, 2.0f);
+    one_worker[0].delta_buffer.add_regret_delta(1, 0, 3.0f);
+    one_worker[0].delta_buffer.add_strategy_delta(0, 0, 4.0f);
+    one_worker[0].delta_buffer.add_strategy_delta(0, 1, 5.0f);
+    one_worker[0].delta_buffer.add_strategy_delta(1, 0, 6.0f);
+    std::array<const worker_context*, 1> one_worker_ptrs{&one_worker[0]};
+    BOOST_REQUIRE(apply_owner_routed_worker_reductions(
+        one_worker_regrets,
+        one_worker_strategies,
+        make_deterministic_reduction_plan(1),
+        std::span<const worker_context* const>{one_worker_ptrs},
+        owner_map).has_value());
+
+    regret_table two_worker_regrets(layout);
+    strategy_sum_table two_worker_strategies(layout);
+    std::array<worker_context, 2> two_workers;
+    BOOST_REQUIRE(two_workers[0].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    BOOST_REQUIRE(two_workers[1].delta_buffer.reset_layout(layout.action_offsets).has_value());
+    two_workers[0].delta_buffer.add_regret_delta(0, 0, 1.0f);
+    two_workers[0].delta_buffer.add_regret_delta(1, 0, 3.0f);
+    two_workers[0].delta_buffer.add_strategy_delta(0, 0, 4.0f);
+    two_workers[0].delta_buffer.add_strategy_delta(1, 0, 6.0f);
+    two_workers[1].delta_buffer.add_regret_delta(0, 1, 2.0f);
+    two_workers[1].delta_buffer.add_strategy_delta(0, 1, 5.0f);
+    std::array<const worker_context*, 2> two_worker_ptrs{&two_workers[0], &two_workers[1]};
+    BOOST_REQUIRE(apply_owner_routed_worker_reductions(
+        two_worker_regrets,
+        two_worker_strategies,
+        make_deterministic_reduction_plan(2),
+        std::span<const worker_context* const>{two_worker_ptrs},
+        owner_map).has_value());
+
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        one_worker_regrets.regrets.begin(),
+        one_worker_regrets.regrets.end(),
+        two_worker_regrets.regrets.begin(),
+        two_worker_regrets.regrets.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        one_worker_strategies.sums.begin(),
+        one_worker_strategies.sums.end(),
+        two_worker_strategies.sums.begin(),
+        two_worker_strategies.sums.end());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

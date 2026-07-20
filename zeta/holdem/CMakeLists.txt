@@ -15,6 +15,7 @@ add_library(zeta-holdem STATIC
     src/terminal/reach_index.h
     src/terminal/showdown.h
     src/terminal/workspace.h
+    src/cfr/chance/chance.h
     src/cfr/graph/graph.h
     src/cfr/graph/graph.cpp
     src/cfr/graph/builder.h
