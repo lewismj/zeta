@@ -18,9 +18,9 @@ namespace zeta::holdem::cfr::solver {
      * dominate terminal evaluation cost.
      */
     struct river_solver_context {
-        ::zeta::holdem::river_terminal_cache cache{};
-        ::zeta::holdem::terminal_workspace<2> workspace{};
-        ::zeta::holdem::terminal_state_table<2> terminal_states{};
+        river_terminal_cache cache{};
+        terminal_workspace<2> workspace{};
+        terminal_state_table<2> terminal_states{};
         std::vector<traversal::river_terminal_leaf> terminal_leaves;
 
         /**
