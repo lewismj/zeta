@@ -186,19 +186,11 @@ namespace zeta::holdem::cfr::traversal {
         }
     };
 
-    enum class river_terminal_leaf_kind : uint8_t {
-        none = 0,
-        showdown = 1,
-        fold = 2
-    };
-
     /**
      * Terminal metadata indexed by graph node id.
      */
     struct river_terminal_leaf {
-        river_terminal_leaf_kind kind = river_terminal_leaf_kind::none;
-        ::zeta::holdem::terminal_context<2> context{};
-        ::zeta::holdem::heads_up_player folded_player = ::zeta::holdem::heads_up_player::ip;
+        uint32_t terminal_state_id = game_graph::INVALID_NODE;
     };
 
     /**
@@ -208,12 +200,16 @@ namespace zeta::holdem::cfr::traversal {
         const ::zeta::holdem::river_terminal_cache* river_cache = nullptr;
         std::span<const ::zeta::holdem::river_reach_index> reach_indices{};
         std::span<const river_terminal_leaf> terminal_leaves{};
+        std::span<const ::zeta::holdem::terminal_state<2>> terminal_states{};
         ::zeta::holdem::heads_up_player perspective = ::zeta::holdem::heads_up_player::oop;
         ::zeta::holdem::combination_index combo = 0;
 
         [[nodiscard]] std::expected<void, traversal_error> validate(const game_graph& graph) const noexcept
         {
-            if (river_cache == nullptr || reach_indices.size() < 2u || terminal_leaves.size() < graph.node_count) {
+            if (river_cache == nullptr
+                || reach_indices.size() < 2u
+                || terminal_leaves.size() < graph.node_count
+                || terminal_states.empty()) {
                 return std::unexpected(traversal_error{traversal_error_kind::invalid_terminal_context});
             }
 
@@ -221,7 +217,7 @@ namespace zeta::holdem::cfr::traversal {
                 if (graph.node_types[node_id] != node_kind::terminal) {
                     continue;
                 }
-                if (terminal_leaves[node_id].kind == river_terminal_leaf_kind::none) {
+                if (terminal_leaves[node_id].terminal_state_id >= terminal_states.size()) {
                     return std::unexpected(traversal_error{traversal_error_kind::invalid_terminal_context, node_id});
                 }
             }
@@ -236,31 +232,16 @@ namespace zeta::holdem::cfr::traversal {
             assert(river_cache != nullptr);
             assert(reach_indices.size() >= 2u);
             assert(node_id < terminal_leaves.size());
+            assert(terminal_leaves[node_id].terminal_state_id < terminal_states.size());
 
             const auto& terminal = terminal_leaves[node_id];
-            assert(terminal.kind != river_terminal_leaf_kind::none);
-
-            terminal_values<2> values{};
-            switch (terminal.kind) {
-                case river_terminal_leaf_kind::showdown:
-                    values = ::zeta::holdem::evaluate_showdown_values(
-                        *river_cache,
-                        reach_indices[0],
-                        reach_indices[1],
-                        terminal.context);
-                    break;
-                case river_terminal_leaf_kind::fold:
-                    values = ::zeta::holdem::evaluate_fold_values(
-                        *river_cache,
-                        reach_indices[0],
-                        reach_indices[1],
-                        terminal.context,
-                        terminal.folded_player);
-                    break;
-                case river_terminal_leaf_kind::none:
-                    assert(false);
-                    break;
-            }
+            const auto& state = terminal_states[terminal.terminal_state_id];
+            const ::zeta::holdem::terminal_engine<2> engine{};
+            const auto values = engine.evaluate_terminal_values(
+                *river_cache,
+                reach_indices[0],
+                reach_indices[1],
+                state);
 
             const auto own_reach = perspective == ::zeta::holdem::heads_up_player::oop
                 ? frame.reach_oop

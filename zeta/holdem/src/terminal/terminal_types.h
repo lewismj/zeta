@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "board.h"
@@ -36,18 +37,38 @@ namespace zeta::holdem {
     };
 
     /**
-     * N-way seat mask: generic template uses bitset<N> where bit i == true means seat i is folded.
+     * Player-indexed mask for terminal and betting state.
      */
     template <std::size_t N>
-    struct folded_mask {
+    struct player_mask {
         std::bitset<N> bits;
 
-        [[nodiscard]] constexpr bool operator[](std::size_t seat) const noexcept {
+        [[nodiscard]] constexpr bool operator[](const std::size_t seat) const noexcept {
             return bits[seat];
         }
 
-        constexpr bool& operator[](std::size_t seat) noexcept {
-            return bits[seat];
+        constexpr void set(const std::size_t seat, const bool value = true) noexcept {
+            bits.set(seat, value);
+        }
+
+        [[nodiscard]] constexpr std::size_t count() const noexcept {
+            return bits.count();
+        }
+    };
+
+    /**
+     * N-way folded mask. Bit i is true when seat i has folded.
+     */
+    template <std::size_t N>
+    struct folded_mask {
+        player_mask<N> players;
+
+        [[nodiscard]] constexpr bool operator[](std::size_t seat) const noexcept {
+            return players[seat];
+        }
+
+        constexpr void set_folded(const std::size_t seat, const bool value) noexcept {
+            players.set(seat, value);
         }
     };
 
@@ -105,6 +126,85 @@ namespace zeta::holdem {
         std::array<utility, N> contribution{};
     };
 
+    enum class terminal_state_kind : uint8_t {
+        none = 0,
+        showdown = 1,
+        fold = 2,
+        timeout = 3,
+        rake_adjusted = 4,
+        variant_specific = 5
+    };
+
+    /**
+     * Auditable pot layer used by terminal records.
+     */
+    template <std::size_t N>
+    struct pot_layer {
+        utility amount = 0.0;
+        player_mask<N> eligible_mask{};
+        player_mask<N> contributors_mask{};
+    };
+
+    /**
+     * Terminal accounting record selected by terminal leaves.
+     */
+    template <std::size_t N>
+    struct terminal_state {
+        terminal_state_kind kind = terminal_state_kind::none;
+        terminal_context<N> context{};
+        std::vector<pot_layer<N>> pot_layers{};
+        folded_mask<N> folded{};
+        player_mask<N> all_in_eligible_mask{};
+        player_mask<N> active_eligible_mask{};
+        uint32_t variant_payload_id = 0;
+    };
+
+    /**
+     * Owning table for terminal states referenced by graph terminal leaves.
+     */
+    template <std::size_t N>
+    struct terminal_state_table {
+        std::vector<terminal_state<N>> states;
+
+        [[nodiscard]] std::span<const terminal_state<N>> view() const noexcept {
+            return states;
+        }
+
+        [[nodiscard]] std::size_t size() const noexcept {
+            return states.size();
+        }
+
+        [[nodiscard]] bool contains(const uint32_t state_id) const noexcept {
+            return state_id < states.size();
+        }
+
+        [[nodiscard]] const terminal_state<N>& operator[](const uint32_t state_id) const noexcept {
+            assert(contains(state_id));
+            return states[state_id];
+        }
+    };
+
+    template <std::size_t N>
+    [[nodiscard]] terminal_state<N> make_terminal_state(
+        const terminal_state_kind kind,
+        const terminal_context<N>& context,
+        const std::vector<pot_layer<N>>& pot_layers,
+        const folded_mask<N>& folded = {},
+        const player_mask<N>& all_in_eligible_mask = {},
+        const player_mask<N>& active_eligible_mask = {},
+        const uint32_t variant_payload_id = 0
+    ) {
+        return terminal_state<N>{
+            .kind = kind,
+            .context = context,
+            .pot_layers = pot_layers,
+            .folded = folded,
+            .all_in_eligible_mask = all_in_eligible_mask,
+            .active_eligible_mask = active_eligible_mask,
+            .variant_payload_id = variant_payload_id
+        };
+    }
+
     /**
      * Zero-cost clarity alias: heads-up accounting is exactly terminal_context<2>
      * (contribution[0]=oop, contribution[1]=ip). No separate type is needed; this
@@ -133,6 +233,56 @@ namespace zeta::holdem {
 
     [[nodiscard]] constexpr terminal_context<2> make_heads_up_context(const terminal_pot pot) noexcept {
         return make_heads_up_context(pot.gross_pot, pot.rake, pot.oop_contribution, pot.ip_contribution);
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] pot_layer<N> make_main_pot_layer(const terminal_context<N>& context) noexcept {
+        pot_layer<N> layer{};
+        layer.amount = context.gross_pot;
+        for (std::size_t seat = 0; seat < N; ++seat) {
+            if (context.contribution[seat] > 0.0) {
+                layer.contributors_mask.set(seat);
+            }
+            layer.eligible_mask.set(seat);
+        }
+        return layer;
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] terminal_state<N> make_showdown_terminal_state(const terminal_context<N>& context) {
+        terminal_state<N> state{};
+        state.kind = terminal_state_kind::showdown;
+        state.context = context;
+        state.pot_layers.push_back(make_main_pot_layer(context));
+        for (std::size_t seat = 0; seat < N; ++seat) {
+            state.active_eligible_mask.set(seat);
+        }
+        return state;
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] terminal_state<N> make_fold_terminal_state(
+        const terminal_context<N>& context,
+        const folded_mask<N>& folded
+    ) {
+        terminal_state<N> state{};
+        state.kind = terminal_state_kind::fold;
+        state.context = context;
+        state.folded = folded;
+        state.pot_layers.push_back(make_main_pot_layer(context));
+        for (std::size_t seat = 0; seat < N; ++seat) {
+            if (!folded[seat]) {
+                state.active_eligible_mask.set(seat);
+            }
+        }
+        return state;
+    }
+
+    [[nodiscard]] inline terminal_state<2> make_fold_terminal_state(
+        const terminal_context<2>& context,
+        const heads_up_player folded
+    ) {
+        return make_fold_terminal_state(context, folded_mask<2>::from_folded_player(folded));
     }
 
     /**
@@ -170,7 +320,7 @@ namespace zeta::holdem {
     template <std::size_t N>
     struct side_pot {
         /** Seats that contributed to this pot and are thus eligible to win it. */
-        std::bitset<N> eligible{};
+        player_mask<N> eligible{};
         /** Total amount in this pot before distribution. */
         utility amount = 0.0;
     };
@@ -258,7 +408,7 @@ namespace zeta::holdem {
     template <std::size_t N>
     struct pot_structure {
         /** Which seats are active and eligible to win (complement of folded_mask). */
-        std::bitset<N> active{};
+        player_mask<N> active{};
 
         /**
          * Main pot and side pots. For simplicity, we accumulate side pots linearly.

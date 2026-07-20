@@ -5,6 +5,7 @@
 #include "cfr/scheduler/dfs_partitioner.h"
 #include "cfr/scheduler/scheduler.h"
 #include "cfr/solver/context.h"
+#include "cfr/solver/infoset_planning.h"
 #include "cfr/solver/iteration.h"
 #include "cfr/solver/river_context.h"
 #include "cfr/tables/regret_table.h"
@@ -56,11 +57,6 @@ namespace {
         zeta::holdem::combination_index combo = 0;
         float reach = 0.0f;
         uint16_t payoff_index = 0;
-    };
-
-    struct regret_strategy_value {
-        float regret = 0.0f;
-        float strategy_sum = 0.0f;
     };
 
     struct alignas(64) benchmark_worker_counter {
@@ -1412,12 +1408,16 @@ static void BM_RiverTerminalLeafTraversal(benchmark::State& state)
     oop_reach[oop_combo] = 1.0f;
     ip_reach[ip_combo] = 1.0f;
     const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::ip));
     std::vector<river_terminal_leaf> leaves(graph.node_count);
-    leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
-    leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
+    leaves[0] = river_terminal_leaf{0};
+    leaves[1] = river_terminal_leaf{1};
     const auto terminal_context = make_river_solver_context(
         deterministic_river_board(),
         std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        std::move(terminal_states),
         std::move(leaves));
     const auto policy = terminal_context.terminal_policy(zeta::holdem::heads_up_player::oop, oop_combo);
 
@@ -1455,12 +1455,16 @@ static void BM_RiverTerminalLeafTraversalCachedReach(benchmark::State& state)
     oop_reach[oop_combo] = 1.0f;
     ip_reach[ip_combo] = 1.0f;
     const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::ip));
     std::vector<river_terminal_leaf> leaves(graph.node_count);
-    leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
-    leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
+    leaves[0] = river_terminal_leaf{0};
+    leaves[1] = river_terminal_leaf{1};
     const auto terminal_context = make_river_solver_context(
         deterministic_river_board(),
         std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        std::move(terminal_states),
         std::move(leaves));
     const auto policy = terminal_context.terminal_policy(zeta::holdem::heads_up_player::oop, oop_combo);
 
@@ -1502,12 +1506,16 @@ static void BM_RiverTerminalLeafTraversalCachedReachBatch(benchmark::State& stat
     oop_reach[oop_combo] = 1.0f;
     ip_reach[ip_combo] = 1.0f;
     const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::ip));
     std::vector<river_terminal_leaf> leaves(graph.node_count);
-    leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
-    leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
+    leaves[0] = river_terminal_leaf{0};
+    leaves[1] = river_terminal_leaf{1};
     const auto terminal_context = make_river_solver_context(
         deterministic_river_board(),
         std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        std::move(terminal_states),
         std::move(leaves));
     const auto policy = terminal_context.terminal_policy(zeta::holdem::heads_up_player::oop, oop_combo);
 
@@ -1901,6 +1909,34 @@ static void BM_DeterministicWorkerReduction(benchmark::State& state)
     state.counters["delta_entries"] = static_cast<double>(workers.front().delta_buffer.entry_count() * worker_count);
 }
 
+static void BM_CFRMemoryPlan(benchmark::State& state)
+{
+    auto graph = create_benchmark_tree(4, 4);
+    auto layout = require_layout(make_action_table_layout(graph));
+    const auto worker_count = static_cast<uint32_t>(state.range(0));
+
+    for (auto _ : state) {
+        auto estimate = estimate_cfr_memory(
+            graph,
+            layout,
+            cfr_memory_plan_options{
+                .worker_count = worker_count,
+                .terminal_state_count = graph.terminal_count,
+                .chance_event_count = graph.terminal_count
+            });
+        if (!estimate) {
+            state.SkipWithError(to_string(estimate.error().kind));
+            break;
+        }
+        auto total_bytes = estimate->total_bytes;
+        benchmark::DoNotOptimize(total_bytes);
+    }
+
+    state.counters["workers"] = static_cast<double>(worker_count);
+    state.counters["planned_bytes"] = static_cast<double>(
+        estimate_cfr_memory(graph, layout, cfr_memory_plan_options{.worker_count = worker_count})->total_bytes);
+}
+
 static void BM_RegretMatching(benchmark::State& state)
 {
     auto graph = create_benchmark_tree(4, 4);
@@ -2071,29 +2107,6 @@ static void BM_CFRUpdateSeparateStorage(benchmark::State& state)
         benchmark::Counter::kIsIterationInvariantRate);
 }
 
-static void BM_CFRUpdateInterleavedStorage(benchmark::State& state)
-{
-    auto graph = create_benchmark_tree(4, 4);
-    auto layout = require_layout(make_action_table_layout(graph));
-    std::vector<regret_strategy_value> values(layout.value_count());
-    std::vector<float> deltas(layout.value_count(), 0.125f);
-    std::vector<float> probabilities(layout.value_count(), 0.25f);
-
-    for (auto _ : state) {
-        for (uint32_t value = 0; value < layout.value_count(); ++value) {
-            auto& entry = values[value];
-            entry.regret = std::max(entry.regret + deltas[value], 0.0f);
-            entry.strategy_sum += probabilities[value];
-        }
-        benchmark::DoNotOptimize(values.data());
-        benchmark::ClobberMemory();
-    }
-
-    state.counters["values/s"] = benchmark::Counter(
-        static_cast<double>(layout.value_count()),
-        benchmark::Counter::kIsIterationInvariantRate);
-}
-
 BENCHMARK(BM_RiverTerminalLeafTraversal);
 BENCHMARK(BM_RiverTerminalLeafTraversalCachedReach);
 BENCHMARK(BM_RiverTerminalLeafTraversalCachedReachBatch);
@@ -2112,12 +2125,12 @@ BENCHMARK(BM_TerminalAccumulate_WithLookup);
 BENCHMARK(BM_TerminalAccumulate_WithPrefetchedReach);
 BENCHMARK(BM_TerminalAccumulate_WithStackLocalReach);
 BENCHMARK(BM_DeterministicWorkerReduction)->Arg(2)->Arg(4)->Arg(8)->Arg(12);
+BENCHMARK(BM_CFRMemoryPlan)->Arg(1)->Arg(4)->Arg(12);
 BENCHMARK(BM_RegretMatching);
 BENCHMARK(BM_RegretUpdate);
 BENCHMARK(BM_StrategyAverage);
 BENCHMARK(BM_CFRIterationWithUpdates);
 BENCHMARK(BM_CFRUpdateSeparateStorage);
-BENCHMARK(BM_CFRUpdateInterleavedStorage);
 
 /**
  * Validation throughput benchmark.

@@ -163,6 +163,20 @@ worker 2 owns infosets [200000, 300000)
 
 Traversal may be scheduled by board and graph partition, but table ownership should be by infoset range. A worker can accumulate local deltas for any infoset, then reduction routes those deltas to the owner shard. This avoids false sharing and gives a path to NUMA-local table slices.
 
+This sparse routing model is correct for the first implementation, but it may become the bottleneck at large scale when millions of infosets, hundreds of workers, and billions of updates make reduction dominate traversal. Keep a future optimization path open:
+
+```text
+scheduler partition
+    |
+    v
+expected infoset locality
+    |
+    v
+worker preferred owner
+```
+
+Do not require locality-aware scheduling initially; require instrumentation that can prove whether remote sparse routing is becoming the limiting factor.
+
 ### Traversal
 
 `zeta/holdem/src/cfr/traversal/traversal.h` currently has a heads-up-shaped frame:
@@ -212,6 +226,9 @@ The CFR solver should mirror this split while sharing graph/table/scheduler/redu
 The terminal layer should always return player-indexed values and should not know the CFR update mode:
 
 ```text
+terminal_state<N>
+        |
+        v
 terminal_engine<N>
         |
         v
@@ -227,21 +244,25 @@ The CFR engine chooses the perspective after terminal evaluation:
 leaf_value = terminal_values.utility[updating_player]
 ```
 
-This keeps alternating CFR, future simultaneous updates, exploitability calculation, best response, and EV reporting on the same terminal API.
+Do not make terminal leaves directly encode evaluator calls. Terminal leaves should point to or carry a lowered `terminal_state<N>` that describes the terminal condition, then the terminal engine dispatches the appropriate evaluator. This leaves room for showdown, fold, timeout, rake, insurance, jackpot/rakeback variants, bomb pots, and other terminal semantics without leaking CFR traversal details into terminal representation.
+
+This keeps alternating CFR, future simultaneous updates, exploitability calculation, best response, and EV reporting on the same terminal-state and utility-vector API.
 
 ### Pot accounting
 
 N-way Hold'em terminal semantics require side-pot structure from the graph-generation stage onward, not as a terminal afterthought:
 
 ```cpp
+using player_mask = uint64_t;
+
 struct pot_layer {
     float amount;
-    uint64_t eligible_mask;
-    uint64_t contributors_mask;
+    player_mask eligible_mask;
+    player_mask contributors_mask;
 };
 ```
 
-The first implementation can emit exactly one main-pot layer, but terminal leaves and betting state should use the layered shape immediately so all-in and side-pot support does not require an API break. Keep `eligible_mask` and `contributors_mask` explicit: who can win a pot and who created/funded it are different auditing questions, especially in all-in cases.
+The first implementation can emit exactly one main-pot layer, but terminal leaves and betting state should use the layered shape immediately so all-in and side-pot support does not require an API break. Keep `eligible_mask` and `contributors_mask` explicit: who can win a pot and who created/funded it are different auditing questions, especially in all-in cases. Use the `player_mask` alias at API boundaries so the terminal API names the concept instead of directly leaking a raw `N <= 64` representation assumption.
 
 ---
 
@@ -276,6 +297,7 @@ struct cfr_solver_context {
     action_table_layout layout;
     regret_table regrets;
     strategy_sum_table strategy_sums;
+    terminal_state_table<N> terminal_states;
     terminal_leaf_table<N> terminals;
     chance_event_table chance_events;
     solver_parameters parameters;
@@ -437,6 +459,8 @@ Traversal scheduling and table ownership are separate dimensions. A board task m
 - `owner_remote_hit_distribution`.
 - Per-owner reduction time and touched value count.
 
+If `remote_delta_count`, `remote_delta_bytes`, or per-owner reduction time dominate, later scheduler policies should prefer assigning partitions to workers that own or are near the expected touched infoset ranges, while preserving deterministic reduction semantics.
+
 ### 1.5 Table shard compatibility
 
 The existing global `regret_table` and `strategy_sum_table` can remain the logical storage. Add optional views:
@@ -581,7 +605,8 @@ If `actor != updating_player`, only propagate through the node using that actor'
 At a terminal node:
 
 ```text
-terminal_values = terminal_engine<N>::evaluate(...)
+terminal_state = terminal_state_table[terminal_leaf.terminal_state_id]
+terminal_values = terminal_engine<N>::evaluate(terminal_state, ...)
 value_stack[value_slot] = terminal_values.utility[updating_player]
 ```
 
@@ -901,6 +926,7 @@ Generalize without deleting the HU fast path:
 template <std::size_t N>
 struct river_terminal_leaf_nway {
     terminal_leaf_kind kind;
+    uint32_t terminal_state_id;
     terminal_context<N> context;
     folded_mask<N> folded;
 };
@@ -913,6 +939,8 @@ HU specialization can keep:
 - direct `evaluate_fold_values(cache, oop_index, ip_index, context, folded_player)`
 
 N-way uses `terminal_engine<N>`.
+
+The terminal leaf is an index/handle into terminal-state data, not a direct instruction to call a specific evaluator. The engine owns dispatch from `terminal_state<N>` to showdown, fold, timeout, rake-adjusted, or future variant-specific evaluation.
 
 ---
 
@@ -1020,6 +1048,11 @@ Chance comes after infoset/table ownership because chance expansion can explode 
 Add dense chance event metadata:
 
 ```cpp
+enum class chance_mode : uint8_t {
+    enumerate,
+    sample
+};
+
 enum class chance_event_kind : uint8_t {
     deal_flop,
     deal_turn,
@@ -1028,6 +1061,7 @@ enum class chance_event_kind : uint8_t {
 
 struct chance_event {
     chance_event_kind kind;
+    chance_mode mode;
     card_mask dead_cards;
     uint32_t first_outcome;
     uint32_t outcome_count;
@@ -1042,6 +1076,26 @@ struct chance_outcome {
 ```
 
 `solver_graph_view<N>::chance_event_by_node[node]` points into `chance_event_table`.
+
+Only `chance_mode::enumerate` needs to be implemented first, but the mode belongs in the early API. Enumerated and sampled chance have different traversal semantics, determinism requirements, checkpoint metadata, convergence diagnostics, and scheduler behavior:
+
+```text
+enumerate:
+    chance node
+        |
+        +-- outcome child
+        +-- outcome child
+        +-- outcome child
+
+sample:
+    chance node
+        |
+        sample outcome using configured RNG stream
+        |
+        selected child
+```
+
+Sampling must use an explicit, checkpointed seed/stream policy and must report sampling diagnostics separately from exact chance-outcome enumeration.
 
 `dead_cards` is the parent legality context for the event: folded/active hole cards known to the subgame, the current board, and any other removed cards. If equivalent state is carried by the parent node/state instead, the chance table must expose it through a validation view. The validation path must be able to check legality without reconstructing the full betting context repeatedly:
 
@@ -1071,6 +1125,8 @@ Validation:
 - Probabilities sum to one for the legal blocked state.
 - Board masks do not duplicate cards.
 - Outcome cards do not collide with the event's dead-card mask.
+- `chance_mode::enumerate` nodes expose all legal outcomes as graph children.
+- `chance_mode::sample` nodes expose a reproducible sampling policy and checkpoint-compatible RNG stream metadata before they are enabled.
 
 ### 6.3 Board partition integration
 
@@ -1221,6 +1277,7 @@ Checkpoint format must reflect the shared architecture:
 - Precision policy, accumulation precision, and storage encoding.
 - Reduction order policy.
 - Scheduler/chance seed if sampling is enabled.
+- Chance mode and sampling/RNG stream policy.
 
 Resume must reject incompatible:
 
@@ -1229,6 +1286,8 @@ Resume must reject incompatible:
 - Action offsets.
 - Player count.
 - CFR variant state.
+- Chance mode.
+- Sampling/RNG stream policy if sampling is enabled.
 - Precision/layout/reduction policy.
 
 Checkpoint chunks should align naturally with infoset owner ranges and table shard views.
@@ -1269,11 +1328,14 @@ Every iteration should expose enough math diagnostics to catch a fast but wrong 
 - `average_strategy_mass`.
 - `regret_norm`.
 - `max_regret`.
+- `max_regret_infoset_id`.
 - `mean_regret`.
 - `positive_regret_count`.
+- `largest_strategy_entropy_drop`.
+- `largest_strategy_change`.
 - Strategy-sum mass by player.
 
-Before full best-response support exists, tiny graph fixtures should still verify convergence toward a known equilibrium rather than only checking that tables changed. The API should leave room for exact best response and exploitability calculations to consume the same terminal utility-vector interface used by CFR.
+Global regret metrics are not enough: mean regret can improve while one broken infoset dominates the solution. Diagnostics should retain enough per-infoset context to identify the specific infoset/action range responsible for the largest regret or strategy movement. Before full best-response support exists, tiny graph fixtures should still verify convergence toward a known equilibrium rather than only checking that tables changed. The API should leave room for exact best response and exploitability calculations to consume the same terminal-state and utility-vector interface used by CFR.
 
 ### 10.3 Memory counters
 
@@ -1329,113 +1391,179 @@ Track capabilities explicitly so HU and N-way kernels do not accidentally promis
 
 ---
 
-## Recommended implementation sequence
+## Implementation plan
 
-### Milestone A: Graph metadata, infoset identity, and construction accounting
+Each task should land the relevant surface in its intended production shape. Do not add temporary mini-solvers, standalone game models, placeholder terminal semantics, or graph/table APIs that are expected to be replaced by a later task.
 
-1. Add solver side arrays/views around `game_graph` without moving topology ownership out of `game_graph`.
-2. Add actor, chance-event, terminal-leaf, and street metadata.
-3. Define infoset identity lowering for Hold'em-generated states.
-4. Include explicit board abstraction ID and chance/runout class ID in the key.
-5. Add dense infoset ID assignment before large graph generation.
-6. Add mandatory memory accounting for estimated infosets, actions, table layout, precision policy, owner maps, scratch, and checkpoint estimates.
-7. Include storage precision, accumulation precision, and reduction order in compatibility hashing.
-8. Add terminal utility-vector plumbing so terminal leaves return `terminal_values<N>`.
-9. Add initial `pot_layer` terminal/betting metadata with one main-pot layer, including eligible and contributor masks.
+### Task 1: Establish solver metadata and compatibility policies
 
-### Milestone B: Real CFR math on tiny graphs
+Status: implemented.
 
-1. Add explicit iteration config with `cfr_update_mode::alternating`.
-2. Add explicit strategy/regret-matching policy abstraction.
-3. Add `edge_child_value`.
-4. Compute node value from strategy-weighted child values.
-5. Select terminal utility by `terminal_values.utility[updating_player]`.
-6. Compute raw regret deltas only for `actor == updating_player`.
-7. Propagate through non-updating-player nodes without regret writes.
-8. Correct average strategy weighting with acting-player own reach for the selected averaging policy.
-9. Apply CFR+ clipping once after merge.
-10. Add early solver-quality diagnostics for regret norms and strategy mass.
-11. Make `regret_updates/s` nonzero in the real CFR iteration benchmark.
+Add the shared metadata and compatibility layer that every later task will build on:
 
-### Milestone C: Heads-up kernel
+1. [x] Keep topology owned by immutable `game_graph`.
+2. [x] Add `solver_graph_annotations` and `solver_graph_view<N>` side arrays for actor, chance-event ID, terminal-leaf ID, and street/state metadata.
+3. [x] Add numeric policy types for table storage precision, accumulation precision, and reduction order.
+4. [x] Add `chance_mode` to chance metadata with `enumerate` and `sample`, while supporting only `enumerate` initially.
+5. [x] Add `player_mask` and use it in terminal/betting APIs instead of raw mask types.
+6. [x] Add compatibility hashing inputs for graph metadata, infoset/action layout, numeric policy, reduction policy, chance mode, and player count.
+7. [x] Add validation that side arrays match `node_count`, node kinds, actor ranges, chance-node IDs, terminal-node IDs, and street metadata constraints.
 
-1. Add `cfr_engine<2>` specialization.
-2. Preserve HU terminal exact paths.
-3. Use scalar OOP/IP reach and direct opponent-reach formulas.
-4. Add tests that prove `N=2` does not use generic N-way opponent product loops where avoidable.
+Implemented in `zeta/holdem/src/cfr/solver/metadata.h`, `zeta/holdem/src/terminal/terminal_types.h`, and the `cfr_graph_metadata` test suite.
 
-### Milestone D: Ownership and deterministic reduction
+This task creates stable names and compatibility contracts first so later graph generation, traversal, checkpointing, and diagnostics do not need type or format refactors.
 
-1. Add infoset owner ranges.
-2. Add owner-aware deterministic reduction design behind current reduction API.
-3. Add infoset/action/actor collision validation.
-4. Add infoset owner routing tests.
-5. Add remote delta volume and owner hit distribution diagnostics.
-6. Preserve the invariant that CFR+ clipping happens only after deterministic raw-delta merge.
+### Task 2: Define Hold'em infoset identity and memory planning
 
-### Milestone E: N-way reach and terminal integration
+Implement infoset identity before any large chance or betting expansion:
 
-1. Split traversal frame from reach stack.
-2. Add `cfr_engine<N>` for `N >= 3`.
-3. Add N-way reach state in separate scratch.
-4. Add N-way counterfactual reach product helper.
-5. Route N-way terminal leaves through `terminal_engine<N>`.
-6. Add three-player reach correctness tests.
+1. Define the Hold'em infoset key with acting player, street, private abstraction/exact combo class, public board abstraction ID, chance/runout class ID, betting history abstraction, stack/pot abstraction, legal action set ID, player count, and subgame/root context ID.
+2. Add abstraction-policy hooks that explicitly produce board abstraction IDs and chance/runout class IDs.
+3. Lower infoset keys to dense IDs before table construction.
+4. Validate that shared infoset IDs have identical actor, street, legal action IDs/order, abstraction class, player count, and owner.
+5. Estimate nodes, infosets, action values, regret bytes, strategy-sum bytes, owner-map bytes, worker-delta bytes, terminal-state bytes, chance-event bytes, scratch bytes, and checkpoint bytes before materializing large graphs.
+6. Fail graph construction/planning early when estimates exceed configured limits.
 
-### Milestone F: Chance events
+This task makes memory and table layout the controlling design constraint before chance expansion can explode the tree.
 
-1. Add chance event/outcome tables.
-2. Include dead-card or parent-legality metadata for chance validation.
-3. Replace uniform chance with outcome probabilities.
-4. Add blocker-safe flop/turn/river generation.
-5. Connect chance outcomes to board partition IDs.
-6. Validate probability sums and board legality.
+### Task 3: Build terminal-state and pot-layer semantics
 
-### Milestone G: Real betting graph
+Separate terminal representation from evaluator dispatch in its final API shape:
 
-1. Implement deterministic betting state transitions.
-2. Maintain `pot_layer` side-pot structure during state transitions.
-3. Implement legal action generation.
-4. Implement action abstraction policies.
-5. Lower generated states to `game_graph` plus solver side arrays.
-6. Add terminal leaf generation with pot/contribution context.
+1. Add `terminal_state<N>` and `terminal_state_table<N>`.
+2. Make terminal leaves reference terminal-state records instead of directly encoding evaluator calls.
+3. Represent showdown, fold, timeout, rake-adjusted, and future variant-specific cases through terminal-state kinds/data.
+4. Keep `terminal_engine<2>` on exact heads-up showdown/fold kernels.
+5. Keep `terminal_engine<N>` for N-way terminal dispatch.
+6. Ensure all terminal evaluation returns `terminal_values<N>` utility vectors and never takes a CFR updating-player perspective.
+7. Add `pot_layer { amount, player_mask eligible_mask, player_mask contributors_mask }` and carry pot layers in terminal states, even when the first implementation emits one main-pot layer.
+8. Include contribution, folded/all-in eligibility, and rake fields needed to audit terminal values.
 
-### Milestone H: Hold'em validation fixtures
+This task avoids terminal API churn by making evaluator selection a terminal-engine responsibility from the start.
 
-1. Add hand-authored graph fixtures through `graph_builder`.
-2. Add slow reference traversal over the same `game_graph`.
-3. Add direct terminal-vs-traversal comparisons using river caches.
-4. Add CFR+ reduction-order tests.
-5. Add infoset owner routing tests.
-6. Add regret-matching, terminal-perspective, reach-correctness, infoset-collision, and worker-count determinism tests.
-7. Add tiny known-equilibrium convergence tests.
-8. Add initial exploitability or best-response estimator hooks where exact tiny-graph evaluation is available.
+### Task 4: Implement deterministic betting-state generation and graph lowering
 
-### Milestone I: Scaling and persistence
+Build the real Hold'em graph-generation path instead of a disposable validation generator:
 
-1. Add checkpoint save/load/resume.
-2. Add shard-aligned checkpoint chunks.
-3. Add large table memory stress benchmarks.
-4. Add NUMA-aware owner range metadata.
-5. Add long-run diagnostics and convergence reporting on generated Hold'em abstractions.
+1. Implement deterministic `betting_state<N>` transitions for fold, check, call, bet, raise, and all-in.
+2. Maintain stacks, committed amounts, folded/all-in flags, current bet, raise count, action history, and `pot_layer` side-pot state during every transition.
+3. Implement legal action generation from current betting state.
+4. Implement action abstraction policies for fixed pot fractions, geometric sizes, street-specific sizing sets, stack-ratio buckets, and forced all-in thresholds.
+5. Lower generated states to immutable `game_graph` plus solver annotations.
+6. Lower terminal betting states to terminal-state records.
+7. Assign action indices, infoset IDs, chance-event IDs, terminal-leaf IDs, and street metadata during lowering.
+8. Validate graph shape, node kinds, action ordering, terminal-state references, side-pot invariants, and infoset/action compatibility.
 
----
+This task produces the production graph path used by both tests and real solving, so no later task needs to replace validation scaffolding.
 
-## Immediate next tasks
+### Task 5: Implement enumerated chance events and scheduler integration
 
-1. **Add graph metadata and memory accounting**: actor, chance-event, terminal-leaf, street, numeric policy, and construction-time memory estimates.
-2. **Define infoset identity before chance expansion**: include board abstraction ID, chance/runout class, dense ID assignment, and estimated table bytes before large graph generation.
-3. **Separate terminal vectors from CFR perspective**: terminal engines return `terminal_values<N>`; alternating CFR reads `utility[updating_player]`.
-4. **Add regret matching policy**: traversal consumes strategy probabilities from an explicit strategy policy instead of embedding regret matching.
-5. **Add child action values**: regret deltas require stored child values and node/depth-local values.
-6. **Mandate alternating update semantics first**: update regrets only when `actor == updating_player`; non-updating actors only propagate.
-7. **Fix average strategy weighting**: use `chance_reach * reach[actor] * sigma[action]` under the selected averaging policy.
-8. **Mandate raw-delta reduction**: apply CFR+ clipping only after worker deltas are merged.
-9. **Keep HU optimized**: implement a `cfr_engine<2>` path that uses scalar OOP/IP reach and the existing exact HU terminal kernels.
-10. **Add ownership diagnostics**: track remote delta volume and owner hit distribution.
-11. **Shape side-pot APIs now**: carry `pot_layer` with eligible and contributor masks even if the first graph emits one main-pot layer.
-12. **Add solver-quality hooks**: expose regret norms, strategy mass, and known-equilibrium convergence checks before relying on speed benchmarks.
-13. **Use Hold'em validation fixtures**: small generated or hand-authored Zeta graphs only, using the same graph/table/terminal/reduction code paths as production.
+Add chance using the final chance abstraction boundary, with enumeration as the first supported mode:
+
+1. Add `chance_event_table` and `chance_outcome` storage.
+2. Require `chance_mode::enumerate` for enabled chance traversal.
+3. Reject or explicitly disable `chance_mode::sample` until a checkpoint-compatible RNG stream policy is implemented.
+4. Include dead-card or parent-legality metadata for chance validation.
+5. Replace uniform chance-node traversal with outcome probabilities.
+6. Generate blocker-safe flop, turn, and river outcomes.
+7. Validate outcome counts, graph child alignment, probability sums, board legality, and dead-card collisions.
+8. Connect chance outcomes to board partition IDs and the existing board/partition scheduler.
+9. Report exact chance-outcome diagnostics separately from future sampled-chance diagnostics.
+
+This task makes chance expansion compatible with determinism, scheduling, convergence reporting, and future sampling without changing traversal APIs later.
+
+### Task 6: Implement CFR iteration math and strategy policy
+
+Turn traversal into a real alternating CFR/CFR+ iteration over the shared graph/table/terminal surfaces:
+
+1. Add explicit solver and iteration config with CFR variant, update mode, iteration number, updating player, strategy weight, numeric policy, reduction policy, and chance mode.
+2. Add strategy-policy abstraction for vanilla regret matching, CFR+, and future linear/DCFR policies.
+3. Ensure regret matching returns valid distributions for all-negative, all-zero, and positive-regret inputs.
+4. Add child action value storage and depth-local value storage.
+5. Compute terminal leaf values by evaluating terminal state to `terminal_values<N>` and selecting `utility[updating_player]` only inside CFR traversal.
+6. Compute node values from strategy-weighted child values.
+7. Compute raw regret deltas only when `actor == updating_player`.
+8. Propagate through non-updating-player nodes without regret writes.
+9. Weight average-strategy deltas by `strategy_weight * chance_reach * reach[actor] * sigma[action]`.
+10. Keep worker deltas raw and apply CFR+ clipping only after deterministic merge.
+11. Add real iteration diagnostics for regret updates, strategy updates, terminal evaluations, reduction values, and timing.
+
+This task establishes mathematically correct CFR behavior before optimizing HU or N-way kernels.
+
+### Task 7: Implement HU and N-way traversal kernels without duplicating shared systems
+
+Specialize only hot CFR math/traversal and terminal dispatch, while keeping graph, tables, scheduler, reduction, checkpoints, and validation shared:
+
+1. Add `cfr_engine<2>` with scalar OOP/IP reach, direct opponent-reach formulas, and exact HU terminal paths.
+2. Add `cfr_engine<N>` for `N >= 3` with `std::array<float, N>` reach state stored outside traversal frames.
+3. Use compact traversal frames with node ID, edge cursor, reach slot, value slot, and phase.
+4. Store reach/value scratch by reusable DFS depth slots where possible, not by node ID unless required.
+5. Add N-way counterfactual reach product helper.
+6. Ensure HU avoids generic N-way loops in opponent-reach and terminal hot paths.
+7. Share action-value, regret-delta, strategy-delta, scheduler, terminal-state, and reduction code wherever it is not in the hot specialized kernel.
+8. Add HU and three-player reach/value correctness fixtures.
+
+This task preserves heads-up performance while enabling N-way reach semantics without contaminating shared infrastructure.
+
+### Task 8: Implement infoset ownership and deterministic reduction
+
+Make multi-worker updates deterministic and ready for NUMA-aware table ownership:
+
+1. Add `infoset_owner_map` with contiguous owner ranges.
+2. Add optional `table_shard_view` over global regret and strategy-sum storage.
+3. Route sparse worker-local deltas to owner ranges during reduction.
+4. Apply raw regret deltas and strategy deltas in deterministic order.
+5. Apply CFR+ clipping only after all raw regret deltas are merged.
+6. Track `remote_delta_count`, `remote_delta_bytes`, `owner_hit_distribution`, `owner_remote_hit_distribution`, per-owner touched values, and per-owner reduction time.
+7. Report enough reduction diagnostics to decide whether sparse remote routing is dominating traversal.
+8. Preserve worker-count determinism under the selected floating-point/reduction policy.
+9. Keep a future scheduler-locality path open where partitions can prefer workers near expected touched infoset owners without changing the reduction API.
+10. Add owner-routing, CFR+ clipping-order, and worker-count determinism tests.
+
+This task separates traversal scheduling from table ownership without allowing concurrent traversal writes into global tables. Locality-aware scheduling is a later optimization, not a prerequisite for the first deterministic owner-sharded reduction.
+
+### Task 9: Add validation, reference checks, and convergence instrumentation
+
+Build correctness coverage over the actual Zeta solver components:
+
+1. Add hand-authored `game_graph` fixtures through `graph_builder`.
+2. Add generated tiny Hold'em river and betting-state fixtures through the production graph generator.
+3. Add slow reference traversal over the same `game_graph`, table layout, terminal-state table, and terminal engine.
+4. Compare traversal terminal leaves with direct terminal-engine calls using river caches and reach indices.
+5. Test regret matching, terminal perspective selection, child values, node values, alternating-update semantics, average-strategy weighting, reach correctness, chance probabilities, infoset collisions, owner routing, CFR+ reduction order, and worker-count determinism.
+6. Add tiny known-equilibrium convergence tests.
+7. Add quality diagnostics: `exploitability_estimate` where available, `average_strategy_mass`, `regret_norm`, `max_regret`, `max_regret_infoset_id`, `mean_regret`, `positive_regret_count`, `largest_strategy_entropy_drop`, `largest_strategy_change`, and strategy-sum mass by player.
+8. Add per-infoset diagnostic tests that identify the infoset/action range responsible for max regret or largest strategy movement.
+
+This task proves the solver is mathematically plausible, not merely deterministic and fast.
+
+### Task 10: Add checkpointing and resume compatibility
+
+Implement persistence after graph, table, owner, numeric, terminal-state, and chance-mode layouts are stable:
+
+1. Add checkpoint format versioning, endianness, player count, solver config hash, graph/config metadata hash, infoset/action/table layout hash, numeric policy, reduction policy, chance mode, owner ranges, iteration number, and CFR variant state.
+2. Save and load regret and strategy-sum tables with their storage encoding.
+3. Include accumulation precision and reduction-order policy in compatibility checks.
+4. Include terminal-state/table compatibility and chance-mode compatibility.
+5. Include sampling/RNG stream policy if sampled chance is enabled in the future.
+6. Reject resume on incompatible graph shape, infoset count, action offsets, player count, CFR variant, precision/layout/reduction policy, terminal-state layout, chance mode, or RNG stream policy.
+7. Align checkpoint chunks with infoset owner ranges and table shard views.
+8. Add save/load/resume tests over tiny generated Hold'em graphs and worker-owned table shards.
+
+This task persists only stable production layout decisions and avoids checkpoint-format churn.
+
+### Task 11: Add benchmarks, observability, and scaling checks
+
+Measure real solver work and expose scaling risks:
+
+1. Add iteration counters for nodes visited, edges scanned, player nodes, chance nodes, terminal nodes, terminal evaluations, regret updates, strategy updates, chance outcomes, reduction entries, reduction values, CFR+ clipped values, scheduler tasks, max traversal stack depth, max action count, zero-reach prunes, and phase timings.
+2. Add memory counters for nodes, edges, infosets, action values, chance events, chance outcomes, terminal leaves, terminal states, regret bytes, strategy-sum bytes, action-offset bytes, owner-map bytes, worker scratch bytes, delta-buffer reserved bytes, river cache/workspace bytes, and checkpoint estimates.
+3. Add benchmark tiers for hand-authored graph fixtures, tiny generated Hold'em river graphs, small generated river abstractions, board batches through the existing scheduler, large table memory stress, and turn/flop chance expansion.
+4. Add long-run convergence reporting on generated Hold'em abstractions.
+5. Add NUMA-ready owner range metadata without changing logical table storage.
+6. Ensure benchmarks report real regret updates, strategy updates, terminal evaluations, reductions, memory, and quality diagnostics.
+
+This task makes performance and quality visible on production structures rather than synthetic framework throughput.
 
 ---
 
@@ -1444,7 +1572,7 @@ Track capabilities explicitly so HU and N-way kernels do not accidentally promis
 The first serious multiway-capable solver is complete when:
 
 - A full CFR/CFR+ iteration computes action values, node values, regret deltas, and strategy deltas.
-- Terminal evaluation returns utility vectors and CFR selects the updating-player perspective.
+- Terminal leaves reference terminal-state records; terminal evaluation returns utility vectors and CFR selects the updating-player perspective.
 - Regret matching is behind an explicit strategy policy.
 - Worker deltas are raw and CFR+ clipping happens once after merge.
 - Infoset ownership is explicit and reductions can route by owner range.
@@ -1454,10 +1582,12 @@ The first serious multiway-capable solver is complete when:
 - HU uses a specialized fast path and keeps exact terminal kernels.
 - N-way traversal uses compile-time `N` reach state without bloating every traversal frame.
 - Chance events use explicit outcome probabilities, not uniform child placeholders.
+- Chance metadata includes an explicit `chance_mode`; enumeration is the first implemented mode and sampling requires checkpoint-compatible RNG policy.
 - Chance validation has dead-card or equivalent parent-legality metadata.
 - Generated Hold'em graphs lower into the same `game_graph` and table layout used by traversal.
-- Terminal and betting APIs carry `pot_layer` side-pot structure with eligible and contributor masks.
+- Terminal and betting APIs carry `pot_layer` side-pot structure with `player_mask` eligible and contributor masks.
 - Checkpoints validate graph, infoset, action-offset, player-count, table-layout, storage precision, accumulation precision, and reduction-order compatibility.
-- Solver-quality diagnostics report regret norms, strategy mass, and convergence on at least one tiny known-equilibrium graph.
+- Checkpoints validate chance mode and sampling/RNG policy if sampling is enabled.
+- Solver-quality diagnostics report regret norms, max-regret infoset ID, strategy movement/entropy changes, strategy mass, and convergence on at least one tiny known-equilibrium graph.
 - Benchmarks report real regret updates, strategy updates, terminal evaluations, reductions, and memory use.
 - Validation fixtures exercise Zeta Hold'em code paths rather than unrelated standalone games.

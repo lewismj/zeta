@@ -27,7 +27,9 @@ add_library(zeta-holdem STATIC
     src/cfr/tables/delta_buffer.h
     src/cfr/traversal/traversal.h
     src/cfr/solver/context.h
+    src/cfr/solver/infoset_planning.h
     src/cfr/solver/iteration.h
+    src/cfr/solver/metadata.h
     src/cfr/solver/river_context.h
     src/cfr/scheduler/dfs_partitioner.h
     src/cfr/scheduler/dfs_partitioner.cpp

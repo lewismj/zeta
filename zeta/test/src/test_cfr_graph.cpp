@@ -6,7 +6,9 @@
 #include "cfr/scheduler/dfs_partitioner.h"
 #include "cfr/scheduler/scheduler.h"
 #include "cfr/solver/context.h"
+#include "cfr/solver/infoset_planning.h"
 #include "cfr/solver/iteration.h"
+#include "cfr/solver/metadata.h"
 #include "cfr/solver/river_context.h"
 #include "cfr/tables/delta_buffer.h"
 #include "cfr/traversal/traversal.h"
@@ -92,6 +94,58 @@ void require_prepared_worker(
     if (!result) {
         BOOST_ERROR("worker context prepare failed: " << result.error().kind);
     }
+}
+
+solver_graph_annotations make_default_annotations(const game_graph& graph)
+{
+    solver_graph_annotations annotations;
+    annotations.actor_by_node.assign(graph.node_count, INVALID_PLAYER);
+    annotations.chance_event_id_by_node.assign(graph.node_count, INVALID_METADATA_ID);
+    annotations.terminal_leaf_id_by_node.assign(graph.node_count, INVALID_METADATA_ID);
+    annotations.state_by_node.assign(
+        graph.node_count,
+        solver_node_state_metadata{
+            .street = holdem_street::river,
+            .public_state_id = 7,
+            .betting_state_id = 11
+        });
+
+    uint32_t chance_event_id = 0;
+    uint32_t terminal_leaf_id = 0;
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (graph.is_player_node(node_id)) {
+            annotations.actor_by_node[node_id] = 0;
+        }
+        if (graph.node_types[node_id] == node_kind::chance
+            || graph.node_types[node_id] == node_kind::player_chance) {
+            annotations.chance_event_id_by_node[node_id] = chance_event_id++;
+        }
+        if (graph.is_terminal(node_id)) {
+            annotations.terminal_leaf_id_by_node[node_id] = terminal_leaf_id++;
+        }
+    }
+
+    return annotations;
+}
+
+game_graph create_shared_infoset_tree()
+{
+    graph_builder builder;
+
+    auto root = builder.add_node(node_kind::chance);
+    auto lhs_player = builder.add_node(node_kind::player);
+    auto rhs_player = builder.add_node(node_kind::player);
+    auto lhs_terminal = builder.add_node(node_kind::terminal);
+    auto rhs_terminal = builder.add_node(node_kind::terminal);
+
+    builder.add_edge(root, lhs_player, 0);
+    builder.add_edge(root, rhs_player, 1);
+    builder.add_edge(lhs_player, lhs_terminal, 0);
+    builder.add_edge(rhs_player, rhs_terminal, 0);
+    builder.set_infoset_id(lhs_player, 0);
+    builder.set_infoset_id(rhs_player, 0);
+
+    return require_graph(builder.build());
 }
 
 /**
@@ -273,6 +327,268 @@ BOOST_AUTO_TEST_CASE(builder_canonicalizes_edges_by_action_index) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+BOOST_AUTO_TEST_SUITE(cfr_graph_metadata)
+
+BOOST_AUTO_TEST_CASE(solver_graph_view_validates_side_arrays_and_node_kinds) {
+    auto graph = create_chance_tree();
+    auto annotations = make_default_annotations(graph);
+
+    auto result = validate_solver_graph_view(make_solver_graph_view<2>(graph, annotations));
+
+    BOOST_REQUIRE(result.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(solver_graph_view_rejects_non_player_actor_metadata) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    annotations.actor_by_node[0] = 0;
+
+    auto result = validate_solver_graph_view(make_solver_graph_view<2>(graph, annotations));
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == solver_graph_metadata_error_kind::invalid_actor);
+    BOOST_CHECK_EQUAL(result.error().node_id, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(solver_graph_view_rejects_conflicting_shared_infoset_actor) {
+    auto graph = create_shared_infoset_tree();
+    auto annotations = make_default_annotations(graph);
+    uint32_t first_player = game_graph::INVALID_NODE;
+    uint32_t second_player = game_graph::INVALID_NODE;
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (graph.is_player_node(node_id)) {
+            if (first_player == game_graph::INVALID_NODE) {
+                first_player = node_id;
+            } else {
+                second_player = node_id;
+            }
+        }
+    }
+    BOOST_REQUIRE_NE(first_player, game_graph::INVALID_NODE);
+    BOOST_REQUIRE_NE(second_player, game_graph::INVALID_NODE);
+    annotations.actor_by_node[first_player] = 0;
+    annotations.actor_by_node[second_player] = 1;
+
+    auto result = validate_solver_graph_view(make_solver_graph_view<2>(graph, annotations));
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == solver_graph_metadata_error_kind::incompatible_infoset_actor);
+    BOOST_CHECK_EQUAL(result.error().infoset_id, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(solver_graph_view_rejects_sample_chance_mode_until_supported) {
+    auto graph = create_chance_tree();
+    auto annotations = make_default_annotations(graph);
+
+    auto result = validate_solver_graph_view(make_solver_graph_view<2>(graph, annotations), chance_mode::sample);
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == solver_graph_metadata_error_kind::unsupported_chance_mode);
+}
+
+BOOST_AUTO_TEST_CASE(solver_compatibility_key_changes_with_policy_and_player_count) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    const auto view = make_solver_graph_view<2>(graph, annotations);
+
+    const auto baseline = make_solver_compatibility_key(view, layout);
+    const auto float64_tables = make_solver_compatibility_key(
+        view,
+        layout,
+        numeric_policy{
+            .table_storage = table_storage_precision::float64,
+            .accumulation = accumulation_precision::float64
+        });
+    const auto three_player = make_solver_compatibility_key(
+        make_solver_graph_view<3>(graph, annotations),
+        layout);
+
+    BOOST_CHECK_NE(baseline.numeric_policy_hash, float64_tables.numeric_policy_hash);
+    BOOST_CHECK_NE(baseline.graph_metadata_hash, three_player.graph_metadata_hash);
+    BOOST_CHECK_NE(baseline.player_count, three_player.player_count);
+}
+
+BOOST_AUTO_TEST_CASE(player_mask_backs_generic_terminal_masks) {
+    zeta::holdem::player_mask<4> active;
+    active.set(1);
+    active.set(3);
+
+    zeta::holdem::folded_mask<4> folded;
+    folded.set_folded(2, true);
+    zeta::holdem::pot_structure<4> pot;
+    pot.active = active;
+    pot.initialize_main_pot(100.0);
+
+    BOOST_CHECK(active[1]);
+    BOOST_CHECK(active[3]);
+    BOOST_CHECK_EQUAL(active.count(), 2u);
+    BOOST_CHECK(folded[2]);
+    BOOST_REQUIRE_EQUAL(pot.pots.size(), 1u);
+    BOOST_CHECK(pot.pots[0].eligible[1]);
+    BOOST_CHECK(pot.pots[0].eligible[3]);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(cfr_infoset_planning)
+
+holdem_infoset_key test_infoset_key(
+    const uint8_t actor,
+    const uint16_t player_count,
+    const uint32_t legal_action_set_id)
+{
+    return holdem_infoset_key{
+        .actor = actor,
+        .street = holdem_street::river,
+        .player_count = player_count,
+        .private_hand_class_id = 13,
+        .public_board_abstraction_id = 17,
+        .chance_runout_class_id = 19,
+        .betting_history_abstraction_id = 23,
+        .stack_pot_abstraction_id = 29,
+        .legal_action_set_id = legal_action_set_id,
+        .subgame_root_context_id = 31
+    };
+}
+
+std::vector<uint16_t> legal_action_ids_for_node(const game_graph& graph, const uint32_t node_id)
+{
+    std::vector<uint16_t> action_ids;
+    action_ids.reserve(graph.action_count(node_id));
+    for (const auto& edge : graph.out_edges(node_id)) {
+        action_ids.push_back(edge.action_index);
+    }
+    return action_ids;
+}
+
+BOOST_AUTO_TEST_CASE(holdem_infoset_key_policy_exposes_explicit_abstraction_hooks) {
+    constexpr exact_holdem_abstraction_policy policy;
+    constexpr solver_node_state_metadata state{
+        .street = holdem_street::river,
+        .public_state_id = 42,
+        .betting_state_id = 99
+    };
+
+    BOOST_CHECK_EQUAL(policy.private_hand_class_id(7), 7u);
+    BOOST_CHECK_EQUAL(policy.public_board_abstraction_id(state), 42u);
+    BOOST_CHECK_EQUAL(policy.chance_runout_class_id(11), 11u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_infoset_lowering_assigns_dense_ids_before_table_layout) {
+    auto graph = create_chance_tree();
+    std::vector<holdem_infoset_description> descriptions;
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (!graph.is_player_node(node_id)) {
+            continue;
+        }
+        descriptions.push_back(holdem_infoset_description{
+            .node_id = node_id,
+            .key = test_infoset_key(0, 2, 5),
+            .owner_id = 1,
+            .legal_action_ids = legal_action_ids_for_node(graph, node_id)
+        });
+    }
+
+    auto lowering = lower_holdem_infoset_keys<2>(graph, descriptions, 2);
+
+    BOOST_REQUIRE(lowering.has_value());
+    BOOST_REQUIRE(validate_holdem_infoset_lowering(graph, *lowering).has_value());
+    BOOST_CHECK_EQUAL(lowering->infoset_count(), 1u);
+    BOOST_CHECK_EQUAL(lowering->owner_by_infoset[0], 1u);
+    BOOST_CHECK_EQUAL(lowering->dense_id_by_node[graph.root_node], 0u);
+    BOOST_REQUIRE_EQUAL(lowering->legal_actions(0).size(), 2u);
+    BOOST_CHECK_EQUAL(lowering->legal_actions(0)[0], 0u);
+    BOOST_CHECK_EQUAL(lowering->legal_actions(0)[1], 1u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_infoset_lowering_rejects_conflicting_shared_infoset_identity) {
+    auto graph = create_shared_infoset_tree();
+    std::vector<uint32_t> player_nodes;
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (graph.is_player_node(node_id)) {
+            player_nodes.push_back(node_id);
+        }
+    }
+    BOOST_REQUIRE_EQUAL(player_nodes.size(), 2u);
+
+    std::vector<holdem_infoset_description> descriptions{
+        holdem_infoset_description{
+            .node_id = player_nodes[0],
+            .key = test_infoset_key(0, 2, 5),
+            .owner_id = 0,
+            .legal_action_ids = legal_action_ids_for_node(graph, player_nodes[0])
+        },
+        holdem_infoset_description{
+            .node_id = player_nodes[1],
+            .key = test_infoset_key(1, 2, 5),
+            .owner_id = 0,
+            .legal_action_ids = legal_action_ids_for_node(graph, player_nodes[1])
+        }
+    };
+
+    auto lowering = lower_holdem_infoset_keys<2>(graph, descriptions, 1);
+
+    BOOST_REQUIRE(!lowering);
+    BOOST_CHECK(lowering.error().kind == holdem_infoset_error_kind::inconsistent_shared_infoset);
+    BOOST_CHECK_EQUAL(lowering.error().infoset_id, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(cfr_memory_plan_estimates_table_dominated_storage_and_limits) {
+    auto graph = create_chance_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    const cfr_memory_plan_options options{
+        .worker_count = 4,
+        .terminal_state_count = graph.terminal_count,
+        .chance_event_count = 2
+    };
+
+    auto estimate = estimate_cfr_memory(
+        graph,
+        layout,
+        options);
+
+    BOOST_REQUIRE(estimate.has_value());
+    BOOST_CHECK_EQUAL(estimate->action_values, layout.value_count());
+    BOOST_CHECK_EQUAL(estimate->regret_bytes, layout.value_count() * sizeof(float));
+    BOOST_CHECK_EQUAL(estimate->strategy_sum_bytes, layout.value_count() * sizeof(float));
+    BOOST_CHECK_GT(estimate->total_bytes, estimate->regret_bytes + estimate->strategy_sum_bytes);
+
+    auto limited = estimate_cfr_memory(
+        graph,
+        layout,
+        options,
+        cfr_memory_plan_limits{.max_total_bytes = estimate->total_bytes - 1u});
+
+    BOOST_REQUIRE(!limited);
+    BOOST_CHECK(limited.error().kind == cfr_memory_plan_error_kind::total_byte_limit_exceeded);
+    BOOST_CHECK_EQUAL(limited.error().required, estimate->total_bytes);
+}
+
+BOOST_AUTO_TEST_CASE(planned_cfr_context_rejects_memory_limits_before_table_allocation) {
+    auto graph = create_chance_tree();
+    const zeta::holdem::board river = deterministic_river_board();
+    std::array<zeta::holdem::reach_vector, 2> ranges{};
+    std::vector<river_terminal_leaf> terminal_leaves(graph.node_count);
+    auto river_context = make_river_solver_context(
+        river,
+        ranges,
+        zeta::holdem::terminal_state_table<2>{},
+        std::move(terminal_leaves));
+
+    auto context = make_planned_cfr_context(
+        std::move(graph),
+        std::move(river_context),
+        cfr_memory_plan_options{.worker_count = 1},
+        cfr_memory_plan_limits{.max_action_values = 1});
+
+    BOOST_REQUIRE(!context);
+    BOOST_CHECK(context.error().kind == cfr_context_planning_error_kind::memory_plan);
+    BOOST_CHECK(context.error().memory_plan.kind == cfr_memory_plan_error_kind::action_value_limit_exceeded);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 BOOST_AUTO_TEST_SUITE(cfr_tables)
 
 BOOST_AUTO_TEST_CASE(action_layout_from_counts_is_infoset_major) {
@@ -449,6 +765,45 @@ BOOST_AUTO_TEST_CASE(river_reach_index_copy_characteristics_are_explicit) {
     BOOST_CHECK(std::is_trivially_copyable_v<reach_index>);
     BOOST_TEST_MESSAGE("river_reach_index bytes: " << sizeof(reach_index));
     BOOST_CHECK_GT(sizeof(reach_index), 64u * 1024u);
+}
+
+BOOST_AUTO_TEST_CASE(terminal_state_table_carries_main_pot_audit_fields) {
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 5.0, 75.0, 125.0);
+
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context));
+
+    BOOST_REQUIRE_EQUAL(terminal_states.size(), 1u);
+    BOOST_REQUIRE(terminal_states.contains(0));
+    const auto& state = terminal_states[0];
+    BOOST_CHECK(state.kind == zeta::holdem::terminal_state_kind::showdown);
+    BOOST_CHECK_EQUAL(state.context.gross_pot, 200.0);
+    BOOST_CHECK_EQUAL(state.context.rake, 5.0);
+    BOOST_REQUIRE_EQUAL(state.pot_layers.size(), 1u);
+    BOOST_CHECK_EQUAL(state.pot_layers[0].amount, 200.0);
+    BOOST_CHECK(state.pot_layers[0].eligible_mask[0]);
+    BOOST_CHECK(state.pot_layers[0].eligible_mask[1]);
+    BOOST_CHECK(state.pot_layers[0].contributors_mask[0]);
+    BOOST_CHECK(state.pot_layers[0].contributors_mask[1]);
+    BOOST_CHECK(state.active_eligible_mask[0]);
+    BOOST_CHECK(state.active_eligible_mask[1]);
+}
+
+BOOST_AUTO_TEST_CASE(fold_terminal_state_tracks_folded_and_eligible_players) {
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+
+    const auto state = zeta::holdem::make_fold_terminal_state(
+        context,
+        zeta::holdem::heads_up_player::ip);
+
+    BOOST_CHECK(state.kind == zeta::holdem::terminal_state_kind::fold);
+    BOOST_CHECK(!state.folded[0]);
+    BOOST_CHECK(state.folded[1]);
+    BOOST_CHECK(state.active_eligible_mask[0]);
+    BOOST_CHECK(!state.active_eligible_mask[1]);
+    BOOST_REQUIRE_EQUAL(state.pot_layers.size(), 1u);
+    BOOST_CHECK(state.pot_layers[0].contributors_mask[0]);
+    BOOST_CHECK(state.pot_layers[0].contributors_mask[1]);
 }
 
 BOOST_AUTO_TEST_CASE(worker_context_binds_graph_tables_and_terminal_views) {
@@ -648,12 +1003,16 @@ BOOST_AUTO_TEST_CASE(traversal_evaluates_river_showdown_terminal_leaf) {
 
     const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
 
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context));
+
     std::vector<river_terminal_leaf> leaves(graph.node_count);
-    leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
-    leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::showdown, context};
+    leaves[0] = river_terminal_leaf{0};
+    leaves[1] = river_terminal_leaf{0};
     const auto terminal_context = make_river_solver_context(
         deterministic_river_board(),
         std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        std::move(terminal_states),
         std::move(leaves));
 
     worker_context worker;
@@ -692,9 +1051,14 @@ BOOST_AUTO_TEST_CASE(traversal_evaluates_river_fold_terminal_leaf) {
     };
     const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
 
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(
+        context,
+        zeta::holdem::heads_up_player::ip));
+
     std::vector<river_terminal_leaf> leaves(graph.node_count);
-    leaves[0] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
-    leaves[1] = river_terminal_leaf{river_terminal_leaf_kind::fold, context, zeta::holdem::heads_up_player::ip};
+    leaves[0] = river_terminal_leaf{0};
+    leaves[1] = river_terminal_leaf{0};
 
     worker_context worker;
     require_prepared_worker(worker, graph, regrets);
@@ -703,6 +1067,7 @@ BOOST_AUTO_TEST_CASE(traversal_evaluates_river_fold_terminal_leaf) {
         .river_cache = &cache,
         .reach_indices = reach_indices,
         .terminal_leaves = leaves,
+        .terminal_states = terminal_states.view(),
         .perspective = zeta::holdem::heads_up_player::oop,
         .combo = oop_combo
     };
@@ -734,6 +1099,47 @@ BOOST_AUTO_TEST_CASE(traversal_rejects_missing_river_terminal_leaf_metadata) {
     BOOST_CHECK(result.error().kind == traversal_error_kind::invalid_terminal_context);
 }
 
+BOOST_AUTO_TEST_CASE(traversal_rejects_invalid_terminal_state_reference) {
+    auto graph = create_simple_tree();
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    worker_context worker;
+    require_prepared_worker(worker, graph, regrets);
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(
+        zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0)));
+    std::vector<river_terminal_leaf> leaves(graph.node_count);
+    leaves[0] = river_terminal_leaf{7};
+    leaves[1] = river_terminal_leaf{0};
+
+    const river_terminal_leaf_policy policy{
+        .river_cache = &cache,
+        .reach_indices = reach_indices,
+        .terminal_leaves = leaves,
+        .terminal_states = terminal_states.view(),
+        .perspective = zeta::holdem::heads_up_player::oop,
+        .combo = oop_combo
+    };
+
+    auto result = traverse_game_tree(worker, policy);
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == traversal_error_kind::invalid_terminal_context);
+    BOOST_CHECK_EQUAL(result.error().node_id, 0u);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(cfr_solver_iteration)
@@ -750,6 +1156,7 @@ BOOST_AUTO_TEST_CASE(cfr_context_owns_graph_tables_and_cached_river_reach) {
     const auto terminal_context = make_river_solver_context(
         deterministic_river_board(),
         std::array<zeta::holdem::reach_vector, 2>{oop_reach, ip_reach},
+        zeta::holdem::terminal_state_table<2>{},
         std::vector<river_terminal_leaf>(graph.node_count));
 
     auto context_result = make_cfr_context(std::move(graph), terminal_context);

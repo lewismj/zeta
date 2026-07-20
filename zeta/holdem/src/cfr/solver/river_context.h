@@ -20,6 +20,7 @@ namespace zeta::holdem::cfr::solver {
     struct river_solver_context {
         ::zeta::holdem::river_terminal_cache cache{};
         ::zeta::holdem::terminal_workspace<2> workspace{};
+        ::zeta::holdem::terminal_state_table<2> terminal_states{};
         std::vector<traversal::river_terminal_leaf> terminal_leaves;
 
         /**
@@ -33,6 +34,7 @@ namespace zeta::holdem::cfr::solver {
                 .river_cache = &cache,
                 .reach_indices = workspace.reach,
                 .terminal_leaves = terminal_leaves,
+                .terminal_states = terminal_states.view(),
                 .perspective = perspective,
                 .combo = combo
             };
@@ -45,11 +47,13 @@ namespace zeta::holdem::cfr::solver {
     [[nodiscard]] inline river_solver_context make_river_solver_context(
         const ::zeta::holdem::board river,
         const std::array<::zeta::holdem::reach_vector, 2>& ranges,
+        ::zeta::holdem::terminal_state_table<2> terminal_states,
         std::vector<traversal::river_terminal_leaf> terminal_leaves)
     {
         river_solver_context context;
         context.cache = ::zeta::holdem::make_river_terminal_cache(river);
         context.workspace.materialize(context.cache, ranges);
+        context.terminal_states = std::move(terminal_states);
         context.terminal_leaves = std::move(terminal_leaves);
         return context;
     }

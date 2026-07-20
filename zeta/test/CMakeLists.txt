@@ -153,6 +153,8 @@ zeta_register_boost_test_cases(holdem ${_zeta_holdem_test_cases})
 set(_zeta_cfr_test_suites
     cfr_graph_types
     cfr_graph_construction
+    cfr_graph_metadata
+    cfr_infoset_planning
     cfr_tables
     cfr_traversal
     cfr_solver_iteration
