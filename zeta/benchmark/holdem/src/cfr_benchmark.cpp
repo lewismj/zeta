@@ -548,6 +548,27 @@ namespace {
         }
         std::abort();
     }
+
+    std::array<zeta::holdem::combination_index, 3> first_three_compatible_live_combos(
+        const zeta::holdem::river_terminal_cache& cache)
+    {
+        for (std::size_t first_order = 0; first_order < cache.rank_order_count; ++first_order) {
+            const auto first = cache.rank_order[first_order];
+            for (std::size_t second_order = first_order + 1; second_order < cache.rank_order_count; ++second_order) {
+                const auto second = cache.rank_order[second_order];
+                if ((cache.masks[first] & cache.masks[second]) != 0) {
+                    continue;
+                }
+                for (std::size_t third_order = second_order + 1; third_order < cache.rank_order_count; ++third_order) {
+                    const auto third = cache.rank_order[third_order];
+                    if (((cache.masks[first] | cache.masks[second]) & cache.masks[third]) == 0) {
+                        return {first, second, third};
+                    }
+                }
+            }
+        }
+        std::abort();
+    }
 }
 
 game_graph require_graph(std::expected<game_graph, graph_build_error> result)
@@ -716,6 +737,52 @@ holdem_betting_graph_config<2> make_tiny_generated_river_config()
     config.max_history = 8;
     config.abstraction.fixed_pot_fractions = {0.5};
     config.abstraction.max_raises_per_street = 0;
+    return config;
+}
+
+holdem_betting_graph_config<2> make_larger_generated_hu_river_config()
+{
+    holdem_betting_graph_config<2> config{};
+    config.street = solver::holdem_street::river;
+    config.initial_stacks = {398.0, 396.0};
+    config.initial_committed = {2.0, 4.0};
+    config.root_actor = 0;
+    config.public_state_id = 2;
+    config.max_history = 12;
+    config.abstraction.fixed_pot_fractions = {0.25, 0.5, 0.75};
+    config.abstraction.geometric_size_count = 1;
+    config.abstraction.stack_ratio_buckets = {0.5, 0.8};
+    config.abstraction.max_raises_per_street = 2;
+    return config;
+}
+
+holdem_betting_graph_config<2> make_end_to_end_generated_hu_river_config()
+{
+    holdem_betting_graph_config<2> config{};
+    config.street = solver::holdem_street::river;
+    config.initial_stacks = {198.0, 196.0};
+    config.initial_committed = {2.0, 4.0};
+    config.root_actor = 0;
+    config.public_state_id = 4;
+    config.max_history = 15;
+    config.abstraction.fixed_pot_fractions = {0.25, 0.5, 0.75, 1.0};
+    config.abstraction.geometric_size_count = 2;
+    config.abstraction.stack_ratio_buckets = {0.5, 0.8};
+    config.abstraction.max_raises_per_street = 4;
+    return config;
+}
+
+holdem_betting_graph_config<3> make_generated_nway_river_config()
+{
+    holdem_betting_graph_config<3> config{};
+    config.street = solver::holdem_street::river;
+    config.initial_stacks = {99.0, 98.0, 97.0};
+    config.initial_committed = {1.0, 2.0, 0.0};
+    config.root_actor = 0;
+    config.public_state_id = 3;
+    config.max_history = 10;
+    config.abstraction.fixed_pot_fractions = {0.33, 0.75};
+    config.abstraction.max_raises_per_street = 1;
     return config;
 }
 
@@ -1525,6 +1592,15 @@ static void BM_CFRIterationLargeRealistic(benchmark::State& state)
         REALISTIC_BENCHMARK_TASK_CHUNK_SIZE);
 }
 
+static void BM_CFRIterationLargeChunkSize(benchmark::State& state)
+{
+    run_cfr_iteration_benchmark(
+        state,
+        create_benchmark_tree(3, 6),
+        REALISTIC_BENCHMARK_BOARD_COUNT,
+        static_cast<uint32_t>(state.range(1)));
+}
+
 static void BM_CFRSolverIterationTinyReference(benchmark::State& state)
 {
     auto graph = create_solver_iteration_tree();
@@ -1588,6 +1664,57 @@ static void BM_CFRSolverIterationTinyReference(benchmark::State& state)
     state.counters["average_strategy_mass"] = last_result.quality.average_strategy_mass;
     state.counters["regret_norm"] = last_result.quality.regret_norm;
     state.counters["positive_regrets"] = static_cast<double>(last_result.quality.positive_regret_count);
+}
+
+void set_generated_solver_iteration_counters(
+    benchmark::State& state,
+    const game_graph& graph,
+    const iteration_result& result,
+    const cfr_memory_estimate& memory,
+    const std::size_t worker_count)
+{
+    state.counters["workers"] = static_cast<double>(worker_count);
+    state.counters["scheduler_tasks"] = static_cast<double>(result.scheduler_task_count);
+    state.counters["scheduler_tasks_executed"] = static_cast<double>(result.scheduler_tasks_executed);
+    double traversal_time_ns = 0.0;
+    for (const auto traversal_time : result.per_worker_traversal_time_ns) {
+        traversal_time_ns += static_cast<double>(traversal_time);
+    }
+    state.counters["traversal_time_ns"] = traversal_time_ns;
+    state.counters["reduction_time_ns"] = static_cast<double>(result.reduction_time_ns);
+    state.counters["nodes/s"] = benchmark::Counter(
+        static_cast<double>(result.diagnostics.nodes_visited),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["edges/s"] = benchmark::Counter(
+        static_cast<double>(result.diagnostics.edges_scanned),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["terminal_evaluations/s"] = benchmark::Counter(
+        static_cast<double>(result.diagnostics.terminal_evaluations),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["regret_updates/s"] = benchmark::Counter(
+        static_cast<double>(result.diagnostics.regret_updates),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["strategy_updates/s"] = benchmark::Counter(
+        static_cast<double>(result.diagnostics.strategy_updates),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["reduction_values/s"] = benchmark::Counter(
+        static_cast<double>(result.diagnostics.reduction_values),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["graph_nodes"] = static_cast<double>(graph.node_count);
+    state.counters["graph_edges"] = static_cast<double>(graph.edges.size());
+    state.counters["infosets"] = static_cast<double>(graph.infoset_count);
+    state.counters["terminal_leaves"] = static_cast<double>(memory.terminal_leaf_count);
+    state.counters["terminal_states"] = static_cast<double>(memory.terminal_state_count);
+    state.counters["table_bytes"] = static_cast<double>(memory.regret_bytes + memory.strategy_sum_bytes);
+    state.counters["owner_map_bytes"] = static_cast<double>(memory.owner_map_bytes);
+    state.counters["worker_scratch_bytes"] = static_cast<double>(memory.scratch_bytes);
+    state.counters["delta_buffer_bytes"] = static_cast<double>(memory.worker_delta_bytes);
+    state.counters["river_cache_bytes"] = static_cast<double>(memory.river_cache_bytes);
+    state.counters["checkpoint_bytes"] = static_cast<double>(memory.checkpoint_bytes);
+    state.counters["regret_norm"] = result.quality.regret_norm;
+    state.counters["max_regret"] = result.quality.max_regret;
+    state.counters["positive_regrets"] = static_cast<double>(result.quality.positive_regret_count);
+    state.counters["strategy_mass"] = result.quality.average_strategy_mass;
 }
 
 static void BM_CFRSolverIterationGeneratedRiver(benchmark::State& state)
@@ -1664,48 +1791,232 @@ static void BM_CFRSolverIterationGeneratedRiver(benchmark::State& state)
             .river_cache_count = 1
         }).value();
 
-    state.counters["workers"] = static_cast<double>(workers.size());
-    state.counters["scheduler_tasks"] = static_cast<double>(last_result.scheduler_task_count);
-    state.counters["scheduler_tasks_executed"] = static_cast<double>(last_result.scheduler_tasks_executed);
-    double traversal_time_ns = 0.0;
-    for (const auto traversal_time : last_result.per_worker_traversal_time_ns) {
-        traversal_time_ns += static_cast<double>(traversal_time);
+    set_generated_solver_iteration_counters(state, lowered->graph, last_result, memory, workers.size());
+}
+
+static void BM_CFRSolverIterationGeneratedRiverHU_Larger(benchmark::State& state)
+{
+    auto lowered = lower_betting_tree_to_graph(make_larger_generated_hu_river_config());
+    if (!lowered) {
+        state.SkipWithError(to_string(lowered.error().kind));
+        return;
     }
-    state.counters["traversal_time_ns"] = traversal_time_ns;
-    state.counters["reduction_time_ns"] = static_cast<double>(last_result.reduction_time_ns);
-    state.counters["nodes/s"] = benchmark::Counter(
-        static_cast<double>(last_result.diagnostics.nodes_visited),
-        benchmark::Counter::kIsIterationInvariantRate);
-    state.counters["edges/s"] = benchmark::Counter(
-        static_cast<double>(last_result.diagnostics.edges_scanned),
-        benchmark::Counter::kIsIterationInvariantRate);
-    state.counters["terminal_evaluations/s"] = benchmark::Counter(
-        static_cast<double>(last_result.diagnostics.terminal_evaluations),
-        benchmark::Counter::kIsIterationInvariantRate);
-    state.counters["regret_updates/s"] = benchmark::Counter(
-        static_cast<double>(last_result.diagnostics.regret_updates),
-        benchmark::Counter::kIsIterationInvariantRate);
-    state.counters["strategy_updates/s"] = benchmark::Counter(
-        static_cast<double>(last_result.diagnostics.strategy_updates),
-        benchmark::Counter::kIsIterationInvariantRate);
-    state.counters["reduction_values/s"] = benchmark::Counter(
-        static_cast<double>(last_result.diagnostics.reduction_values),
-        benchmark::Counter::kIsIterationInvariantRate);
-    state.counters["graph_nodes"] = static_cast<double>(lowered->graph.node_count);
-    state.counters["graph_edges"] = static_cast<double>(lowered->graph.edges.size());
-    state.counters["infosets"] = static_cast<double>(lowered->graph.infoset_count);
-    state.counters["terminal_leaves"] = static_cast<double>(memory.terminal_leaf_count);
-    state.counters["terminal_states"] = static_cast<double>(memory.terminal_state_count);
-    state.counters["table_bytes"] = static_cast<double>(memory.regret_bytes + memory.strategy_sum_bytes);
-    state.counters["owner_map_bytes"] = static_cast<double>(memory.owner_map_bytes);
-    state.counters["worker_scratch_bytes"] = static_cast<double>(memory.scratch_bytes);
-    state.counters["delta_buffer_bytes"] = static_cast<double>(memory.worker_delta_bytes);
-    state.counters["river_cache_bytes"] = static_cast<double>(memory.river_cache_bytes);
-    state.counters["checkpoint_bytes"] = static_cast<double>(memory.checkpoint_bytes);
-    state.counters["regret_norm"] = last_result.quality.regret_norm;
-    state.counters["max_regret"] = last_result.quality.max_regret;
-    state.counters["positive_regrets"] = static_cast<double>(last_result.quality.positive_regret_count);
-    state.counters["strategy_mass"] = last_result.quality.average_strategy_mass;
+
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    const auto worker_count = static_cast<uint32_t>(state.range(0));
+    auto owner_map = make_even_infoset_owner_map(layout, worker_count).value();
+    std::vector<worker_context> workers(worker_count);
+    auto context = make_cfr_solver_context<2>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.owner_map = &owner_map;
+    context.reduction = reduction_policy{.order = reduction_order::owner_range_then_worker};
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const std::array<zeta::holdem::combination_index, 2> combos{oop_combo, ip_combo};
+    context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        lowered->terminal_leaves,
+        lowered->terminal_states.view(),
+        combos);
+
+    iteration_result last_result;
+    for (auto _ : state) {
+        auto result = run_cfr_iteration(
+            context,
+            iteration_config{
+                .variant = cfr_variant::vanilla,
+                .update_mode = cfr_update_mode::alternating,
+                .iteration = static_cast<uint64_t>(state.iterations()),
+                .updating_player = 0,
+                .strategy_weight = 1.0f
+            },
+            std::span<worker_context>{workers});
+        if (!result) {
+            state.SkipWithError(to_string(result.error().kind));
+            break;
+        }
+        last_result = *result;
+        benchmark::DoNotOptimize(last_result.root_utility);
+        benchmark::ClobberMemory();
+    }
+
+    const auto memory = estimate_cfr_memory(
+        lowered->graph,
+        layout,
+        cfr_memory_plan_options{
+            .worker_count = worker_count,
+            .terminal_leaf_count = static_cast<uint32_t>(lowered->terminal_leaves.size()),
+            .terminal_state_count = static_cast<uint32_t>(lowered->terminal_states.size()),
+            .river_cache_count = 1
+        }).value();
+
+    set_generated_solver_iteration_counters(state, lowered->graph, last_result, memory, workers.size());
+}
+
+static void BM_CFRSolverIterationGeneratedRiverHU_EndToEnd(benchmark::State& state)
+{
+    auto lowered = lower_betting_tree_to_graph(make_end_to_end_generated_hu_river_config());
+    if (!lowered) {
+        state.SkipWithError(to_string(lowered.error().kind));
+        return;
+    }
+
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    const auto worker_count = static_cast<uint32_t>(state.range(0));
+    auto owner_map = make_even_infoset_owner_map(layout, worker_count).value();
+    std::vector<worker_context> workers(worker_count);
+    auto context = make_cfr_solver_context<2>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.owner_map = &owner_map;
+    context.reduction = reduction_policy{.order = reduction_order::owner_range_then_worker};
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const std::array<zeta::holdem::combination_index, 2> combos{oop_combo, ip_combo};
+    context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        lowered->terminal_leaves,
+        lowered->terminal_states.view(),
+        combos);
+
+    iteration_result last_result;
+    for (auto _ : state) {
+        auto result = run_cfr_iteration(
+            context,
+            iteration_config{
+                .variant = cfr_variant::vanilla,
+                .update_mode = cfr_update_mode::alternating,
+                .iteration = static_cast<uint64_t>(state.iterations()),
+                .updating_player = 0,
+                .strategy_weight = 1.0f
+            },
+            std::span<worker_context>{workers});
+        if (!result) {
+            state.SkipWithError(to_string(result.error().kind));
+            break;
+        }
+        last_result = *result;
+        benchmark::DoNotOptimize(last_result.root_utility);
+        benchmark::ClobberMemory();
+    }
+
+    const auto memory = estimate_cfr_memory(
+        lowered->graph,
+        layout,
+        cfr_memory_plan_options{
+            .worker_count = worker_count,
+            .terminal_leaf_count = static_cast<uint32_t>(lowered->terminal_leaves.size()),
+            .terminal_state_count = static_cast<uint32_t>(lowered->terminal_states.size()),
+            .river_cache_count = 1
+        }).value();
+
+    set_generated_solver_iteration_counters(state, lowered->graph, last_result, memory, workers.size());
+}
+
+static void BM_CFRSolverIterationGeneratedRiverNWay(benchmark::State& state)
+{
+    auto lowered = lower_betting_tree_to_graph(make_generated_nway_river_config());
+    if (!lowered) {
+        state.SkipWithError(to_string(lowered.error().kind));
+        return;
+    }
+
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    const auto worker_count = static_cast<uint32_t>(state.range(0));
+    auto owner_map = make_even_infoset_owner_map(layout, worker_count).value();
+    std::vector<worker_context> workers(worker_count);
+    auto context = make_cfr_solver_context<3>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.owner_map = &owner_map;
+    context.reduction = reduction_policy{.order = reduction_order::owner_range_then_worker};
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto combos = first_three_compatible_live_combos(cache);
+    std::array<zeta::holdem::reach_vector, 3> ranges{};
+    for (std::size_t player = 0; player < combos.size(); ++player) {
+        ranges[player][combos[player]] = 1.0f;
+    }
+    const std::array<zeta::holdem::river_reach_index, 3> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, ranges[0]),
+        zeta::holdem::make_river_reach_index(cache, ranges[1]),
+        zeta::holdem::make_river_reach_index(cache, ranges[2])
+    };
+    context.terminal_provider = make_terminal_state_provider<3>(
+        cache,
+        reach_indices,
+        lowered->terminal_leaves,
+        lowered->terminal_states.view(),
+        combos);
+
+    iteration_result last_result;
+    for (auto _ : state) {
+        auto result = run_cfr_iteration(
+            context,
+            iteration_config{
+                .variant = cfr_variant::vanilla,
+                .update_mode = cfr_update_mode::alternating,
+                .iteration = static_cast<uint64_t>(state.iterations()),
+                .updating_player = 0,
+                .strategy_weight = 1.0f
+            },
+            std::span<worker_context>{workers});
+        if (!result) {
+            state.SkipWithError(to_string(result.error().kind));
+            break;
+        }
+        last_result = *result;
+        benchmark::DoNotOptimize(last_result.root_utility);
+        benchmark::ClobberMemory();
+    }
+
+    const auto memory = estimate_cfr_memory(
+        lowered->graph,
+        layout,
+        cfr_memory_plan_options{
+            .worker_count = worker_count,
+            .terminal_leaf_count = static_cast<uint32_t>(lowered->terminal_leaves.size()),
+            .terminal_state_count = static_cast<uint32_t>(lowered->terminal_states.size()),
+            .river_cache_count = 1
+        }).value();
+
+    set_generated_solver_iteration_counters(state, lowered->graph, last_result, memory, workers.size());
 }
 
 static void BM_CFRCheckpointGeneratedRiver(benchmark::State& state)
@@ -1795,8 +2106,21 @@ BENCHMARK(BM_CFRIterationSmall)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRea
 BENCHMARK(BM_CFRIterationMedium)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIterationLarge)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIterationLargeRealistic)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_CFRIterationLargeChunkSize)
+    ->Args({12, 1})
+    ->Args({12, 2})
+    ->Args({12, 4})
+    ->Args({12, 8})
+    ->Args({12, 16})
+    ->Args({12, 32})
+    ->Args({12, 64})
+    ->Args({12, 128})
+    ->UseRealTime();
 BENCHMARK(BM_CFRSolverIterationTinyReference)->Arg(1)->Arg(2)->Arg(4)->UseRealTime();
 BENCHMARK(BM_CFRSolverIterationGeneratedRiver)->Arg(1)->Arg(2)->Arg(4)->UseRealTime();
+BENCHMARK(BM_CFRSolverIterationGeneratedRiverHU_Larger)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_CFRSolverIterationGeneratedRiverHU_EndToEnd)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
+BENCHMARK(BM_CFRSolverIterationGeneratedRiverNWay)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRCheckpointGeneratedRiver)->Arg(1)->Arg(2)->Arg(4)->UseRealTime();
 #if defined(__linux__)
 BENCHMARK(BM_CFRIteration_L1MissRate)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();

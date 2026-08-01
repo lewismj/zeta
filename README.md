@@ -13,6 +13,8 @@ The core library provides the generic card representation, deck traits, suit/ran
 
 The Hold'em module currently includes a lookup-based native 7-card evaluator and supporting card/board structures.
 
+- [Core structures](doc/holdem/core_structures.md)
+- [Core algorithms](doc/holdem/core_algorithms.md)
 - [Lookup-based 7-card evaluator](doc/holdem/post_flop_hand_evaluator.md)
 - [PokerStove range parser](doc/holdem/range_parser.md)
 - [River terminal evaluator](doc/holdem/terminal_evaluator.md)
@@ -80,21 +82,24 @@ without touching the fast path:
 
 8. **Abstraction layers** — bucketed ranges feeding enumeration/sampled kernels
 
-#### Benchmark baseline (heads-up river showdown)
+#### Benchmark baseline (CFR runtime and scheduler)
 
-Current performance on dense 1081-combo heads-up evaluation (WSL Clang Release):
+Latest Google Benchmark summary from `zeta-bench-holdem-cfr` on Release WSL Clang (`setarch x86_64 -R`):
 
-| Benchmark | Throughput | Latency | Outcome |
+| Benchmark | Throughput | CPU time | Purpose |
 |---|---:|---:|---|
-| Dense showdown | 122.3M/s | ~141 µs | Two rank-buckets merged |
-| Sparse (50 combos) | 84.2M/s | ~9.5 µs | Per-card blocker correction |
-| Sparse (100 combos) | 91.7M/s | ~17.4 µs | Scaling typical game states |
-
-The 40G matchups/sec throughput on dense evaluation demonstrates the architecture
-is not the bottleneck; competitive differentiation will come from **systems
-engineering** (memory layout, cache efficiency, parallelism), **sampling quality**
-(variance reduction, adaptive refinement), and **abstraction** (bucket hierarchies,
-compression).
+| `BM_CFRIterationMedium/1/real_time` | `edges/s=54.7146M/s` | `17.205 us` | Medium graph single-worker CFR iteration baseline |
+| `BM_CFRIterationMedium/4/real_time` | `edges/s=162.42M/s` | `58.487 us` | Medium graph CFR scaling at 4 workers |
+| `BM_CFRIterationMedium/8/real_time` | `edges/s=186.081M/s` | `128.162 us` | Medium graph CFR scaling at 8 workers |
+| `BM_CFRIterationLarge/1/real_time` | `edges/s=53.1613M/s` | `26.777 us` | Large graph single-worker CFR iteration baseline |
+| `BM_CFRIterationLarge/4/real_time` | `edges/s=151.907M/s` | `93.186 us` | Large graph CFR scaling at 4 workers |
+| `BM_CFRIterationLarge/12/real_time` | `edges/s=223.395M/s` | `336.141 us` | Large graph CFR scaling at 12 workers |
+| `BM_CFRIterationLargeRealistic/8/real_time` | `edges/s=168.171M/s` | `210.954 us` | Large realistic scheduling profile (chunk size 64) |
+| `BM_CFRIterationLargeChunkSize/12/1/real_time` | `edges/s=225.67M/s` | `316.873 us` | Chunk-size sweep best point on large graph (12 workers) |
+| `BM_CFRIterationLargeChunkSize/12/64/real_time` | `edges/s=160.533M/s` | `308.604 us` | Chunk-size sweep larger chunks on same workload |
+| `BM_CFRIterationLargeChunkSize/12/128/real_time` | `edges/s=118.043M/s` | `263.516 us` | Chunk-size sweep upper bound (over-chunked) |
+| `BM_BoardPartitionSchedulerRealistic/12/real_time` | `actions/s=6.19082G/s, tasks/s=154.884M/s` | `197.977 us` | Dynamic board-partition scheduler realistic workload |
+| `BM_BoardPartitionStaticRangeRealistic/12/real_time` | `actions/s=8.44126G/s` | `205.034 us` | Static-range scheduler comparison point |
 
 ### Evaluator benchmark summary
 
