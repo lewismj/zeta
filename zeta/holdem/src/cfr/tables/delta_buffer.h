@@ -283,4 +283,26 @@ namespace zeta::holdem::cfr {
         apply_strategy_deltas(strategy_sums, buffer);
     }
 
+    /**
+     * Accumulate scaled sparse deltas into another worker-local delta buffer.
+     */
+    inline void add_scaled_delta_buffer(
+        table_delta_buffer& target,
+        const table_delta_buffer& source,
+        const float scale) noexcept
+    {
+        assert(same_action_offsets(target.action_offsets(), source.action_offsets()));
+
+        for (const auto& entry : source.entries()) {
+            auto target_regrets = target.regret_deltas(entry.infoset_id);
+            auto target_strategies = target.strategy_deltas(entry.infoset_id);
+            const auto source_regrets = source.regret_deltas_for(entry);
+            const auto source_strategies = source.strategy_deltas_for(entry);
+            for (uint32_t action_index = 0; action_index < source_regrets.size(); ++action_index) {
+                target_regrets[action_index] += source_regrets[action_index] * scale;
+                target_strategies[action_index] += source_strategies[action_index] * scale;
+            }
+        }
+    }
+
 }

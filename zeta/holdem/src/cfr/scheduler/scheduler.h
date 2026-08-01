@@ -206,9 +206,7 @@ namespace zeta::holdem::cfr::scheduler {
 
         const auto total_tasks = plan.task_count();
         const auto task_chunk_size = std::max<uint32_t>(config.task_chunk_size, 1u);
-        const auto active_worker_count = std::min<uint32_t>(
-            config.worker_count,
-            static_cast<uint32_t>(std::min<uint64_t>(total_tasks, std::numeric_limits<uint32_t>::max())));
+        const auto active_worker_count = config.worker_count;
 
         scheduler_run_summary summary;
         summary.workers.resize(active_worker_count);
@@ -216,13 +214,33 @@ namespace zeta::holdem::cfr::scheduler {
             summary.workers[worker_id].worker_id = worker_id;
         }
 
-        std::atomic<uint64_t> next_task{0};
+        std::atomic<uint64_t> next_task{active_worker_count};
         std::atomic<bool> stop_requested{false};
         std::mutex error_mutex;
         std::expected<void, scheduler_error> first_error{};
 
         auto worker_main = [&](const uint32_t worker_id) {
             auto& worker = summary.workers[worker_id];
+            auto process_task = [&](const uint64_t task_index) {
+                const auto task = plan.task_at(task_index);
+                if (auto result = detail::invoke_scheduler_task(task_callback, worker, task); !result) {
+                    const std::lock_guard lock{error_mutex};
+                    if (first_error.has_value()) {
+                        first_error = std::unexpected(detail::contextualize_error(result.error(), worker, task));
+                    }
+                    stop_requested.store(true, std::memory_order_release);
+                    return false;
+                }
+
+                ++worker.tasks_executed;
+                worker.estimated_work += task.partition->estimated_work;
+                return true;
+            };
+
+            if (worker_id < total_tasks && !process_task(worker_id)) {
+                return;
+            }
+
             while (!stop_requested.load(std::memory_order_acquire)) {
                 const auto chunk_begin = next_task.fetch_add(task_chunk_size, std::memory_order_relaxed);
                 if (chunk_begin >= total_tasks) {
@@ -235,18 +253,9 @@ namespace zeta::holdem::cfr::scheduler {
                         break;
                     }
 
-                    const auto task = plan.task_at(task_index);
-                    if (auto result = detail::invoke_scheduler_task(task_callback, worker, task); !result) {
-                        const std::lock_guard lock{error_mutex};
-                        if (first_error.has_value()) {
-                            first_error = std::unexpected(detail::contextualize_error(result.error(), worker, task));
-                        }
-                        stop_requested.store(true, std::memory_order_release);
+                    if (!process_task(task_index)) {
                         break;
                     }
-
-                    ++worker.tasks_executed;
-                    worker.estimated_work += task.partition->estimated_work;
                 }
             }
         };

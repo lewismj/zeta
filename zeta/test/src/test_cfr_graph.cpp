@@ -1758,16 +1758,85 @@ BOOST_AUTO_TEST_CASE(run_cfr_iteration_traverses_reduces_and_reports_diagnostics
         std::span<worker_context>{workers});
 
     BOOST_REQUIRE(result.has_value());
-    BOOST_CHECK_EQUAL(result->traversals_run, 1u);
-    BOOST_CHECK_EQUAL(result->workers_used, 1u);
-    BOOST_CHECK_EQUAL(result->diagnostics.nodes_visited, graph.node_count);
-    BOOST_CHECK_EQUAL(result->diagnostics.local_delta_entries_touched, 1u);
+    BOOST_CHECK_EQUAL(result->traversals_run, 2u);
+    BOOST_CHECK_EQUAL(result->workers_used, 2u);
+    BOOST_CHECK_EQUAL(result->scheduler_tasks_executed, 2u);
+    BOOST_CHECK_EQUAL(result->scheduler_task_count, 2u);
+    BOOST_REQUIRE_EQUAL(result->per_worker_traversal_time_ns.size(), 2u);
+    BOOST_CHECK_EQUAL(result->diagnostics.nodes_visited, graph.node_count * 2u);
+    BOOST_CHECK_EQUAL(result->diagnostics.local_delta_entries_touched, 2u);
     BOOST_CHECK_SMALL(strategy_sums.value(0, 0) - 0.5f, 0.00001f);
     BOOST_CHECK_SMALL(strategy_sums.value(0, 1) - 0.5f, 0.00001f);
     BOOST_CHECK_EQUAL(result->quality.average_strategy_mass, 1.0);
     BOOST_REQUIRE_EQUAL(result->quality.strategy_sum_mass_by_player.size(), 2u);
     BOOST_CHECK_EQUAL(result->quality.strategy_sum_mass_by_player[0], 1.0);
     BOOST_CHECK_EQUAL(result->quality.max_regret_infoset_id, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_is_deterministic_across_worker_counts) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    terminal_utility[0] = 1.0f;
+    terminal_utility[1] = -1.0f;
+
+    auto run_with_workers = [&](const uint32_t worker_count) {
+        regret_table regrets(layout);
+        strategy_sum_table strategy_sums(layout);
+        std::vector<worker_context> workers(worker_count);
+        auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+        context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
+
+        auto result = run_cfr_iteration(
+            context,
+            iteration_config{.updating_player = 0},
+            std::span<worker_context>{workers});
+
+        BOOST_REQUIRE(result.has_value());
+        BOOST_CHECK_EQUAL(result->workers_used, worker_count);
+        BOOST_CHECK_EQUAL(result->scheduler_tasks_executed, worker_count);
+        return std::pair{regrets.regrets, strategy_sums.sums};
+    };
+
+    const auto one_worker = run_with_workers(1);
+    const auto two_workers = run_with_workers(2);
+    const auto three_workers = run_with_workers(3);
+
+    BOOST_REQUIRE_EQUAL(one_worker.first.size(), two_workers.first.size());
+    BOOST_REQUIRE_EQUAL(one_worker.first.size(), three_workers.first.size());
+    for (uint32_t i = 0; i < one_worker.first.size(); ++i) {
+        BOOST_CHECK_SMALL(one_worker.first[i] - two_workers.first[i], 0.00001f);
+        BOOST_CHECK_SMALL(one_worker.first[i] - three_workers.first[i], 0.00001f);
+        BOOST_CHECK_SMALL(one_worker.second[i] - two_workers.second[i], 0.00001f);
+        BOOST_CHECK_SMALL(one_worker.second[i] - three_workers.second[i], 0.00001f);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_reports_owner_routed_remote_deltas) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    auto owner_map = make_even_infoset_owner_map(layout, 2).value();
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    terminal_utility[0] = 1.0f;
+    terminal_utility[1] = -1.0f;
+    std::array<worker_context, 2> workers;
+    auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
+    context.owner_map = &owner_map;
+    context.reduction = reduction_policy{.order = reduction_order::owner_range_then_worker};
+
+    auto result = run_cfr_iteration(context, iteration_config{.updating_player = 0}, std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_GT(result->reduction.remote_delta_count, 0u);
+    BOOST_REQUIRE_EQUAL(result->reduction.owner_hit_distribution.size(), 2u);
+    BOOST_CHECK_GT(result->reduction.owner_hit_distribution[0], 0u);
+    BOOST_CHECK_GT(result->reduction.owner_remote_hit_distribution[0], 0u);
+    BOOST_CHECK_GT(result->reduction_time_ns, 0u);
 }
 
 BOOST_AUTO_TEST_CASE(quality_diagnostics_identify_regret_and_strategy_locations) {

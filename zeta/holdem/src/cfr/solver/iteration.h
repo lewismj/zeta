@@ -1,5 +1,7 @@
 #pragma once
 
+#include "cfr/scheduler/dfs_partitioner.h"
+#include "cfr/scheduler/scheduler.h"
 #include "cfr/solver/metadata.h"
 #include "cfr/tables/delta_buffer.h"
 #include "cfr/traversal/traversal.h"
@@ -14,6 +16,7 @@
 #include <expected>
 #include <functional>
 #include <istream>
+#include <limits>
 #include <numeric>
 #include <ostream>
 #include <span>
@@ -87,6 +90,11 @@ namespace zeta::holdem::cfr::solver {
         traversal::traversal_diagnostics diagnostics{};
         reduction_diagnostics reduction{};
         quality_diagnostics quality{};
+        std::vector<uint64_t> per_worker_traversal_time_ns;
+        uint64_t reduction_time_ns = 0;
+        uint64_t scheduler_tasks_executed = 0;
+        uint64_t scheduler_task_count = 0;
+        uint64_t scheduler_estimated_work = 0;
         uint32_t traversals_run = 0;
         uint32_t workers_used = 0;
     };
@@ -101,6 +109,7 @@ namespace zeta::holdem::cfr::solver {
         table_layout_mismatch,
         graph_metadata,
         chance_table,
+        scheduler,
         traversal,
         checkpoint
     };
@@ -110,6 +119,7 @@ namespace zeta::holdem::cfr::solver {
         uint32_t worker_id = 0;
         solver_graph_metadata_error graph_metadata{};
         chance_table_error chance_table{};
+        scheduler::scheduler_error scheduler{};
         traversal::traversal_error traversal{};
     };
 
@@ -126,6 +136,7 @@ namespace zeta::holdem::cfr::solver {
             case table_layout_mismatch:   return "iteration_error_kind::table_layout_mismatch";
             case graph_metadata:          return "iteration_error_kind::graph_metadata";
             case chance_table:            return "iteration_error_kind::chance_table";
+            case scheduler:               return "iteration_error_kind::scheduler";
             case traversal:               return "iteration_error_kind::traversal";
             case checkpoint:              return "iteration_error_kind::checkpoint";
         }
@@ -1975,6 +1986,49 @@ namespace zeta::holdem::cfr::solver {
 
             return {};
         }
+
+        [[nodiscard]] inline std::vector<scheduler::graph_partition> make_even_iteration_partitions(
+            const game_graph& graph,
+            const uint32_t target_count)
+        {
+            std::vector<scheduler::graph_partition> partitions;
+            if (graph.node_count == 0u || target_count == 0u) {
+                return partitions;
+            }
+
+            const auto partition_count = std::min(target_count, graph.node_count);
+            partitions.reserve(partition_count);
+            const auto base_size = graph.node_count / partition_count;
+            const auto remainder = graph.node_count % partition_count;
+            uint32_t begin_node = 0;
+
+            for (uint32_t partition_id = 0; partition_id < partition_count; ++partition_id) {
+                const auto node_count = base_size + (partition_id < remainder ? 1u : 0u);
+                const auto end_node = begin_node + node_count;
+
+                scheduler::graph_partition partition{};
+                partition.begin_node = begin_node;
+                partition.end_node = end_node;
+                partition.node_count = node_count;
+                partition.min_depth = std::numeric_limits<uint16_t>::max();
+
+                for (uint32_t node_id = begin_node; node_id < end_node; ++node_id) {
+                    partition.terminal_count += graph.is_terminal(node_id) ? 1u : 0u;
+                    partition.action_count += graph.action_count(node_id);
+                    partition.min_depth = std::min(partition.min_depth, graph.node_depth[node_id]);
+                    partition.max_depth = std::max(partition.max_depth, graph.node_depth[node_id]);
+                }
+
+                if (partition.min_depth == std::numeric_limits<uint16_t>::max()) {
+                    partition.min_depth = 0;
+                }
+                partition.estimated_work = std::max<uint64_t>(partition.action_count, partition.node_count);
+                partitions.push_back(partition);
+                begin_node = end_node;
+            }
+
+            return partitions;
+        }
     }
 
     /**
@@ -1993,44 +2047,115 @@ namespace zeta::holdem::cfr::solver {
         auto& graph = *context.graph;
         auto& regrets = *context.regrets;
         auto& strategy_sums = *context.strategy_sums;
-        auto& worker = workers.front();
         using engine = cfr_engine<N>;
 
-        if (auto prepared = traversal::prepare_worker_context(worker, graph, regrets); !prepared) {
-            return std::unexpected(iteration_error{iteration_error_kind::table_layout_mismatch});
-        }
-        if (auto prepared = detail::prepare_cfr_kernel_scratch<N>(graph, worker); !prepared) {
-            return std::unexpected(prepared.error());
+        std::vector<table_delta_buffer> scheduled_deltas(workers.size());
+        for (uint32_t worker_id = 0; worker_id < workers.size(); ++worker_id) {
+            auto& worker = workers[worker_id];
+            if (auto prepared = traversal::prepare_worker_context(worker, graph, regrets); !prepared) {
+                return std::unexpected(iteration_error{iteration_error_kind::table_layout_mismatch, worker_id});
+            }
+            if (auto prepared = detail::prepare_cfr_kernel_scratch<N>(graph, worker); !prepared) {
+                return std::unexpected(prepared.error());
+            }
+            if (auto prepared = scheduled_deltas[worker_id].reset_layout(regrets.action_offsets); !prepared) {
+                return std::unexpected(iteration_error{iteration_error_kind::table_layout_mismatch, worker_id});
+            }
+            scheduled_deltas[worker_id].reserve_sparse_entries(graph.infoset_count, regrets.value_count());
         }
 
-        std::expected<traversal::traversal_result, iteration_error> traversal_result =
-            config.variant == cfr_variant::cfr_plus
-                ? engine::template traverse<cfr_plus_regret_matching_policy>(
-                    graph,
-                    *context.graph_annotations,
-                    context.chance_events,
-                    regrets,
-                    worker,
-                    config,
-                    context.terminal_provider)
-                : engine::template traverse<vanilla_regret_matching_policy>(
-                    graph,
-                    *context.graph_annotations,
-                    context.chance_events,
-                    regrets,
-                    worker,
-                    config,
-                    context.terminal_provider);
-        if (!traversal_result) {
-            return std::unexpected(traversal_result.error());
+        auto partitions = detail::make_even_iteration_partitions(graph, static_cast<uint32_t>(workers.size()));
+        auto plan_result = scheduler::make_board_partition_plan(
+            context.chance_events == nullptr
+                ? 1u
+                : std::max<uint32_t>(1u, chance_board_partition_count(*context.chance_events)),
+            std::span<const scheduler::graph_partition>{partitions});
+        if (!plan_result) {
+            return std::unexpected(iteration_error{
+                .kind = iteration_error_kind::scheduler,
+                .scheduler = plan_result.error()
+            });
         }
+        const auto& plan = *plan_result;
+        const auto delta_scale = 1.0f / static_cast<float>(plan.task_count());
 
         iteration_result result;
-        const std::array<const traversal::worker_context*, 1> worker_ptrs{&worker};
+        result.per_worker_traversal_time_ns.assign(workers.size(), 0u);
+        result.scheduler_task_count = plan.task_count();
+        std::vector<float> root_utility_by_worker(workers.size(), 0.0f);
+        std::vector<traversal::traversal_diagnostics> diagnostics_by_worker(workers.size());
+        std::vector<uint32_t> traversals_by_worker(workers.size(), 0u);
+
+        auto schedule_result = scheduler::run_board_partition_scheduler(
+            plan,
+            scheduler::scheduler_runtime_config{
+                .worker_count = static_cast<uint32_t>(workers.size()),
+                .task_chunk_size = 1u
+            },
+            [&](const scheduler::scheduler_worker_state& worker_state, const scheduler::board_partition_task&)
+                -> std::expected<void, scheduler::scheduler_error> {
+                auto& worker = workers[worker_state.worker_id];
+                const auto traversal_start = std::chrono::steady_clock::now();
+                auto traversal_result = config.variant == cfr_variant::cfr_plus
+                    ? engine::template traverse<cfr_plus_regret_matching_policy>(
+                        graph,
+                        *context.graph_annotations,
+                        context.chance_events,
+                        regrets,
+                        worker,
+                        config,
+                        context.terminal_provider)
+                    : engine::template traverse<vanilla_regret_matching_policy>(
+                        graph,
+                        *context.graph_annotations,
+                        context.chance_events,
+                        regrets,
+                        worker,
+                        config,
+                        context.terminal_provider);
+                const auto traversal_end = std::chrono::steady_clock::now();
+                result.per_worker_traversal_time_ns[worker_state.worker_id] += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(traversal_end - traversal_start).count());
+
+                if (!traversal_result) {
+                    return std::unexpected(scheduler::scheduler_error{scheduler::scheduler_error_kind::task_failed});
+                }
+
+                root_utility_by_worker[worker_state.worker_id] += traversal_result->root_utility * delta_scale;
+                detail::add_diagnostics(diagnostics_by_worker[worker_state.worker_id], traversal_result->diagnostics);
+                add_scaled_delta_buffer(scheduled_deltas[worker_state.worker_id], worker.delta_buffer, delta_scale);
+                ++traversals_by_worker[worker_state.worker_id];
+                return std::expected<void, scheduler::scheduler_error>{};
+            });
+        if (!schedule_result) {
+            return std::unexpected(iteration_error{
+                .kind = iteration_error_kind::scheduler,
+                .scheduler = schedule_result.error()
+            });
+        }
+
+        result.scheduler_tasks_executed = schedule_result->tasks_executed;
+        result.scheduler_estimated_work = schedule_result->estimated_work;
+        for (uint32_t worker_id = 0; worker_id < workers.size(); ++worker_id) {
+            result.root_utility += root_utility_by_worker[worker_id];
+            detail::add_diagnostics(result.diagnostics, diagnostics_by_worker[worker_id]);
+            result.traversals_run += traversals_by_worker[worker_id];
+        }
+        for (uint32_t worker_id = 0; worker_id < workers.size(); ++worker_id) {
+            workers[worker_id].delta_buffer = std::move(scheduled_deltas[worker_id]);
+        }
+
+        std::vector<const traversal::worker_context*> worker_ptrs;
+        worker_ptrs.reserve(workers.size());
+        for (const auto& worker : workers) {
+            worker_ptrs.push_back(&worker);
+        }
+
+        const auto reduction_start = std::chrono::steady_clock::now();
         if (auto reduction = apply_worker_reductions(
                 regrets,
                 strategy_sums,
-                make_deterministic_reduction_plan(1u),
+                make_deterministic_reduction_plan(static_cast<uint32_t>(worker_ptrs.size())),
                 std::span<const traversal::worker_context* const>{worker_ptrs},
                 context.reduction,
                 context.owner_map,
@@ -2039,9 +2164,10 @@ namespace zeta::holdem::cfr::solver {
             !reduction) {
             return std::unexpected(reduction.error());
         }
+        const auto reduction_end = std::chrono::steady_clock::now();
+        result.reduction_time_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(reduction_end - reduction_start).count());
 
-        result.root_utility = traversal_result->root_utility;
-        detail::add_diagnostics(result.diagnostics, traversal_result->diagnostics);
         result.diagnostics.reduction_values = result.reduction.reduction_values;
         result.quality = compute_quality_diagnostics(
             graph,
@@ -2049,8 +2175,7 @@ namespace zeta::holdem::cfr::solver {
             regrets,
             strategy_sums,
             static_cast<uint32_t>(N));
-        result.traversals_run = 1;
-        result.workers_used = 1;
+        result.workers_used = static_cast<uint32_t>(workers.size());
         return result;
     }
 

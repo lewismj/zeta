@@ -1545,6 +1545,13 @@ static void BM_CFRSolverIterationTinyReference(benchmark::State& state)
     }
 
     state.counters["workers"] = static_cast<double>(workers.size());
+    state.counters["workers_used"] = static_cast<double>(last_result.workers_used);
+    state.counters["scheduler_tasks"] = static_cast<double>(last_result.scheduler_task_count);
+    state.counters["scheduler_tasks_executed"] = static_cast<double>(last_result.scheduler_tasks_executed);
+    state.counters["scheduler_estimated_work"] = static_cast<double>(last_result.scheduler_estimated_work);
+    state.counters["remote_delta_count"] = static_cast<double>(last_result.reduction.remote_delta_count);
+    state.counters["remote_delta_bytes"] = static_cast<double>(last_result.reduction.remote_delta_bytes);
+    state.counters["reduction_time_ns"] = static_cast<double>(last_result.reduction_time_ns);
     state.counters["kernel_heads_up"] = static_cast<double>(cfr_engine<2>::heads_up ? 1u : 0u);
     state.counters["cfr_reach_scratch_values"] = static_cast<double>(workers.front().cfr_reach_scratch.size());
     state.counters["nodes/s"] = benchmark::Counter(
