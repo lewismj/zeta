@@ -543,7 +543,18 @@ namespace zeta::holdem::cfr {
             }
             for (const auto& layer : state.pot_layers) {
                 hash = detail::hash_utility(hash, layer.amount);
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    hash = detail::hash_combine(hash, layer.eligible_mask[seat] ? 1u : 0u);
+                    hash = detail::hash_combine(hash, layer.contributors_mask[seat] ? 1u : 0u);
+                }
             }
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                hash = detail::hash_combine(hash, state.folded[seat] ? 1u : 0u);
+                hash = detail::hash_combine(hash, state.all_in_eligible_mask[seat] ? 1u : 0u);
+                hash = detail::hash_combine(hash, state.active_eligible_mask[seat] ? 1u : 0u);
+            }
+            hash = detail::hash_utility(hash, state.context.rake);
+            hash = detail::hash_combine(hash, state.variant_payload_id);
         }
         return hash;
     }

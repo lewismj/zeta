@@ -86,9 +86,17 @@ namespace zeta::holdem {
         ) const noexcept {
             switch (state.kind) {
                 case terminal_state_kind::showdown:
-                    return evaluate_showdown_values(cache, reach, state.context, samples_per_combo);
+                    if constexpr (N == 2) {
+                        return evaluate_showdown_values(cache, reach, state.context, samples_per_combo);
+                    } else {
+                        return ::zeta::holdem::evaluate_showdown_values_exact(cache, reach, state);
+                    }
                 case terminal_state_kind::fold:
-                    return evaluate_fold_values(cache, reach, state.context, state.folded);
+                    if constexpr (N == 2) {
+                        return evaluate_fold_values(cache, reach, state.context, state.folded);
+                    } else {
+                        return ::zeta::holdem::evaluate_fold_values_exact(cache, reach, state);
+                    }
                 case terminal_state_kind::none:
                 case terminal_state_kind::timeout:
                 case terminal_state_kind::rake_adjusted:

@@ -135,6 +135,14 @@ namespace zeta::holdem {
         variant_specific = 5
     };
 
+    struct terminal_rake_adjustment_payload {
+        utility rake = 0.0;
+    };
+
+    struct terminal_variant_payload {
+        uint32_t payload_id = 0;
+    };
+
     /**
      * Auditable pot layer used by terminal records.
      */
@@ -236,6 +244,30 @@ namespace zeta::holdem {
     }
 
     template <std::size_t N>
+    [[nodiscard]] constexpr utility total_pot_amount(const std::vector<pot_layer<N>>& pot_layers) noexcept {
+        utility total = 0.0;
+        for (const auto& layer : pot_layers) {
+            total += layer.amount;
+        }
+        return total;
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] constexpr utility rake_adjusted_layer_amount(
+        const terminal_context<N>& context,
+        const std::vector<pot_layer<N>>& pot_layers,
+        const std::size_t layer_index
+    ) noexcept {
+        assert(layer_index < pot_layers.size());
+        const auto gross = total_pot_amount(pot_layers);
+        if (gross <= 0.0 || context.rake <= 0.0) {
+            return pot_layers[layer_index].amount;
+        }
+        const auto rake = std::min(context.rake, gross);
+        return pot_layers[layer_index].amount - (rake * (pot_layers[layer_index].amount / gross));
+    }
+
+    template <std::size_t N>
     [[nodiscard]] pot_layer<N> make_main_pot_layer(const terminal_context<N>& context) noexcept {
         pot_layer<N> layer{};
         layer.amount = context.gross_pot;
@@ -246,6 +278,39 @@ namespace zeta::holdem {
             layer.eligible_mask.set(seat);
         }
         return layer;
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] std::vector<pot_layer<N>> make_default_pot_layers(const terminal_context<N>& context) {
+        return {make_main_pot_layer(context)};
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] terminal_state<N> make_rake_adjusted_terminal_state(
+        const terminal_context<N>& context,
+        const std::vector<pot_layer<N>>& pot_layers,
+        const terminal_rake_adjustment_payload payload
+    ) {
+        auto state = make_terminal_state(terminal_state_kind::rake_adjusted, context, pot_layers);
+        state.context.rake = payload.rake;
+        return state;
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] terminal_state<N> make_variant_terminal_state(
+        const terminal_context<N>& context,
+        const std::vector<pot_layer<N>>& pot_layers,
+        const terminal_variant_payload payload
+    ) {
+        return make_terminal_state(
+            terminal_state_kind::variant_specific,
+            context,
+            pot_layers,
+            {},
+            {},
+            {},
+            payload.payload_id
+        );
     }
 
     template <std::size_t N>

@@ -320,6 +320,29 @@ namespace {
         return {0, 0};
     }
 
+    std::array<zeta::holdem::combination_index, 3> first_three_compatible_live_combos(
+        const zeta::holdem::river_terminal_cache& cache
+    ) {
+        for (std::size_t first_order = 0; first_order < cache.rank_order_count; ++first_order) {
+            const auto first = cache.rank_order[first_order];
+            for (std::size_t second_order = first_order + 1; second_order < cache.rank_order_count; ++second_order) {
+                const auto second = cache.rank_order[second_order];
+                if ((cache.masks[first] & cache.masks[second]) != 0) {
+                    continue;
+                }
+                for (std::size_t third_order = second_order + 1; third_order < cache.rank_order_count; ++third_order) {
+                    const auto third = cache.rank_order[third_order];
+                    if (((cache.masks[first] | cache.masks[second]) & cache.masks[third]) == 0) {
+                        return {first, second, third};
+                    }
+                }
+            }
+        }
+
+        BOOST_FAIL("three compatible live combos not found");
+        return {0, 0, 0};
+    }
+
     void check_result_matches_reference(
         const zeta::holdem::terminal_result<2>& actual,
         const zeta::holdem::terminal_result<2>& expected,
@@ -1424,6 +1447,138 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_single_combo_is_exact) {
             : -context.contribution[seat];
         BOOST_CHECK_CLOSE(actual[seat][combos[seat]], static_cast<float>(expected), 0.001);
     }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_showdown_uses_side_pots) {
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+
+    zeta::holdem::combination_index side_winner = 0;
+    zeta::holdem::combination_index side_loser = 0;
+    zeta::holdem::combination_index main_winner = 0;
+    bool found = false;
+    for (std::size_t i = 0; i < cache.rank_order_count && !found; ++i) {
+        main_winner = cache.rank_order[cache.rank_order_count - 1u - i];
+        for (std::size_t j = 0; j < cache.rank_order_count && !found; ++j) {
+            side_winner = cache.rank_order[j];
+            if ((cache.masks[main_winner] & cache.masks[side_winner]) != 0
+                || cache.rank_keys[side_winner] >= cache.rank_keys[main_winner]) {
+                continue;
+            }
+            for (std::size_t k = 0; k < cache.rank_order_count; ++k) {
+                side_loser = cache.rank_order[k];
+                if ((cache.masks[main_winner] & cache.masks[side_loser]) != 0
+                    || (cache.masks[side_winner] & cache.masks[side_loser]) != 0
+                    || cache.rank_keys[side_loser] >= cache.rank_keys[side_winner]) {
+                    continue;
+                }
+                found = true;
+                break;
+            }
+        }
+    }
+    BOOST_REQUIRE(found);
+
+    std::array<zeta::holdem::reach_vector, 3> ranges{};
+    ranges[0][side_winner] = 1.0f;
+    ranges[1][side_loser] = 1.0f;
+    ranges[2][main_winner] = 1.0f;
+
+    std::array<zeta::holdem::river_reach_index, 3> reach{
+        zeta::holdem::make_river_reach_index(cache, ranges[0]),
+        zeta::holdem::make_river_reach_index(cache, ranges[1]),
+        zeta::holdem::make_river_reach_index(cache, ranges[2])
+    };
+
+    zeta::holdem::terminal_context<3> context{
+        .gross_pot = 250.0,
+        .rake = 0.0,
+        .contribution = {100.0, 100.0, 50.0}
+    };
+    std::vector<zeta::holdem::pot_layer<3>> layers(2);
+    layers[0].amount = 150.0;
+    layers[1].amount = 100.0;
+    for (std::size_t seat = 0; seat < 3; ++seat) {
+        layers[0].contributors_mask.set(seat);
+        layers[0].eligible_mask.set(seat);
+    }
+    layers[1].contributors_mask.set(0);
+    layers[1].contributors_mask.set(1);
+    layers[1].eligible_mask.set(0);
+    layers[1].eligible_mask.set(1);
+
+    auto state = zeta::holdem::make_terminal_state(
+        zeta::holdem::terminal_state_kind::showdown,
+        context,
+        layers
+    );
+    state.active_eligible_mask.set(0);
+    state.active_eligible_mask.set(1);
+    state.active_eligible_mask.set(2);
+
+    zeta::holdem::terminal_engine<3> engine{};
+    const auto values = engine.evaluate_terminal_values(cache, reach, state);
+
+    BOOST_CHECK_EQUAL(values[0][side_winner], 0.0f);
+    BOOST_CHECK_EQUAL(values[1][side_loser], -100.0f);
+    BOOST_CHECK_EQUAL(values[2][main_winner], 100.0f);
+    BOOST_CHECK_EQUAL(
+        values[0][side_winner] + values[1][side_loser] + values[2][main_winner],
+        0.0f
+    );
+}
+
+BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_fold_uses_side_pots_and_excludes_folded) {
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto combos = first_three_compatible_live_combos(cache);
+
+    std::array<zeta::holdem::reach_vector, 3> ranges{};
+    ranges[0][combos[0]] = 1.0f;
+    ranges[1][combos[1]] = 1.0f;
+    ranges[2][combos[2]] = 1.0f;
+
+    std::array<zeta::holdem::river_reach_index, 3> reach{
+        zeta::holdem::make_river_reach_index(cache, ranges[0]),
+        zeta::holdem::make_river_reach_index(cache, ranges[1]),
+        zeta::holdem::make_river_reach_index(cache, ranges[2])
+    };
+
+    zeta::holdem::terminal_context<3> context{
+        .gross_pot = 250.0,
+        .rake = 0.0,
+        .contribution = {100.0, 100.0, 50.0}
+    };
+    std::vector<zeta::holdem::pot_layer<3>> layers(2);
+    layers[0].amount = 150.0;
+    layers[1].amount = 100.0;
+    for (std::size_t seat = 0; seat < 3; ++seat) {
+        layers[0].contributors_mask.set(seat);
+    }
+    layers[0].eligible_mask.set(0);
+    layers[1].contributors_mask.set(0);
+    layers[1].contributors_mask.set(1);
+    layers[1].eligible_mask.set(0);
+
+    zeta::holdem::folded_mask<3> folded{};
+    folded.set_folded(1, true);
+    folded.set_folded(2, true);
+    zeta::holdem::player_mask<3> active{};
+    active.set(0);
+    auto state = zeta::holdem::make_terminal_state(
+        zeta::holdem::terminal_state_kind::fold,
+        context,
+        layers,
+        folded,
+        {},
+        active
+    );
+
+    zeta::holdem::terminal_engine<3> engine{};
+    const auto values = engine.evaluate_terminal_values(cache, reach, state);
+
+    BOOST_CHECK_EQUAL(values[0][combos[0]], 150.0f);
+    BOOST_CHECK_EQUAL(values[1][combos[1]], -100.0f);
+    BOOST_CHECK_EQUAL(values[2][combos[2]], -50.0f);
+    BOOST_CHECK_EQUAL(values[0][combos[0]] + values[1][combos[1]] + values[2][combos[2]], 0.0f);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_stratified_importance_matches_exact_small_case) {

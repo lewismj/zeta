@@ -1048,6 +1048,54 @@ BOOST_AUTO_TEST_CASE(fold_terminal_state_tracks_folded_and_eligible_players) {
     BOOST_CHECK(state.pot_layers[0].contributors_mask[1]);
 }
 
+BOOST_AUTO_TEST_CASE(betting_state_tracks_side_pots_through_all_in_and_fold) {
+    holdem_betting_graph_config<3> config{};
+    config.initial_stacks = {50.0, 100.0, 100.0};
+    config.root_actor = 0;
+    auto state = make_initial_betting_state(config);
+    betting_abstraction_policy policy{};
+    policy.max_raises_per_street = 4;
+
+    auto next = apply_betting_action(
+        state,
+        betting_action{.kind = betting_action_kind::all_in, .amount = 50.0, .target_bet = 50.0},
+        policy
+    );
+    BOOST_REQUIRE(next.has_value());
+    next = apply_betting_action(
+        *next,
+        betting_action{.kind = betting_action_kind::call, .amount = 50.0, .target_bet = 50.0},
+        policy
+    );
+    BOOST_REQUIRE(next.has_value());
+    next = apply_betting_action(
+        *next,
+        betting_action{.kind = betting_action_kind::all_in, .amount = 100.0, .target_bet = 100.0},
+        policy
+    );
+    BOOST_REQUIRE(next.has_value());
+    next = apply_betting_action(
+        *next,
+        betting_action{.kind = betting_action_kind::fold, .amount = 0.0, .target_bet = 50.0},
+        policy
+    );
+    BOOST_REQUIRE(next.has_value());
+
+    BOOST_REQUIRE_EQUAL(next->pot_layers.size(), 2u);
+    BOOST_CHECK_EQUAL(next->pot_layers[0].amount, 150.0);
+    BOOST_CHECK(next->pot_layers[0].contributors_mask[0]);
+    BOOST_CHECK(next->pot_layers[0].contributors_mask[1]);
+    BOOST_CHECK(next->pot_layers[0].contributors_mask[2]);
+    BOOST_CHECK(next->pot_layers[0].eligible_mask[0]);
+    BOOST_CHECK(!next->pot_layers[0].eligible_mask[1]);
+    BOOST_CHECK(next->pot_layers[0].eligible_mask[2]);
+    BOOST_CHECK_EQUAL(next->pot_layers[1].amount, 50.0);
+    BOOST_CHECK(!next->pot_layers[1].contributors_mask[0]);
+    BOOST_CHECK(!next->pot_layers[1].contributors_mask[1]);
+    BOOST_CHECK(next->pot_layers[1].contributors_mask[2]);
+    BOOST_CHECK(next->pot_layers[1].eligible_mask[2]);
+}
+
 BOOST_AUTO_TEST_CASE(worker_context_binds_graph_tables_and_terminal_views) {
     auto graph = create_chance_tree();
     auto layout = require_layout(make_action_table_layout(graph));

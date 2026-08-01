@@ -183,6 +183,151 @@ namespace zeta::holdem {
         const uint16_t samples_per_combo
     ) noexcept;
 
+    namespace detail {
+
+        template <std::size_t N>
+        [[nodiscard]] std::array<utility, N> showdown_payoff_for_sample(
+            const std::array<rank_key, N>& ranks,
+            const terminal_state<N>& state
+        ) noexcept {
+            std::array<utility, N> payoff{};
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                payoff[seat] = -state.context.contribution[seat];
+            }
+
+            for (std::size_t layer_index = 0; layer_index < state.pot_layers.size(); ++layer_index) {
+                const auto& layer = state.pot_layers[layer_index];
+                rank_key best_rank = 0;
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    if (!state.folded[seat] && layer.eligible_mask[seat] && ranks[seat] > best_rank) {
+                        best_rank = ranks[seat];
+                    }
+                }
+                if (best_rank == 0) {
+                    continue;
+                }
+
+                uint16_t winner_count = 0;
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    if (!state.folded[seat] && layer.eligible_mask[seat] && ranks[seat] == best_rank) {
+                        ++winner_count;
+                    }
+                }
+                assert(winner_count > 0);
+                const auto award = rake_adjusted_layer_amount(state.context, state.pot_layers, layer_index)
+                    / static_cast<utility>(winner_count);
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    if (!state.folded[seat] && layer.eligible_mask[seat] && ranks[seat] == best_rank) {
+                        payoff[seat] += award;
+                    }
+                }
+            }
+            return payoff;
+        }
+
+        template <std::size_t N>
+        void accumulate_showdown_exact_for_hero(
+            terminal_values<N>& values,
+            const river_terminal_cache& cache,
+            const std::array<river_reach_index, N>& reach,
+            const terminal_state<N>& state,
+            std::array<combination_index, N>& sampled_combos,
+            std::array<rank_key, N>& sampled_ranks,
+            const std::size_t hero_seat,
+            const combination_index hero_combo,
+            const std::size_t seat,
+            const card_mask used_cards,
+            const accumulator opponent_weight
+        ) noexcept {
+            if (seat == N) {
+                const auto payoff = showdown_payoff_for_sample(sampled_ranks, state);
+                values[hero_seat][hero_combo] += static_cast<terminal_value>(opponent_weight * payoff[hero_seat]);
+                return;
+            }
+            if (seat == hero_seat) {
+                accumulate_showdown_exact_for_hero(
+                    values,
+                    cache,
+                    reach,
+                    state,
+                    sampled_combos,
+                    sampled_ranks,
+                    hero_seat,
+                    hero_combo,
+                    seat + 1,
+                    used_cards,
+                    opponent_weight
+                );
+                return;
+            }
+
+            const auto& index = reach[seat];
+            for (uint16_t offset = 0; offset < index.active_count; ++offset) {
+                const auto combo = index.active_indices[offset];
+                if ((cache.masks[combo] & used_cards) != 0) {
+                    continue;
+                }
+                sampled_combos[seat] = combo;
+                sampled_ranks[seat] = state.folded[seat] ? 0 : cache.rank_keys[combo];
+                accumulate_showdown_exact_for_hero(
+                    values,
+                    cache,
+                    reach,
+                    state,
+                    sampled_combos,
+                    sampled_ranks,
+                    hero_seat,
+                    hero_combo,
+                    seat + 1,
+                    used_cards | cache.masks[combo],
+                    opponent_weight * index.weights[combo]
+                );
+            }
+        }
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] terminal_values<N> evaluate_showdown_values_exact(
+        const river_terminal_cache& cache,
+        const std::array<river_reach_index, N>& reach,
+        const terminal_state<N>& state
+    ) noexcept {
+        terminal_values<N> values{};
+        if (state.pot_layers.empty()) {
+            return values;
+        }
+
+        for (std::size_t seat = 0; seat < N; ++seat) {
+            assert(cache.board_hash == reach[seat].board_hash);
+        }
+
+        for (std::size_t hero_seat = 0; hero_seat < N; ++hero_seat) {
+            const auto& hero_index = reach[hero_seat];
+            for (uint16_t offset = 0; offset < hero_index.active_count; ++offset) {
+                const auto hero_combo = hero_index.active_indices[offset];
+                std::array<combination_index, N> sampled_combos{};
+                std::array<rank_key, N> sampled_ranks{};
+                sampled_combos[hero_seat] = hero_combo;
+                sampled_ranks[hero_seat] = state.folded[hero_seat] ? 0 : cache.rank_keys[hero_combo];
+                detail::accumulate_showdown_exact_for_hero(
+                    values,
+                    cache,
+                    reach,
+                    state,
+                    sampled_combos,
+                    sampled_ranks,
+                    hero_seat,
+                    hero_combo,
+                    0,
+                    cache.masks[hero_combo],
+                    1.0
+                );
+            }
+        }
+
+        return values;
+    }
+
     /**
      * Heads-up convenience overload: forwards a pair of reach indices to the
      * two-stream kernel and keeps existing call sites working.

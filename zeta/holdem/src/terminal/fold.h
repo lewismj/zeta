@@ -3,6 +3,126 @@
 #include "terminal/showdown.h"
 
 namespace zeta::holdem {
+    namespace detail {
+
+        template <std::size_t N>
+        [[nodiscard]] std::array<utility, N> fold_payoff(const terminal_state<N>& state) noexcept {
+            std::array<utility, N> payoff{};
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                payoff[seat] = -state.context.contribution[seat];
+            }
+
+            for (std::size_t layer_index = 0; layer_index < state.pot_layers.size(); ++layer_index) {
+                const auto& layer = state.pot_layers[layer_index];
+                uint16_t winner_count = 0;
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    if (!state.folded[seat] && layer.eligible_mask[seat]) {
+                        ++winner_count;
+                    }
+                }
+                if (winner_count == 0) {
+                    continue;
+                }
+
+                const auto award = rake_adjusted_layer_amount(state.context, state.pot_layers, layer_index)
+                    / static_cast<utility>(winner_count);
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    if (!state.folded[seat] && layer.eligible_mask[seat]) {
+                        payoff[seat] += award;
+                    }
+                }
+            }
+            return payoff;
+        }
+
+        template <std::size_t N>
+        void accumulate_fold_exact_for_hero(
+            terminal_values<N>& values,
+            const river_terminal_cache& cache,
+            const std::array<river_reach_index, N>& reach,
+            const std::array<utility, N>& payoff,
+            const std::size_t hero_seat,
+            const combination_index hero_combo,
+            const std::size_t seat,
+            const card_mask used_cards,
+            const accumulator opponent_weight
+        ) noexcept {
+            if (seat == N) {
+                values[hero_seat][hero_combo] += static_cast<terminal_value>(opponent_weight * payoff[hero_seat]);
+                return;
+            }
+            if (seat == hero_seat) {
+                accumulate_fold_exact_for_hero(
+                    values,
+                    cache,
+                    reach,
+                    payoff,
+                    hero_seat,
+                    hero_combo,
+                    seat + 1,
+                    used_cards,
+                    opponent_weight
+                );
+                return;
+            }
+
+            const auto& index = reach[seat];
+            for (uint16_t offset = 0; offset < index.active_count; ++offset) {
+                const auto combo = index.active_indices[offset];
+                if ((cache.masks[combo] & used_cards) != 0) {
+                    continue;
+                }
+                accumulate_fold_exact_for_hero(
+                    values,
+                    cache,
+                    reach,
+                    payoff,
+                    hero_seat,
+                    hero_combo,
+                    seat + 1,
+                    used_cards | cache.masks[combo],
+                    opponent_weight * index.weights[combo]
+                );
+            }
+        }
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] terminal_values<N> evaluate_fold_values_exact(
+        const river_terminal_cache& cache,
+        const std::array<river_reach_index, N>& reach,
+        const terminal_state<N>& state
+    ) noexcept {
+        terminal_values<N> values{};
+        if (state.pot_layers.empty()) {
+            return values;
+        }
+
+        for (std::size_t seat = 0; seat < N; ++seat) {
+            assert(cache.board_hash == reach[seat].board_hash);
+        }
+
+        const auto payoff = detail::fold_payoff(state);
+        for (std::size_t hero_seat = 0; hero_seat < N; ++hero_seat) {
+            const auto& hero_index = reach[hero_seat];
+            for (uint16_t offset = 0; offset < hero_index.active_count; ++offset) {
+                const auto hero_combo = hero_index.active_indices[offset];
+                detail::accumulate_fold_exact_for_hero(
+                    values,
+                    cache,
+                    reach,
+                    payoff,
+                    hero_seat,
+                    hero_combo,
+                    0,
+                    cache.masks[hero_combo],
+                    1.0
+                );
+            }
+        }
+        return values;
+    }
+
     /**
      * Generic N-way fold kernel: for each active player, accumulate compatible
      * mass from all other active opponents * constant payoff per opponent.
@@ -104,7 +224,8 @@ namespace zeta::holdem {
             const auto folded_player = folded.oop_folded ? heads_up_player::oop : heads_up_player::ip;
             return evaluate_fold_values_heads_up(cache, reach[0], reach[1], context, folded_player);
         } else {
-            return evaluate_fold_values_generic(cache, reach, context, folded);
+            auto state = make_fold_terminal_state(context, folded);
+            return evaluate_fold_values_exact(cache, reach, state);
         }
     }
 

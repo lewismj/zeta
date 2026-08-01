@@ -502,6 +502,49 @@ namespace {
         );
     }
 
+    void BM_TerminalEngineThreeWaySidePotSparse(benchmark::State& state) {
+        const auto& cases = sparse_cases(50);
+        zeta::holdem::terminal_engine<3> engine{};
+        std::uint64_t sink = 0;
+        for (auto _ : state) {
+            for (const auto& c : cases) {
+                std::array<zeta::holdem::river_reach_index, 3> reach{
+                    *c.oop_index,
+                    *c.ip_index,
+                    *c.p2_index
+                };
+                std::vector<zeta::holdem::pot_layer<3>> layers(2);
+                layers[0].amount = 300.0;
+                layers[1].amount = 100.0;
+                for (std::size_t seat = 0; seat < 3; ++seat) {
+                    layers[0].contributors_mask.set(seat);
+                    layers[0].eligible_mask.set(seat);
+                }
+                layers[1].contributors_mask.set(0);
+                layers[1].contributors_mask.set(1);
+                layers[1].eligible_mask.set(0);
+                layers[1].eligible_mask.set(1);
+                auto terminal = zeta::holdem::make_terminal_state(
+                    zeta::holdem::terminal_state_kind::showdown,
+                    zeta::holdem::terminal_context<3>{
+                        .gross_pot = 400.0,
+                        .rake = 15.0,
+                        .contribution = {150.0, 150.0, 100.0}
+                    },
+                    layers
+                );
+                auto values = engine.evaluate_terminal_values(c.cache, reach, terminal);
+                benchmark::DoNotOptimize(values);
+                sink += c.oop_active + c.ip_active + c.p2_active;
+            }
+        }
+        benchmark::DoNotOptimize(sink);
+        state.counters["kernel_family"] = benchmark::Counter(
+            static_cast<double>(static_cast<std::uint8_t>(zeta::holdem::terminal_engine<3>::kernel_family())),
+            benchmark::Counter::kIsIterationInvariant
+        );
+    }
+
     void BM_RiverCFRIterationDense(benchmark::State& state) {
         const auto& d = data();
         const auto& cases = d.dense_cases;
@@ -744,6 +787,7 @@ BENCHMARK(BM_TerminalShowdownValuesSparse)->Arg(50)->Arg(100)->Arg(300)->Unit(be
 BENCHMARK(BM_TerminalEngineShowdownDense)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalEngineShowdownDensePreindexed)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_TerminalEngineShowdownDenseCached)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_TerminalEngineThreeWaySidePotSparse)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_RiverCFRIterationDense)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_RiverCFRIterationDenseParallel)
     ->Threads(1)
