@@ -65,6 +65,9 @@ namespace {
     struct alignas(64) benchmark_worker_counter {
         uint64_t actions = 0;
         uint64_t nodes = 0;
+        uint64_t edges = 0;
+        uint64_t player_nodes = 0;
+        uint64_t chance_nodes = 0;
         uint64_t terminal_leaves = 0;
         uint64_t chance_outcomes = 0;
         uint64_t regret_updates = 0;
@@ -1071,6 +1074,9 @@ void set_cfr_iteration_counters(
     benchmark_worker_counter total{};
     for (const auto& counter : counters) {
         total.nodes += counter.nodes;
+        total.edges += counter.edges;
+        total.player_nodes += counter.player_nodes;
+        total.chance_nodes += counter.chance_nodes;
         total.terminal_leaves += counter.terminal_leaves;
         total.chance_outcomes += counter.chance_outcomes;
         total.regret_updates += counter.regret_updates;
@@ -1084,6 +1090,9 @@ void set_cfr_iteration_counters(
     state.counters["iterations/s"] = benchmark::Counter(1.0, benchmark::Counter::kIsIterationInvariantRate);
     state.counters["nodes/s"] = benchmark::Counter(
         static_cast<double>(total.nodes),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["edges/s"] = benchmark::Counter(
+        static_cast<double>(total.edges),
         benchmark::Counter::kIsIterationInvariantRate);
     state.counters["terminal_leaves/s"] = benchmark::Counter(
         static_cast<double>(total.terminal_leaves),
@@ -1105,6 +1114,9 @@ void set_cfr_iteration_counters(
         benchmark::Counter::kIsIterationInvariantRate);
     state.counters["graph_nodes"] = static_cast<double>(graph.node_count);
     state.counters["graph_edges"] = static_cast<double>(graph.edges.size());
+    state.counters["player_nodes"] = static_cast<double>(total.player_nodes);
+    state.counters["chance_nodes"] = static_cast<double>(total.chance_nodes);
+    state.counters["terminal_nodes"] = static_cast<double>(graph.terminal_count);
     state.counters["remote_delta_count"] = static_cast<double>(reduction.remote_delta_count);
     state.counters["remote_delta_bytes"] = static_cast<double>(reduction.remote_delta_bytes);
     state.counters["reduction_entries"] = static_cast<double>(reduction.reduction_entries);
@@ -1183,6 +1195,9 @@ void run_cfr_iteration_benchmark_impl(
 
                 auto& counter = counters[worker_state.worker_id];
                 counter.nodes += result->diagnostics.nodes_visited;
+                counter.edges += result->diagnostics.edges_scanned;
+                counter.player_nodes += result->diagnostics.player_nodes + result->diagnostics.player_chance_nodes;
+                counter.chance_nodes += result->diagnostics.chance_nodes;
                 counter.terminal_leaves += result->diagnostics.terminal_nodes;
                 counter.chance_outcomes += result->diagnostics.chance_outcomes;
                 counter.regret_updates += result->diagnostics.regret_updates;
@@ -1575,6 +1590,124 @@ static void BM_CFRSolverIterationTinyReference(benchmark::State& state)
     state.counters["positive_regrets"] = static_cast<double>(last_result.quality.positive_regret_count);
 }
 
+static void BM_CFRSolverIterationGeneratedRiver(benchmark::State& state)
+{
+    auto lowered = lower_betting_tree_to_graph(make_tiny_generated_river_config());
+    if (!lowered) {
+        state.SkipWithError(to_string(lowered.error().kind));
+        return;
+    }
+
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    const auto worker_count = static_cast<uint32_t>(state.range(0));
+    auto owner_map = make_even_infoset_owner_map(layout, worker_count).value();
+    std::vector<worker_context> workers(worker_count);
+    auto context = make_cfr_solver_context<2>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.owner_map = &owner_map;
+    context.reduction = reduction_policy{.order = reduction_order::owner_range_then_worker};
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const std::array<zeta::holdem::combination_index, 2> combos{oop_combo, ip_combo};
+    context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        lowered->terminal_leaves,
+        lowered->terminal_states.view(),
+        combos);
+
+    iteration_result last_result;
+    for (auto _ : state) {
+        auto result = run_cfr_iteration(
+            context,
+            iteration_config{
+                .variant = cfr_variant::vanilla,
+                .update_mode = cfr_update_mode::alternating,
+                .iteration = static_cast<uint64_t>(state.iterations()),
+                .updating_player = 0,
+                .strategy_weight = 1.0f
+            },
+            std::span<worker_context>{workers});
+        if (!result) {
+            state.SkipWithError(to_string(result.error().kind));
+            break;
+        }
+        last_result = *result;
+        benchmark::DoNotOptimize(last_result.root_utility);
+        benchmark::ClobberMemory();
+    }
+
+    const auto memory = estimate_cfr_memory(
+        lowered->graph,
+        layout,
+        cfr_memory_plan_options{
+            .worker_count = worker_count,
+            .terminal_leaf_count = static_cast<uint32_t>(lowered->terminal_leaves.size()),
+            .terminal_state_count = static_cast<uint32_t>(lowered->terminal_states.size()),
+            .chance_event_count = context.chance_events == nullptr ? 0u : static_cast<uint32_t>(context.chance_events->events.size()),
+            .chance_outcome_count = context.chance_events == nullptr ? 0u : static_cast<uint32_t>(context.chance_events->outcomes.size()),
+            .river_cache_count = 1
+        }).value();
+
+    state.counters["workers"] = static_cast<double>(workers.size());
+    state.counters["scheduler_tasks"] = static_cast<double>(last_result.scheduler_task_count);
+    state.counters["scheduler_tasks_executed"] = static_cast<double>(last_result.scheduler_tasks_executed);
+    double traversal_time_ns = 0.0;
+    for (const auto traversal_time : last_result.per_worker_traversal_time_ns) {
+        traversal_time_ns += static_cast<double>(traversal_time);
+    }
+    state.counters["traversal_time_ns"] = traversal_time_ns;
+    state.counters["reduction_time_ns"] = static_cast<double>(last_result.reduction_time_ns);
+    state.counters["nodes/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.nodes_visited),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["edges/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.edges_scanned),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["terminal_evaluations/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.terminal_evaluations),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["regret_updates/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.regret_updates),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["strategy_updates/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.strategy_updates),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["reduction_values/s"] = benchmark::Counter(
+        static_cast<double>(last_result.diagnostics.reduction_values),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["graph_nodes"] = static_cast<double>(lowered->graph.node_count);
+    state.counters["graph_edges"] = static_cast<double>(lowered->graph.edges.size());
+    state.counters["infosets"] = static_cast<double>(lowered->graph.infoset_count);
+    state.counters["terminal_leaves"] = static_cast<double>(memory.terminal_leaf_count);
+    state.counters["terminal_states"] = static_cast<double>(memory.terminal_state_count);
+    state.counters["table_bytes"] = static_cast<double>(memory.regret_bytes + memory.strategy_sum_bytes);
+    state.counters["owner_map_bytes"] = static_cast<double>(memory.owner_map_bytes);
+    state.counters["worker_scratch_bytes"] = static_cast<double>(memory.scratch_bytes);
+    state.counters["delta_buffer_bytes"] = static_cast<double>(memory.worker_delta_bytes);
+    state.counters["river_cache_bytes"] = static_cast<double>(memory.river_cache_bytes);
+    state.counters["checkpoint_bytes"] = static_cast<double>(memory.checkpoint_bytes);
+    state.counters["regret_norm"] = last_result.quality.regret_norm;
+    state.counters["max_regret"] = last_result.quality.max_regret;
+    state.counters["positive_regrets"] = static_cast<double>(last_result.quality.positive_regret_count);
+    state.counters["strategy_mass"] = last_result.quality.average_strategy_mass;
+}
+
 static void BM_CFRCheckpointGeneratedRiver(benchmark::State& state)
 {
     auto lowered = lower_betting_tree_to_graph(make_tiny_generated_river_config());
@@ -1663,6 +1796,7 @@ BENCHMARK(BM_CFRIterationMedium)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRe
 BENCHMARK(BM_CFRIterationLarge)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIterationLargeRealistic)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRSolverIterationTinyReference)->Arg(1)->Arg(2)->Arg(4)->UseRealTime();
+BENCHMARK(BM_CFRSolverIterationGeneratedRiver)->Arg(1)->Arg(2)->Arg(4)->UseRealTime();
 BENCHMARK(BM_CFRCheckpointGeneratedRiver)->Arg(1)->Arg(2)->Arg(4)->UseRealTime();
 #if defined(__linux__)
 BENCHMARK(BM_CFRIteration_L1MissRate)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
@@ -2234,18 +2368,28 @@ static void BM_CFRMemoryPlan(benchmark::State& state)
             .river_cache_count = 1
         }).value();
     state.counters["planned_bytes"] = static_cast<double>(estimate.total_bytes);
+    state.counters["nodes"] = static_cast<double>(estimate.node_count);
+    state.counters["edges"] = static_cast<double>(estimate.edge_count);
+    state.counters["infosets"] = static_cast<double>(estimate.infoset_count);
+    state.counters["action_values"] = static_cast<double>(estimate.action_values);
+    state.counters["terminal_leaves"] = static_cast<double>(estimate.terminal_leaf_count);
+    state.counters["terminal_states"] = static_cast<double>(estimate.terminal_state_count);
+    state.counters["chance_events"] = static_cast<double>(estimate.chance_event_count);
+    state.counters["chance_outcomes"] = static_cast<double>(estimate.chance_outcome_count);
     state.counters["nodes_bytes"] = static_cast<double>(estimate.node_bytes);
     state.counters["edge_bytes"] = static_cast<double>(estimate.edge_bytes);
     state.counters["infoset_bytes"] = static_cast<double>(estimate.infoset_bytes);
+    state.counters["table_bytes"] = static_cast<double>(estimate.regret_bytes + estimate.strategy_sum_bytes);
     state.counters["regret_bytes"] = static_cast<double>(estimate.regret_bytes);
     state.counters["strategy_sum_bytes"] = static_cast<double>(estimate.strategy_sum_bytes);
     state.counters["owner_map_bytes"] = static_cast<double>(estimate.owner_map_bytes);
     state.counters["worker_delta_bytes"] = static_cast<double>(estimate.worker_delta_bytes);
+    state.counters["terminal_leaf_bytes"] = static_cast<double>(estimate.terminal_leaf_bytes);
     state.counters["terminal_state_bytes"] = static_cast<double>(estimate.terminal_state_bytes);
     state.counters["chance_event_bytes"] = static_cast<double>(estimate.chance_event_bytes);
     state.counters["chance_outcome_bytes"] = static_cast<double>(estimate.chance_outcome_bytes);
     state.counters["river_cache_bytes"] = static_cast<double>(estimate.river_cache_bytes);
-    state.counters["scratch_bytes"] = static_cast<double>(estimate.scratch_bytes);
+    state.counters["worker_scratch_bytes"] = static_cast<double>(estimate.scratch_bytes);
     state.counters["checkpoint_bytes"] = static_cast<double>(estimate.checkpoint_bytes);
 }
 

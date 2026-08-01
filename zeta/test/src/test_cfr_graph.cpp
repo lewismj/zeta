@@ -785,6 +785,8 @@ BOOST_AUTO_TEST_CASE(cfr_memory_plan_estimates_table_dominated_storage_and_limit
     BOOST_CHECK_EQUAL(estimate->node_count, graph.node_count);
     BOOST_CHECK_EQUAL(estimate->edge_count, graph.edges.size());
     BOOST_CHECK_EQUAL(estimate->infoset_count, graph.infoset_count);
+    BOOST_CHECK_EQUAL(estimate->terminal_leaf_count, graph.terminal_count);
+    BOOST_CHECK_EQUAL(estimate->terminal_leaf_bytes, graph.terminal_count * options.bytes_per_terminal_leaf);
     BOOST_CHECK_EQUAL(estimate->terminal_state_count, graph.terminal_count);
     BOOST_CHECK_EQUAL(estimate->chance_event_count, 2u);
     BOOST_CHECK_EQUAL(estimate->chance_outcome_count, 6u);

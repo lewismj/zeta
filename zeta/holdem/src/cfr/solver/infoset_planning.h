@@ -523,10 +523,12 @@ namespace zeta::holdem::cfr::solver {
 
     struct cfr_memory_plan_options {
         uint32_t worker_count = 1;
+        uint32_t terminal_leaf_count = 0;
         uint32_t terminal_state_count = 0;
         uint32_t chance_event_count = 0;
         uint32_t chance_outcome_count = 0;
         uint32_t river_cache_count = 0;
+        uint32_t bytes_per_terminal_leaf = 8;
         uint32_t bytes_per_terminal_state = 64;
         uint32_t bytes_per_chance_event = 32;
         uint32_t bytes_per_chance_outcome = 32;
@@ -554,6 +556,8 @@ namespace zeta::holdem::cfr::solver {
         uint64_t strategy_sum_bytes = 0;
         uint64_t owner_map_bytes = 0;
         uint64_t worker_delta_bytes = 0;
+        uint64_t terminal_leaf_count = 0;
+        uint64_t terminal_leaf_bytes = 0;
         uint64_t terminal_state_count = 0;
         uint64_t terminal_state_bytes = 0;
         uint64_t chance_event_count = 0;
@@ -623,6 +627,7 @@ namespace zeta::holdem::cfr::solver {
         estimate.edge_count = shape.edge_count;
         estimate.infoset_count = shape.infoset_count;
         estimate.action_values = shape.action_value_count;
+        estimate.terminal_leaf_count = options.terminal_leaf_count;
         estimate.terminal_state_count = options.terminal_state_count;
         estimate.chance_event_count = options.chance_event_count;
         estimate.chance_outcome_count = options.chance_outcome_count;
@@ -642,6 +647,7 @@ namespace zeta::holdem::cfr::solver {
         uint64_t owner_bytes = 0;
         uint64_t worker_entry_index_bytes = 0;
         uint64_t worker_value_bytes = 0;
+        uint64_t terminal_leaf_bytes = 0;
         uint64_t terminal_bytes = 0;
         uint64_t chance_bytes = 0;
         uint64_t chance_outcome_bytes = 0;
@@ -653,6 +659,7 @@ namespace zeta::holdem::cfr::solver {
             || !checked_mul(shape.infoset_count, sizeof(uint32_t), owner_bytes)
             || !checked_mul(shape.infoset_count, sizeof(uint32_t), worker_entry_index_bytes)
             || !checked_mul(estimate.action_values, accumulation_bytes * 2u, worker_value_bytes)
+            || !checked_mul(options.terminal_leaf_count, options.bytes_per_terminal_leaf, terminal_leaf_bytes)
             || !checked_mul(options.terminal_state_count, options.bytes_per_terminal_state, terminal_bytes)
             || !checked_mul(options.chance_event_count, options.bytes_per_chance_event, chance_bytes)
             || !checked_mul(options.chance_outcome_count, options.bytes_per_chance_outcome, chance_outcome_bytes)
@@ -701,6 +708,7 @@ namespace zeta::holdem::cfr::solver {
             || !checked_mul(worker_count, worker_delta_per_worker, estimate.worker_delta_bytes)) {
             return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
         }
+        estimate.terminal_leaf_bytes = terminal_leaf_bytes;
         estimate.terminal_state_bytes = terminal_bytes;
         estimate.chance_event_bytes = chance_bytes;
         estimate.chance_outcome_bytes = chance_outcome_bytes;
@@ -720,6 +728,7 @@ namespace zeta::holdem::cfr::solver {
             estimate.regret_bytes,
             estimate.strategy_sum_bytes,
             estimate.infoset_bytes,
+            estimate.terminal_leaf_bytes,
             estimate.terminal_state_bytes,
             estimate.chance_event_bytes,
             estimate.chance_outcome_bytes,
@@ -736,6 +745,7 @@ namespace zeta::holdem::cfr::solver {
             || !checked_add(estimate.total_bytes, estimate.regret_bytes)
             || !checked_add(estimate.total_bytes, estimate.strategy_sum_bytes)
             || !checked_add(estimate.total_bytes, estimate.worker_delta_bytes)
+            || !checked_add(estimate.total_bytes, estimate.terminal_leaf_bytes)
             || !checked_add(estimate.total_bytes, estimate.terminal_state_bytes)
             || !checked_add(estimate.total_bytes, estimate.chance_event_bytes)
             || !checked_add(estimate.total_bytes, estimate.chance_outcome_bytes)
@@ -798,6 +808,10 @@ namespace zeta::holdem::cfr::solver {
             });
         }
 
+        auto graph_options = options;
+        if (graph_options.terminal_leaf_count == 0u) {
+            graph_options.terminal_leaf_count = graph.terminal_count;
+        }
         return estimate_cfr_memory(
             cfr_memory_shape{
                 .node_count = graph.node_count,
@@ -806,7 +820,7 @@ namespace zeta::holdem::cfr::solver {
                 .action_value_count = layout.value_count(),
                 .max_depth = graph.max_depth
             },
-            options,
+            graph_options,
             limits);
     }
 
