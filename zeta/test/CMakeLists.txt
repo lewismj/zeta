@@ -154,6 +154,7 @@ set(_zeta_cfr_test_suites
     cfr_graph_types
     cfr_graph_construction
     cfr_graph_metadata
+    cfr_betting_generation
     cfr_infoset_planning
     cfr_tables
     cfr_traversal

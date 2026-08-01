@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include "cfr/betting/betting.h"
 #include "cfr/graph/builder.h"
 #include "cfr/graph/graph.h"
 #include "cfr/graph/validation.h"
@@ -683,6 +684,20 @@ game_graph create_solver_iteration_tree()
     return require_graph(builder.build());
 }
 
+holdem_betting_graph_config<2> make_tiny_generated_river_config()
+{
+    holdem_betting_graph_config<2> config{};
+    config.street = solver::holdem_street::river;
+    config.initial_stacks = {99.0, 98.0};
+    config.initial_committed = {1.0, 2.0};
+    config.root_actor = 0;
+    config.public_state_id = 1;
+    config.max_history = 8;
+    config.abstraction.fixed_pot_fractions = {0.5};
+    config.abstraction.max_raises_per_street = 0;
+    return config;
+}
+
 /**
  * Graph build time benchmark.
  */
@@ -721,9 +736,30 @@ static void BM_GraphBuildLargeTree(benchmark::State& state)
     }
 }
 
+static void BM_GeneratedRiverGraphBuild(benchmark::State& state)
+{
+    const auto config = make_tiny_generated_river_config();
+    uint32_t last_node_count = 0;
+    uint32_t last_terminal_count = 0;
+    for (auto _ : state) {
+        auto graph = lower_betting_tree_to_graph(config);
+        if (!graph) {
+            state.SkipWithError(to_string(graph.error().kind));
+            return;
+        }
+        last_node_count = graph->graph.node_count;
+        last_terminal_count = graph->graph.terminal_count;
+        benchmark::DoNotOptimize(graph);
+    }
+
+    state.counters["nodes"] = static_cast<double>(last_node_count);
+    state.counters["terminal_states"] = static_cast<double>(last_terminal_count);
+}
+
 BENCHMARK(BM_GraphBuildSmallTree);
 BENCHMARK(BM_GraphBuildMediumTree);
 BENCHMARK(BM_GraphBuildLargeTree);
+BENCHMARK(BM_GeneratedRiverGraphBuild);
 
 /**
  * Partition build time benchmark.
@@ -2071,7 +2107,9 @@ static void BM_CFRMemoryPlan(benchmark::State& state)
             cfr_memory_plan_options{
                 .worker_count = worker_count,
                 .terminal_state_count = graph.terminal_count,
-                .chance_event_count = graph.terminal_count
+                .chance_event_count = graph.terminal_count,
+                .chance_outcome_count = static_cast<uint32_t>(graph.edges.size()),
+                .river_cache_count = 1
             });
         if (!estimate) {
             state.SkipWithError(to_string(estimate.error().kind));
@@ -2088,10 +2126,13 @@ static void BM_CFRMemoryPlan(benchmark::State& state)
         cfr_memory_plan_options{
             .worker_count = worker_count,
             .terminal_state_count = graph.terminal_count,
-            .chance_event_count = graph.terminal_count
+            .chance_event_count = graph.terminal_count,
+            .chance_outcome_count = static_cast<uint32_t>(graph.edges.size()),
+            .river_cache_count = 1
         }).value();
     state.counters["planned_bytes"] = static_cast<double>(estimate.total_bytes);
     state.counters["nodes_bytes"] = static_cast<double>(estimate.node_bytes);
+    state.counters["edge_bytes"] = static_cast<double>(estimate.edge_bytes);
     state.counters["infoset_bytes"] = static_cast<double>(estimate.infoset_bytes);
     state.counters["regret_bytes"] = static_cast<double>(estimate.regret_bytes);
     state.counters["strategy_sum_bytes"] = static_cast<double>(estimate.strategy_sum_bytes);
@@ -2099,6 +2140,8 @@ static void BM_CFRMemoryPlan(benchmark::State& state)
     state.counters["worker_delta_bytes"] = static_cast<double>(estimate.worker_delta_bytes);
     state.counters["terminal_state_bytes"] = static_cast<double>(estimate.terminal_state_bytes);
     state.counters["chance_event_bytes"] = static_cast<double>(estimate.chance_event_bytes);
+    state.counters["chance_outcome_bytes"] = static_cast<double>(estimate.chance_outcome_bytes);
+    state.counters["river_cache_bytes"] = static_cast<double>(estimate.river_cache_bytes);
     state.counters["scratch_bytes"] = static_cast<double>(estimate.scratch_bytes);
     state.counters["checkpoint_bytes"] = static_cast<double>(estimate.checkpoint_bytes);
 }

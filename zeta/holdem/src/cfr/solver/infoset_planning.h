@@ -423,6 +423,60 @@ namespace zeta::holdem::cfr::solver {
         return {};
     }
 
+    /**
+     * Build an infoset-major action layout from lowered Hold'em infosets.
+     */
+    [[nodiscard]] inline std::expected<action_table_layout, table_layout_error> make_action_table_layout(
+        const holdem_infoset_lowering& lowering)
+    {
+        std::vector<uint32_t> action_counts;
+        action_counts.reserve(lowering.infoset_count());
+        for (uint32_t infoset_id = 0; infoset_id < lowering.infoset_count(); ++infoset_id) {
+            action_counts.push_back(lowering.action_count(infoset_id));
+        }
+        return ::zeta::holdem::cfr::make_action_table_layout(action_counts);
+    }
+
+    /**
+     * Stable checkpoint-compatible hash for a production Hold'em infoset key.
+     */
+    [[nodiscard]] inline uint64_t hash_holdem_infoset_key(const holdem_infoset_key& key) noexcept
+    {
+        compatibility_hasher hash;
+        hash.add_u64(key.actor);
+        hash.add_enum(key.street);
+        hash.add_u64(key.player_count);
+        hash.add_u64(key.private_hand_class_id);
+        hash.add_u64(key.public_board_abstraction_id);
+        hash.add_u64(key.chance_runout_class_id);
+        hash.add_u64(key.betting_history_abstraction_id);
+        hash.add_u64(key.stack_pot_abstraction_id);
+        hash.add_u64(key.legal_action_set_id);
+        hash.add_u64(key.subgame_root_context_id);
+        return hash.value;
+    }
+
+    /**
+     * Stable checkpoint-compatible hash for dense infoset identity and actions.
+     */
+    [[nodiscard]] inline uint64_t hash_holdem_infoset_layout(const holdem_infoset_lowering& lowering) noexcept
+    {
+        compatibility_hasher hash;
+        hash.add_u64(lowering.infoset_count());
+        hash.add_u64(lowering.legal_action_ids.size());
+        for (uint32_t infoset_id = 0; infoset_id < lowering.infoset_count(); ++infoset_id) {
+            hash.add_u64(hash_holdem_infoset_key(lowering.key_by_infoset[infoset_id]));
+            hash.add_u64(lowering.owner_by_infoset[infoset_id]);
+            hash.add_u64(lowering.source_graph_infoset_by_infoset[infoset_id]);
+            hash.add_u64(lowering.legal_action_offsets[infoset_id]);
+            hash.add_u64(lowering.legal_action_offsets[infoset_id + 1u]);
+            for (const auto action_id : lowering.legal_actions(infoset_id)) {
+                hash.add_u64(action_id);
+            }
+        }
+        return hash.value;
+    }
+
     enum class cfr_memory_plan_error_kind : uint8_t {
         table_layout_mismatch,
         node_limit_exceeded,
@@ -471,21 +525,43 @@ namespace zeta::holdem::cfr::solver {
         uint32_t worker_count = 1;
         uint32_t terminal_state_count = 0;
         uint32_t chance_event_count = 0;
+        uint32_t chance_outcome_count = 0;
+        uint32_t river_cache_count = 0;
         uint32_t bytes_per_terminal_state = 64;
         uint32_t bytes_per_chance_event = 32;
+        uint32_t bytes_per_chance_outcome = 32;
+        uint32_t bytes_per_river_cache = 4096;
         numeric_policy numeric{};
     };
 
+    struct cfr_memory_shape {
+        uint64_t node_count = 0;
+        uint64_t edge_count = 0;
+        uint64_t infoset_count = 0;
+        uint64_t action_value_count = 0;
+        uint64_t max_depth = 0;
+    };
+
     struct cfr_memory_estimate {
+        uint64_t node_count = 0;
+        uint64_t edge_count = 0;
+        uint64_t infoset_count = 0;
         uint64_t node_bytes = 0;
+        uint64_t edge_bytes = 0;
         uint64_t infoset_bytes = 0;
         uint64_t action_values = 0;
         uint64_t regret_bytes = 0;
         uint64_t strategy_sum_bytes = 0;
         uint64_t owner_map_bytes = 0;
         uint64_t worker_delta_bytes = 0;
+        uint64_t terminal_state_count = 0;
         uint64_t terminal_state_bytes = 0;
+        uint64_t chance_event_count = 0;
         uint64_t chance_event_bytes = 0;
+        uint64_t chance_outcome_count = 0;
+        uint64_t chance_outcome_bytes = 0;
+        uint64_t river_cache_count = 0;
+        uint64_t river_cache_bytes = 0;
         uint64_t scratch_bytes = 0;
         uint64_t checkpoint_bytes = 0;
         uint64_t total_bytes = 0;
@@ -527,90 +603,159 @@ namespace zeta::holdem::cfr::solver {
         return true;
     }
 
+    [[nodiscard]] inline bool checked_add_many(uint64_t& total, std::span<const uint64_t> values) noexcept
+    {
+        for (const auto value : values) {
+            if (!checked_add(total, value)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     [[nodiscard]] inline std::expected<cfr_memory_estimate, cfr_memory_plan_error> estimate_cfr_memory(
-        const game_graph& graph,
-        const action_table_layout& layout,
+        const cfr_memory_shape shape,
         const cfr_memory_plan_options options = {},
         const cfr_memory_plan_limits limits = {})
     {
-        if (layout.infoset_count() != graph.infoset_count) {
-            return std::unexpected(cfr_memory_plan_error{
-                cfr_memory_plan_error_kind::table_layout_mismatch,
-                layout.infoset_count(),
-                graph.infoset_count
-            });
-        }
-
         cfr_memory_estimate estimate;
-        estimate.action_values = layout.value_count();
+        estimate.node_count = shape.node_count;
+        estimate.edge_count = shape.edge_count;
+        estimate.infoset_count = shape.infoset_count;
+        estimate.action_values = shape.action_value_count;
+        estimate.terminal_state_count = options.terminal_state_count;
+        estimate.chance_event_count = options.chance_event_count;
+        estimate.chance_outcome_count = options.chance_outcome_count;
+        estimate.river_cache_count = options.river_cache_count;
 
         const auto worker_count = std::max(options.worker_count, 1u);
         const auto table_value_bytes = table_storage_bytes(options.numeric.table_storage);
         const auto accumulation_bytes = accumulation_storage_bytes(options.numeric.accumulation);
+        if (shape.node_count == std::numeric_limits<uint64_t>::max()
+            || shape.infoset_count == std::numeric_limits<uint64_t>::max()
+            || shape.max_depth == std::numeric_limits<uint64_t>::max()) {
+            return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
+        }
 
-        uint64_t edge_bytes = 0;
-        uint64_t node_table_bytes = 0;
+        uint64_t row_offset_bytes = 0;
+        uint64_t node_payload_bytes = 0;
         uint64_t owner_bytes = 0;
         uint64_t worker_entry_index_bytes = 0;
         uint64_t worker_value_bytes = 0;
         uint64_t terminal_bytes = 0;
         uint64_t chance_bytes = 0;
+        uint64_t chance_outcome_bytes = 0;
+        uint64_t river_cache_bytes = 0;
         uint64_t scratch_per_worker = 0;
-        if (!checked_mul(graph.edges.size(), sizeof(edge), edge_bytes)
-            || !checked_mul(graph.node_count, sizeof(uint32_t) * 3u + sizeof(node_kind) + sizeof(uint16_t), node_table_bytes)
-            || !checked_mul(graph.infoset_count, sizeof(uint32_t), owner_bytes)
-            || !checked_mul(graph.infoset_count, sizeof(uint32_t), worker_entry_index_bytes)
+        if (!checked_mul(shape.edge_count, sizeof(edge), estimate.edge_bytes)
+            || !checked_mul(shape.node_count + 1u, sizeof(uint32_t), row_offset_bytes)
+            || !checked_mul(shape.node_count, sizeof(uint32_t) * 2u + sizeof(node_kind) + sizeof(uint16_t), node_payload_bytes)
+            || !checked_mul(shape.infoset_count, sizeof(uint32_t), owner_bytes)
+            || !checked_mul(shape.infoset_count, sizeof(uint32_t), worker_entry_index_bytes)
             || !checked_mul(estimate.action_values, accumulation_bytes * 2u, worker_value_bytes)
             || !checked_mul(options.terminal_state_count, options.bytes_per_terminal_state, terminal_bytes)
             || !checked_mul(options.chance_event_count, options.bytes_per_chance_event, chance_bytes)
-            || !checked_mul(graph.node_count, sizeof(float), scratch_per_worker)) {
+            || !checked_mul(options.chance_outcome_count, options.bytes_per_chance_outcome, chance_outcome_bytes)
+            || !checked_mul(options.river_cache_count, options.bytes_per_river_cache, river_cache_bytes)
+            || !checked_mul(shape.node_count, sizeof(float), scratch_per_worker)) {
             return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
         }
 
-        estimate.node_bytes = sizeof(uint32_t) + edge_bytes + node_table_bytes;
+        if (!checked_add(estimate.node_bytes, row_offset_bytes)
+            || !checked_add(estimate.node_bytes, node_payload_bytes)) {
+            return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
+        }
         estimate.owner_map_bytes = owner_bytes;
-        estimate.infoset_bytes = graph.infoset_count * sizeof(holdem_infoset_key)
-            + owner_bytes
-            + (static_cast<uint64_t>(graph.infoset_count) + 1u) * sizeof(uint32_t)
-            + estimate.action_values * sizeof(uint16_t);
-        estimate.regret_bytes = estimate.action_values * table_value_bytes;
-        estimate.strategy_sum_bytes = estimate.action_values * table_value_bytes;
-        estimate.worker_delta_bytes = static_cast<uint64_t>(worker_count)
-            * (worker_entry_index_bytes + graph.infoset_count * sizeof(uint32_t) * 3u + worker_value_bytes);
+        uint64_t infoset_key_bytes = 0;
+        uint64_t infoset_offsets_bytes = 0;
+        uint64_t legal_action_bytes = 0;
+        uint64_t delta_sparse_index_bytes = 0;
+        uint64_t worker_delta_per_worker = 0;
+        uint64_t edge_scratch_bytes = 0;
+        uint64_t depth_scratch_bytes = 0;
+        if (!checked_mul(shape.infoset_count, sizeof(holdem_infoset_key), infoset_key_bytes)
+            || !checked_mul(shape.infoset_count + 1u, sizeof(uint32_t), infoset_offsets_bytes)
+            || !checked_mul(estimate.action_values, sizeof(uint16_t), legal_action_bytes)
+            || !checked_mul(estimate.action_values, table_value_bytes, estimate.regret_bytes)
+            || !checked_mul(estimate.action_values, table_value_bytes, estimate.strategy_sum_bytes)
+            || !checked_mul(shape.infoset_count, sizeof(uint32_t) * 3u, delta_sparse_index_bytes)
+            || !checked_mul(shape.edge_count, sizeof(float), edge_scratch_bytes)
+            || !checked_mul(shape.max_depth + 1u, 32u, depth_scratch_bytes)) {
+            return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
+        }
+        const uint64_t infoset_parts[] = {
+            infoset_key_bytes,
+            owner_bytes,
+            infoset_offsets_bytes,
+            legal_action_bytes
+        };
+        if (!checked_add_many(estimate.infoset_bytes, infoset_parts)) {
+            return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
+        }
+        const uint64_t worker_delta_parts[] = {
+            worker_entry_index_bytes,
+            delta_sparse_index_bytes,
+            worker_value_bytes
+        };
+        if (!checked_add_many(worker_delta_per_worker, worker_delta_parts)
+            || !checked_mul(worker_count, worker_delta_per_worker, estimate.worker_delta_bytes)) {
+            return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
+        }
         estimate.terminal_state_bytes = terminal_bytes;
         estimate.chance_event_bytes = chance_bytes;
-        estimate.scratch_bytes = static_cast<uint64_t>(worker_count)
-            * (scratch_per_worker + graph.edges.size() * sizeof(float) + (static_cast<uint64_t>(graph.max_depth) + 1u) * 32u);
-        estimate.checkpoint_bytes = estimate.regret_bytes
-            + estimate.strategy_sum_bytes
-            + estimate.infoset_bytes
-            + estimate.terminal_state_bytes
-            + estimate.chance_event_bytes
-            + 256u;
+        estimate.chance_outcome_bytes = chance_outcome_bytes;
+        estimate.river_cache_bytes = river_cache_bytes;
+        uint64_t scratch_per_worker_total = 0;
+        const uint64_t scratch_parts[] = {
+            scratch_per_worker,
+            edge_scratch_bytes,
+            depth_scratch_bytes
+        };
+        if (!checked_add_many(scratch_per_worker_total, scratch_parts)
+            || !checked_mul(worker_count, scratch_per_worker_total, estimate.scratch_bytes)) {
+            return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
+        }
+
+        const uint64_t checkpoint_parts[] = {
+            estimate.regret_bytes,
+            estimate.strategy_sum_bytes,
+            estimate.infoset_bytes,
+            estimate.terminal_state_bytes,
+            estimate.chance_event_bytes,
+            estimate.chance_outcome_bytes,
+            estimate.river_cache_bytes,
+            256u
+        };
+        if (!checked_add_many(estimate.checkpoint_bytes, checkpoint_parts)) {
+            return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
+        }
 
         if (!checked_add(estimate.total_bytes, estimate.node_bytes)
+            || !checked_add(estimate.total_bytes, estimate.edge_bytes)
             || !checked_add(estimate.total_bytes, estimate.infoset_bytes)
             || !checked_add(estimate.total_bytes, estimate.regret_bytes)
             || !checked_add(estimate.total_bytes, estimate.strategy_sum_bytes)
             || !checked_add(estimate.total_bytes, estimate.worker_delta_bytes)
             || !checked_add(estimate.total_bytes, estimate.terminal_state_bytes)
             || !checked_add(estimate.total_bytes, estimate.chance_event_bytes)
+            || !checked_add(estimate.total_bytes, estimate.chance_outcome_bytes)
+            || !checked_add(estimate.total_bytes, estimate.river_cache_bytes)
             || !checked_add(estimate.total_bytes, estimate.scratch_bytes)
             || !checked_add(estimate.total_bytes, estimate.checkpoint_bytes)) {
             return std::unexpected(cfr_memory_plan_error{cfr_memory_plan_error_kind::estimate_overflow});
         }
 
-        if (graph.node_count > limits.max_nodes) {
+        if (shape.node_count > limits.max_nodes) {
             return std::unexpected(cfr_memory_plan_error{
                 cfr_memory_plan_error_kind::node_limit_exceeded,
-                graph.node_count,
+                shape.node_count,
                 limits.max_nodes
             });
         }
-        if (graph.infoset_count > limits.max_infosets) {
+        if (shape.infoset_count > limits.max_infosets) {
             return std::unexpected(cfr_memory_plan_error{
                 cfr_memory_plan_error_kind::infoset_limit_exceeded,
-                graph.infoset_count,
+                shape.infoset_count,
                 limits.max_infosets
             });
         }
@@ -637,6 +782,32 @@ namespace zeta::holdem::cfr::solver {
         }
 
         return estimate;
+    }
+
+    [[nodiscard]] inline std::expected<cfr_memory_estimate, cfr_memory_plan_error> estimate_cfr_memory(
+        const game_graph& graph,
+        const action_table_layout& layout,
+        const cfr_memory_plan_options options = {},
+        const cfr_memory_plan_limits limits = {})
+    {
+        if (layout.infoset_count() != graph.infoset_count) {
+            return std::unexpected(cfr_memory_plan_error{
+                cfr_memory_plan_error_kind::table_layout_mismatch,
+                layout.infoset_count(),
+                graph.infoset_count
+            });
+        }
+
+        return estimate_cfr_memory(
+            cfr_memory_shape{
+                .node_count = graph.node_count,
+                .edge_count = static_cast<uint64_t>(graph.edges.size()),
+                .infoset_count = graph.infoset_count,
+                .action_value_count = layout.value_count(),
+                .max_depth = graph.max_depth
+            },
+            options,
+            limits);
     }
 
 }

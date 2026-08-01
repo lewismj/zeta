@@ -3,6 +3,7 @@
 #include "cfr/graph/builder.h"
 #include "cfr/graph/graph.h"
 #include "cfr/graph/validation.h"
+#include "cfr/betting/betting.h"
 #include "cfr/scheduler/dfs_partitioner.h"
 #include "cfr/scheduler/scheduler.h"
 #include "cfr/solver/context.h"
@@ -456,6 +457,179 @@ BOOST_AUTO_TEST_CASE(player_mask_backs_generic_terminal_masks) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+BOOST_AUTO_TEST_SUITE(cfr_betting_generation)
+
+holdem_betting_graph_config<2> tiny_river_betting_config()
+{
+    holdem_betting_graph_config<2> config{};
+    config.street = holdem_street::river;
+    config.initial_stacks = {99.0, 98.0};
+    config.initial_committed = {1.0, 2.0};
+    config.root_actor = 0;
+    config.public_state_id = 77;
+    config.max_history = 8;
+    config.abstraction.fixed_pot_fractions = {0.5};
+    config.abstraction.geometric_size_count = 1;
+    config.abstraction.stack_ratio_buckets = {0.5};
+    config.abstraction.max_raises_per_street = 0;
+    return config;
+}
+
+BOOST_AUTO_TEST_CASE(legal_actions_are_derived_from_betting_state_and_abstraction_policy) {
+    auto config = tiny_river_betting_config();
+    config.abstraction.max_raises_per_street = 1;
+    auto state = make_initial_betting_state(config);
+
+    auto actions = legal_betting_actions(state, config.abstraction);
+
+    BOOST_REQUIRE_GE(actions.size(), 5u);
+    BOOST_CHECK(actions[0].kind == betting_action_kind::fold);
+    BOOST_CHECK(actions[1].kind == betting_action_kind::call);
+    BOOST_CHECK_EQUAL(actions[1].amount, 1.0);
+    BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::raise;
+    }));
+    BOOST_CHECK(actions.back().kind == betting_action_kind::all_in);
+}
+
+BOOST_AUTO_TEST_CASE(betting_transitions_are_pure_and_reach_river_showdown) {
+    auto config = tiny_river_betting_config();
+    auto state = make_initial_betting_state(config);
+    auto actions = legal_betting_actions(state, config.abstraction);
+
+    auto called = apply_betting_action(state, actions[1], config.abstraction);
+
+    BOOST_REQUIRE(called.has_value());
+    BOOST_CHECK_EQUAL(state.stacks[0], 99.0);
+    BOOST_CHECK_EQUAL(called->stacks[0], 98.0);
+    BOOST_CHECK_EQUAL(called->committed[0], 2.0);
+    BOOST_CHECK_EQUAL(called->actor, 1u);
+    BOOST_CHECK(!called->terminal());
+
+    auto response_actions = legal_betting_actions(*called, config.abstraction);
+    BOOST_REQUIRE(!response_actions.empty());
+    BOOST_CHECK(response_actions.front().kind == betting_action_kind::check);
+    auto checked = apply_betting_action(*called, response_actions.front(), config.abstraction);
+
+    BOOST_REQUIRE(checked.has_value());
+    BOOST_CHECK(checked->terminal());
+    BOOST_CHECK(checked->terminal_kind == zeta::holdem::terminal_state_kind::showdown);
+}
+
+BOOST_AUTO_TEST_CASE(invalid_betting_states_and_illegal_actions_return_typed_errors) {
+    auto config = tiny_river_betting_config();
+    auto state = make_initial_betting_state(config);
+    state.folded.set_folded(0, true);
+
+    auto invalid = validate_betting_state(state);
+
+    BOOST_REQUIRE(!invalid);
+    BOOST_CHECK(invalid.error().kind == betting_validation_error_kind::invalid_actor);
+
+    state = make_initial_betting_state(config);
+    auto illegal = apply_betting_action(
+        state,
+        betting_action{
+            .kind = betting_action_kind::check,
+            .amount = 0.0,
+            .target_bet = state.committed[0]
+        },
+        config.abstraction);
+
+    BOOST_REQUIRE(!illegal);
+    BOOST_CHECK(illegal.error().kind == betting_validation_error_kind::illegal_action);
+}
+
+BOOST_AUTO_TEST_CASE(generated_river_graph_lowers_to_solver_metadata_and_terminal_states) {
+    auto lowered = lower_betting_tree_to_graph(tiny_river_betting_config());
+
+    BOOST_REQUIRE(lowered.has_value());
+    BOOST_REQUIRE(validate_solver_graph_view(make_solver_graph_view<2>(lowered->graph, lowered->annotations)).has_value());
+    BOOST_CHECK_EQUAL(lowered->graph.root_node, lowered->graph.node_count - 1u);
+    BOOST_CHECK_GT(lowered->graph.terminal_count, 0u);
+    BOOST_CHECK_EQUAL(lowered->terminal_states.size(), lowered->graph.terminal_count);
+    BOOST_CHECK_EQUAL(lowered->terminal_leaves.size(), lowered->graph.node_count);
+
+    uint32_t terminal_leaf_count = 0;
+    for (uint32_t node_id = 0; node_id < lowered->graph.node_count; ++node_id) {
+        if (!lowered->graph.is_terminal(node_id)) {
+            continue;
+        }
+        const auto terminal_id = lowered->terminal_leaves[node_id].terminal_state_id;
+        BOOST_REQUIRE(lowered->terminal_states.contains(terminal_id));
+        BOOST_CHECK(lowered->terminal_states[terminal_id].kind != zeta::holdem::terminal_state_kind::none);
+        ++terminal_leaf_count;
+    }
+    BOOST_CHECK_EQUAL(terminal_leaf_count, lowered->graph.terminal_count);
+}
+
+BOOST_AUTO_TEST_CASE(generated_graph_hash_is_deterministic_for_identical_configs) {
+    auto lhs = lower_betting_tree_to_graph(tiny_river_betting_config());
+    auto rhs = lower_betting_tree_to_graph(tiny_river_betting_config());
+
+    BOOST_REQUIRE(lhs.has_value());
+    BOOST_REQUIRE(rhs.has_value());
+    BOOST_CHECK_EQUAL(lhs->deterministic_hash, rhs->deterministic_hash);
+    BOOST_CHECK_NE(lhs->deterministic_hash, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(generated_graph_preflight_rejects_memory_limits_before_materialization) {
+    auto config = tiny_river_betting_config();
+    config.memory_plan_limits.max_nodes = 4;
+
+    auto lowered = lower_betting_tree_to_graph(config);
+
+    BOOST_REQUIRE(!lowered);
+    BOOST_CHECK(lowered.error().kind == betting_validation_error_kind::memory_plan_failed);
+    BOOST_CHECK(lowered.error().memory_plan_error.kind == cfr_memory_plan_error_kind::node_limit_exceeded);
+    BOOST_CHECK_GT(lowered.error().memory_plan_error.required, lowered.error().memory_plan_error.limit);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_accepts_generated_river_graph_terminal_provider) {
+    auto lowered = lower_betting_tree_to_graph(tiny_river_betting_config());
+    BOOST_REQUIRE(lowered.has_value());
+
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    std::array<zeta::holdem::combination_index, 2> combos{oop_combo, ip_combo};
+    std::array<worker_context, 1> workers;
+
+    auto context = make_cfr_solver_context<2>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        lowered->terminal_leaves,
+        lowered->terminal_states.view(),
+        combos);
+
+    auto result = run_cfr_iteration(
+        context,
+        iteration_config{.updating_player = 0},
+        std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(result->diagnostics.terminal_evaluations, lowered->graph.terminal_count);
+    BOOST_CHECK_GT(result->diagnostics.regret_updates, 0u);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 BOOST_AUTO_TEST_SUITE(cfr_infoset_planning)
 
 holdem_infoset_key test_infoset_key(
@@ -527,6 +701,37 @@ BOOST_AUTO_TEST_CASE(holdem_infoset_lowering_assigns_dense_ids_before_table_layo
     BOOST_CHECK_EQUAL(lowering->legal_actions(0)[1], 1u);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_infoset_layout_hash_is_stable_and_action_sensitive) {
+    auto graph = create_chance_tree();
+    std::vector<holdem_infoset_description> descriptions;
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (!graph.is_player_node(node_id)) {
+            continue;
+        }
+        descriptions.push_back(holdem_infoset_description{
+            .node_id = node_id,
+            .key = test_infoset_key(0, 2, 5),
+            .owner_id = 1,
+            .legal_action_ids = legal_action_ids_for_node(graph, node_id)
+        });
+    }
+
+    auto lhs = lower_holdem_infoset_keys<2>(graph, descriptions, 2);
+    auto rhs = lower_holdem_infoset_keys<2>(graph, descriptions, 2);
+
+    BOOST_REQUIRE(lhs.has_value());
+    BOOST_REQUIRE(rhs.has_value());
+    BOOST_CHECK_EQUAL(hash_holdem_infoset_layout(*lhs), hash_holdem_infoset_layout(*rhs));
+    BOOST_REQUIRE_EQUAL(rhs->legal_action_ids.size(), 2u);
+    std::swap(rhs->legal_action_ids[0], rhs->legal_action_ids[1]);
+    BOOST_CHECK_NE(hash_holdem_infoset_layout(*lhs), hash_holdem_infoset_layout(*rhs));
+
+    auto dense_layout = make_action_table_layout(*lhs);
+    BOOST_REQUIRE(dense_layout.has_value());
+    BOOST_CHECK_EQUAL(dense_layout->infoset_count(), lhs->infoset_count());
+    BOOST_CHECK_EQUAL(dense_layout->value_count(), lhs->legal_action_ids.size());
+}
+
 BOOST_AUTO_TEST_CASE(holdem_infoset_lowering_rejects_conflicting_shared_infoset_identity) {
     auto graph = create_shared_infoset_tree();
     std::vector<uint32_t> player_nodes;
@@ -565,7 +770,9 @@ BOOST_AUTO_TEST_CASE(cfr_memory_plan_estimates_table_dominated_storage_and_limit
     const cfr_memory_plan_options options{
         .worker_count = 4,
         .terminal_state_count = graph.terminal_count,
-        .chance_event_count = 2
+        .chance_event_count = 2,
+        .chance_outcome_count = 6,
+        .river_cache_count = 1
     };
 
     auto estimate = estimate_cfr_memory(
@@ -575,8 +782,18 @@ BOOST_AUTO_TEST_CASE(cfr_memory_plan_estimates_table_dominated_storage_and_limit
 
     BOOST_REQUIRE(estimate.has_value());
     BOOST_CHECK_EQUAL(estimate->action_values, layout.value_count());
+    BOOST_CHECK_EQUAL(estimate->node_count, graph.node_count);
+    BOOST_CHECK_EQUAL(estimate->edge_count, graph.edges.size());
+    BOOST_CHECK_EQUAL(estimate->infoset_count, graph.infoset_count);
+    BOOST_CHECK_EQUAL(estimate->terminal_state_count, graph.terminal_count);
+    BOOST_CHECK_EQUAL(estimate->chance_event_count, 2u);
+    BOOST_CHECK_EQUAL(estimate->chance_outcome_count, 6u);
+    BOOST_CHECK_EQUAL(estimate->river_cache_count, 1u);
+    BOOST_CHECK_EQUAL(estimate->chance_outcome_bytes, options.chance_outcome_count * options.bytes_per_chance_outcome);
+    BOOST_CHECK_EQUAL(estimate->river_cache_bytes, options.bytes_per_river_cache);
     BOOST_CHECK_EQUAL(estimate->regret_bytes, layout.value_count() * sizeof(float));
     BOOST_CHECK_EQUAL(estimate->strategy_sum_bytes, layout.value_count() * sizeof(float));
+    BOOST_CHECK_GT(estimate->edge_bytes, 0u);
     BOOST_CHECK_GT(estimate->total_bytes, estimate->regret_bytes + estimate->strategy_sum_bytes);
 
     auto limited = estimate_cfr_memory(
