@@ -18,6 +18,7 @@ The Hold'em module currently includes a lookup-based native 7-card evaluator and
 - [Lookup-based 7-card evaluator](doc/holdem/post_flop_hand_evaluator.md)
 - [PokerStove range parser](doc/holdem/range_parser.md)
 - [River terminal evaluator](doc/holdem/terminal_evaluator.md)
+- [zeta-solve CLI](doc/holdem/cli_usage.md)
 
 ### GTO postflop analyser (multi-player capable)
 

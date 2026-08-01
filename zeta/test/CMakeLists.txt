@@ -46,6 +46,7 @@ add_executable(zeta_tests
     src/test_main.cpp
     src/test_repr.cpp
     src/test_holdem.cpp
+    src/test_holdem_cli.cpp
     src/test_cfr_graph.cpp
 )
 target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework)
@@ -147,6 +148,10 @@ set(_zeta_holdem_test_cases    holdem_detects_straight_flush
     non_flush_rank_classes_exhaustively_match_dense_table_and_evaluator
     flush_rank_patterns_match_flush_table_and_evaluator
     holdem_evaluator_release_perf_smoke
+    holdem_cli_parses_spot_json
+    holdem_cli_solve_produces_valid_artifact
+    holdem_cli_validate_rejects_duplicate_board_cards
+    holdem_cli_roundtrips_artifact_json_and_dump
 )
 zeta_register_boost_test_cases(holdem ${_zeta_holdem_test_cases})
 

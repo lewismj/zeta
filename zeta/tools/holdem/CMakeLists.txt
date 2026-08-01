@@ -5,6 +5,10 @@ add_executable(zeta-gen-holdem-tables
     ../../holdem/src/tables.cpp
 )
 
+add_executable(zeta-solve
+    src/solve_cli.cpp
+)
+
 target_include_directories(zeta-gen-holdem-tables PRIVATE
     ${CMAKE_SOURCE_DIR}/zeta/holdem/src
     ${CMAKE_SOURCE_DIR}/zeta/core/include
@@ -14,6 +18,8 @@ target_include_directories(zeta-gen-holdem-tables PRIVATE
 target_compile_definitions(zeta-gen-holdem-tables PRIVATE
     ZETA_HOLDEM_TABLES_OUTPUT="${CMAKE_SOURCE_DIR}/zeta/holdem/src/tables.generated.cpp"
 )
+
+target_link_libraries(zeta-solve PRIVATE zeta-holdem)
 
 set(_zeta_holdem_generated_tables "${CMAKE_SOURCE_DIR}/zeta/holdem/src/tables.generated.cpp")
 set(_zeta_holdem_generated_tables_check "${CMAKE_CURRENT_BINARY_DIR}/tables.generated.check.cpp")
@@ -36,4 +42,5 @@ add_custom_target(zeta-check-holdem-tables
 
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta-gen-holdem-tables PRIVATE stdc++ m)
+    target_link_libraries(zeta-solve PRIVATE stdc++ m)
 endif()
