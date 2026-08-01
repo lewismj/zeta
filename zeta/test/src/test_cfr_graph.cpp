@@ -1419,6 +1419,18 @@ BOOST_AUTO_TEST_CASE(chance_event_table_rejects_dead_card_collisions) {
     BOOST_CHECK(result.error().kind == chance_table_error_kind::dead_card_collision);
 }
 
+BOOST_AUTO_TEST_CASE(chance_event_table_rejects_duplicate_board_cards) {
+    auto graph = create_chance_tree();
+    auto chance_events = make_uniform_chance_event_table(graph);
+    chance_events.events.front().board_cards = card(0, 0);
+    chance_events.outcomes.front().cards = card(0, 0);
+
+    auto result = validate_chance_event_table(graph, chance_events);
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == chance_table_error_kind::duplicate_board_card);
+}
+
 BOOST_AUTO_TEST_CASE(chance_traversal_uses_enumerated_outcome_probabilities) {
     graph_builder builder;
     const auto root = builder.add_node(node_kind::chance);
@@ -1456,13 +1468,56 @@ BOOST_AUTO_TEST_CASE(public_card_chance_enumeration_is_blocker_safe) {
     const auto dead_cards = card(0, 0) | card(1, 1);
     const auto flop_outcomes = enumerate_flop_outcomes(dead_cards);
     const auto turn_outcomes = enumerate_turn_outcomes(card(2, 2) | card(2, 3) | card(2, 4), dead_cards);
+    const auto river_outcomes = enumerate_river_outcomes(
+        card(2, 2) | card(2, 3) | card(2, 4) | card(3, 5),
+        dead_cards);
 
     BOOST_CHECK_EQUAL(flop_outcomes.size(), 19600u);
     BOOST_CHECK_EQUAL(turn_outcomes.size(), 47u);
+    BOOST_CHECK_EQUAL(river_outcomes.size(), 46u);
     for (const auto& outcome : turn_outcomes) {
         BOOST_CHECK_EQUAL(outcome.cards & dead_cards, 0u);
         BOOST_CHECK_EQUAL(outcome.cards & (card(2, 2) | card(2, 3) | card(2, 4)), 0u);
     }
+}
+
+BOOST_AUTO_TEST_CASE(public_card_chance_event_table_aligns_turn_outcomes) {
+    graph_builder builder;
+    const auto root = builder.add_node(node_kind::chance);
+    for (uint16_t action = 0; action < 47u; ++action) {
+        const auto terminal = builder.add_node(node_kind::terminal);
+        builder.add_edge(root, terminal, action);
+    }
+    auto graph = require_graph(builder.build());
+
+    const auto board_cards = card(2, 2) | card(2, 3) | card(2, 4);
+    const auto dead_cards = card(0, 0) | card(1, 1);
+    const std::array configs{
+        public_card_chance_event_config{
+            .node_id = graph.root_node,
+            .kind = public_chance_event_kind::turn,
+            .board_cards = board_cards,
+            .dead_cards = dead_cards,
+            .board_partition_base = 5
+        }
+    };
+
+    auto table = make_public_card_chance_event_table(graph, configs);
+
+    BOOST_REQUIRE(table.has_value());
+    BOOST_REQUIRE_EQUAL(table->events.size(), 1u);
+    BOOST_CHECK(table->events.front().kind == public_chance_event_kind::turn);
+    BOOST_CHECK_EQUAL(table->events.front().outcome_count, 47u);
+    BOOST_CHECK_EQUAL(table->outcomes.front().board_partition_id, 5u);
+    BOOST_CHECK_EQUAL(table->outcomes.back().board_partition_id, 51u);
+    double probability_sum = 0.0;
+    for (const auto& outcome : table->event_outcomes(table->events.front())) {
+        probability_sum += outcome.probability;
+        BOOST_CHECK_EQUAL(outcome.cards & board_cards, 0u);
+        BOOST_CHECK_EQUAL(outcome.cards & dead_cards, 0u);
+        BOOST_CHECK(outcome.legal);
+    }
+    BOOST_CHECK_SMALL(probability_sum - 1.0, 0.00001);
 }
 
 BOOST_AUTO_TEST_CASE(chance_board_partition_count_tracks_enumerated_outcomes) {
@@ -2284,6 +2339,25 @@ BOOST_AUTO_TEST_CASE(board_partition_plan_rejects_invalid_inputs) {
     BOOST_CHECK(no_partitions.error().kind == scheduler_error_kind::empty_partition_plan);
 }
 
+BOOST_AUTO_TEST_CASE(chance_board_partition_plan_uses_enumerated_partition_metadata) {
+    auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{2, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    auto chance_events = make_uniform_chance_event_table(graph);
+    chance_events.outcomes[0].board_partition_id = 0;
+    chance_events.outcomes[1].board_partition_id = 2;
+    chance_events.outcomes[2].board_partition_id = 1;
+    chance_events.outcomes[3].board_partition_id = 2;
+
+    auto plan = make_chance_board_partition_plan(chance_events, partitions);
+
+    BOOST_REQUIRE(plan.has_value());
+    BOOST_CHECK_EQUAL(plan->board_count, 3u);
+    BOOST_CHECK_EQUAL(plan->task_count(), 3u * partitions.size());
+}
+
 BOOST_AUTO_TEST_CASE(board_partition_scheduler_executes_each_task_once) {
     auto graph = create_chance_tree();
     auto partitions = require_partitions(
@@ -2415,6 +2489,38 @@ BOOST_AUTO_TEST_CASE(board_partition_scheduler_reports_task_failure_context) {
     BOOST_CHECK_EQUAL(result.error().task_index, 2u);
     BOOST_CHECK_EQUAL(result.error().board_index, 1u);
     BOOST_CHECK_EQUAL(result.error().partition_index, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(chance_board_partition_scheduling_is_deterministic_across_worker_counts) {
+    auto graph = create_chance_tree();
+    auto partitions = require_partitions(
+        compute_dfs_partitions(
+            graph,
+            dfs_partition_strategy{2, DEFAULT_TEST_WORK_DEPTH_SHIFT}));
+    auto chance_events = make_uniform_chance_event_table(graph);
+    auto plan = make_chance_board_partition_plan(chance_events, partitions).value();
+
+    auto run_and_count = [&plan](const uint32_t worker_count) {
+        std::vector<std::atomic<uint32_t>> task_hits(plan.task_count());
+        for (auto& hit : task_hits) {
+            hit.store(0, std::memory_order_relaxed);
+        }
+        auto result = run_board_partition_scheduler(
+            plan,
+            scheduler_runtime_config{worker_count, 1},
+            [&task_hits](const scheduler_worker_state&, const board_partition_task& task) {
+                task_hits[task.task_index].fetch_add(1, std::memory_order_relaxed);
+            });
+        BOOST_REQUIRE(result.has_value());
+
+        std::vector<uint32_t> hits(task_hits.size());
+        for (uint32_t i = 0; i < static_cast<uint32_t>(task_hits.size()); ++i) {
+            hits[i] = task_hits[i].load(std::memory_order_relaxed);
+        }
+        return hits;
+    };
+
+    BOOST_CHECK(run_and_count(1) == run_and_count(3));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

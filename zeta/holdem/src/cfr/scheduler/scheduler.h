@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cfr/chance/chance.h"
 #include "cfr/scheduler/dfs_partitioner.h"
 
 #include <algorithm>
@@ -115,6 +116,13 @@ namespace zeta::holdem::cfr::scheduler {
         plan.board_count = board_count;
         plan.partitions.assign(partitions.begin(), partitions.end());
         return plan;
+    }
+
+    [[nodiscard]] inline std::expected<board_partition_plan, scheduler_error> make_chance_board_partition_plan(
+        const chance_event_table& chance_events,
+        const std::span<const graph_partition> partitions)
+    {
+        return make_board_partition_plan(chance_board_partition_count(chance_events), partitions);
     }
 
     struct scheduler_runtime_config {

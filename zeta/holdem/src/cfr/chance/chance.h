@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <expected>
@@ -18,6 +19,42 @@ namespace zeta::holdem::cfr {
     inline constexpr uint32_t INVALID_CHANCE_EVENT = std::numeric_limits<uint32_t>::max();
     inline constexpr uint32_t INVALID_BOARD_PARTITION = std::numeric_limits<uint32_t>::max();
 
+    enum class public_chance_event_kind : uint8_t {
+        none = 0,
+        flop = 1,
+        turn = 2,
+        river = 3
+    };
+
+    [[nodiscard]] constexpr const char* to_string(const public_chance_event_kind kind) noexcept
+    {
+        using enum public_chance_event_kind;
+        switch (kind) {
+            case none:  return "public_chance_event_kind::none";
+            case flop:  return "public_chance_event_kind::flop";
+            case turn:  return "public_chance_event_kind::turn";
+            case river: return "public_chance_event_kind::river";
+        }
+        return "public_chance_event_kind::unknown";
+    }
+
+    inline std::ostream& operator<<(std::ostream& os, const public_chance_event_kind kind)
+    {
+        return os << to_string(kind);
+    }
+
+    [[nodiscard]] constexpr uint8_t public_chance_cards_to_deal(const public_chance_event_kind kind) noexcept
+    {
+        using enum public_chance_event_kind;
+        switch (kind) {
+            case flop:  return 3;
+            case turn:
+            case river: return 1;
+            case none:  return 0;
+        }
+        return 0;
+    }
+
     /**
      * One enumerated chance result aligned to a chance-node child action.
      */
@@ -28,6 +65,7 @@ namespace zeta::holdem::cfr {
         uint32_t board_partition_id = INVALID_BOARD_PARTITION;
         card_mask cards = 0;
         card_mask dead_cards = 0;
+        bool legal = true;
     };
 
     /**
@@ -37,6 +75,9 @@ namespace zeta::holdem::cfr {
         uint32_t node_id = game_graph::INVALID_NODE;
         uint32_t first_outcome = 0;
         uint32_t outcome_count = 0;
+        public_chance_event_kind kind = public_chance_event_kind::none;
+        card_mask board_cards = 0;
+        card_mask dead_cards = 0;
 
         [[nodiscard]] uint32_t end_outcome() const noexcept
         {
@@ -97,7 +138,10 @@ namespace zeta::holdem::cfr {
         child_alignment_mismatch,
         invalid_probability_sum,
         dead_card_collision,
-        duplicate_board_card
+        duplicate_board_card,
+        invalid_outcome_cards,
+        invalid_board_partition,
+        illegal_outcome
     };
 
     struct chance_table_error {
@@ -121,6 +165,9 @@ namespace zeta::holdem::cfr {
             case invalid_probability_sum:  return "chance_table_error_kind::invalid_probability_sum";
             case dead_card_collision:      return "chance_table_error_kind::dead_card_collision";
             case duplicate_board_card:     return "chance_table_error_kind::duplicate_board_card";
+            case invalid_outcome_cards:    return "chance_table_error_kind::invalid_outcome_cards";
+            case invalid_board_partition:  return "chance_table_error_kind::invalid_board_partition";
+            case illegal_outcome:          return "chance_table_error_kind::illegal_outcome";
         }
         return "chance_table_error_kind::unknown";
     }
@@ -143,6 +190,39 @@ namespace zeta::holdem::cfr {
                 sum += static_cast<double>(outcome.probability);
             }
             return std::abs(sum - 1.0) <= 1.0e-5;
+        }
+
+        [[nodiscard]] inline uint32_t card_count(const card_mask cards) noexcept
+        {
+            return static_cast<uint32_t>(std::popcount(static_cast<uint64_t>(cards)));
+        }
+
+        [[nodiscard]] inline uint32_t combination_count(uint32_t n, const uint8_t k) noexcept
+        {
+            if (k == 0u || k > n) {
+                return k == 0u ? 1u : 0u;
+            }
+
+            uint64_t result = 1;
+            for (uint8_t i = 1; i <= k; ++i) {
+                result = (result * static_cast<uint64_t>(n - k + i)) / i;
+            }
+            return static_cast<uint32_t>(result);
+        }
+
+        [[nodiscard]] inline uint32_t public_chance_outcome_count(
+            const public_chance_event_kind kind,
+            const card_mask board_cards,
+            const card_mask dead_cards) noexcept
+        {
+            const auto cards_to_deal = public_chance_cards_to_deal(kind);
+            if (cards_to_deal == 0u || (board_cards & dead_cards) != 0u) {
+                return 0;
+            }
+
+            const auto blocked_count = card_count(board_cards | dead_cards);
+            const auto live_count = static_cast<uint32_t>(zeta::num_cards<zeta::default_deck>) - blocked_count;
+            return combination_count(live_count, cards_to_deal);
         }
     }
 
@@ -180,9 +260,27 @@ namespace zeta::holdem::cfr {
                     event_id
                 });
             }
+            if ((event.board_cards & event.dead_cards) != 0u) {
+                return std::unexpected(chance_table_error{
+                    chance_table_error_kind::dead_card_collision,
+                    event.node_id,
+                    event_id
+                });
+            }
 
             const auto edges = graph.out_edges(event.node_id);
             if (event.outcome_count != edges.size()) {
+                return std::unexpected(chance_table_error{
+                    chance_table_error_kind::outcome_count_mismatch,
+                    event.node_id,
+                    event_id
+                });
+            }
+            if (event.kind != public_chance_event_kind::none
+                && event.outcome_count != detail::public_chance_outcome_count(
+                    event.kind,
+                    event.board_cards,
+                    event.dead_cards)) {
                 return std::unexpected(chance_table_error{
                     chance_table_error_kind::outcome_count_mismatch,
                     event.node_id,
@@ -211,9 +309,42 @@ namespace zeta::holdem::cfr {
                         outcome_index
                     });
                 }
-                if ((outcome.cards & outcome.dead_cards) != 0u) {
+                if (!outcome.legal) {
+                    return std::unexpected(chance_table_error{
+                        chance_table_error_kind::illegal_outcome,
+                        event.node_id,
+                        event_id,
+                        outcome_index
+                    });
+                }
+                if (outcome.board_partition_id == INVALID_BOARD_PARTITION) {
+                    return std::unexpected(chance_table_error{
+                        chance_table_error_kind::invalid_board_partition,
+                        event.node_id,
+                        event_id,
+                        outcome_index
+                    });
+                }
+                if ((outcome.cards & (outcome.dead_cards | event.dead_cards)) != 0u) {
                     return std::unexpected(chance_table_error{
                         chance_table_error_kind::dead_card_collision,
+                        event.node_id,
+                        event_id,
+                        outcome_index
+                    });
+                }
+                if ((outcome.cards & event.board_cards) != 0u) {
+                    return std::unexpected(chance_table_error{
+                        chance_table_error_kind::duplicate_board_card,
+                        event.node_id,
+                        event_id,
+                        outcome_index
+                    });
+                }
+                if (event.kind != public_chance_event_kind::none
+                    && detail::card_count(outcome.cards) != public_chance_cards_to_deal(event.kind)) {
+                    return std::unexpected(chance_table_error{
+                        chance_table_error_kind::invalid_outcome_cards,
                         event.node_id,
                         event_id,
                         outcome_index
@@ -280,6 +411,14 @@ namespace zeta::holdem::cfr {
 
         return table;
     }
+
+    struct public_card_chance_event_config {
+        uint32_t node_id = game_graph::INVALID_NODE;
+        public_chance_event_kind kind = public_chance_event_kind::none;
+        card_mask board_cards = 0;
+        card_mask dead_cards = 0;
+        uint32_t board_partition_base = 0;
+    };
 
     /**
      * Enumerate blocker-safe public-card outcomes with equal probabilities.
@@ -351,6 +490,17 @@ namespace zeta::holdem::cfr {
         return outcomes;
     }
 
+    [[nodiscard]] inline std::vector<chance_outcome> enumerate_public_card_outcomes(
+        const public_chance_event_kind kind,
+        const card_mask board_cards,
+        const card_mask dead_cards)
+    {
+        const auto cards_to_deal = public_chance_cards_to_deal(kind);
+        return cards_to_deal == 0u
+            ? std::vector<chance_outcome>{}
+            : enumerate_public_card_outcomes(board_cards, dead_cards, cards_to_deal);
+    }
+
     [[nodiscard]] inline std::vector<chance_outcome> enumerate_flop_outcomes(const card_mask dead_cards)
     {
         return enumerate_public_card_outcomes(0, dead_cards, 3);
@@ -368,6 +518,73 @@ namespace zeta::holdem::cfr {
         const card_mask dead_cards)
     {
         return enumerate_public_card_outcomes(turn_board_cards, dead_cards, 1);
+    }
+
+    [[nodiscard]] inline std::expected<chance_event_table, chance_table_error> make_public_card_chance_event_table(
+        const game_graph& graph,
+        const std::span<const public_card_chance_event_config> configs)
+    {
+        chance_event_table table;
+        table.event_id_by_node.assign(graph.node_count, INVALID_CHANCE_EVENT);
+
+        for (const auto& config : configs) {
+            if (config.node_id >= graph.node_count
+                || graph.node_types[config.node_id] != node_kind::chance
+                || config.kind == public_chance_event_kind::none) {
+                return std::unexpected(chance_table_error{
+                    chance_table_error_kind::invalid_event_node,
+                    config.node_id
+                });
+            }
+            if (table.event_id_by_node[config.node_id] != INVALID_CHANCE_EVENT) {
+                return std::unexpected(chance_table_error{
+                    chance_table_error_kind::unexpected_chance_event,
+                    config.node_id,
+                    table.event_id_by_node[config.node_id]
+                });
+            }
+            if ((config.board_cards & config.dead_cards) != 0u) {
+                return std::unexpected(chance_table_error{
+                    chance_table_error_kind::dead_card_collision,
+                    config.node_id
+                });
+            }
+
+            auto outcomes = enumerate_public_card_outcomes(config.kind, config.board_cards, config.dead_cards);
+            const auto edges = graph.out_edges(config.node_id);
+            if (outcomes.size() != edges.size()) {
+                return std::unexpected(chance_table_error{
+                    chance_table_error_kind::outcome_count_mismatch,
+                    config.node_id
+                });
+            }
+
+            const auto event_id = static_cast<uint32_t>(table.events.size());
+            const auto first_outcome = static_cast<uint32_t>(table.outcomes.size());
+            table.event_id_by_node[config.node_id] = event_id;
+            table.events.push_back(chance_event{
+                .node_id = config.node_id,
+                .first_outcome = first_outcome,
+                .outcome_count = static_cast<uint32_t>(outcomes.size()),
+                .kind = config.kind,
+                .board_cards = config.board_cards,
+                .dead_cards = config.dead_cards
+            });
+
+            for (uint32_t local_index = 0; local_index < static_cast<uint32_t>(outcomes.size()); ++local_index) {
+                auto& outcome = outcomes[local_index];
+                outcome.child_node = edges[local_index].child_node;
+                outcome.action_index = edges[local_index].action_index;
+                outcome.board_partition_id += config.board_partition_base;
+                outcome.dead_cards = config.dead_cards;
+                table.outcomes.push_back(outcome);
+            }
+        }
+
+        if (auto result = validate_chance_event_table(graph, table); !result) {
+            return std::unexpected(result.error());
+        }
+        return table;
     }
 
     /**

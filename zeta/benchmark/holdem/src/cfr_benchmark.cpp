@@ -1,5 +1,6 @@
 #include <benchmark/benchmark.h>
 #include "cfr/betting/betting.h"
+#include "cfr/chance/chance.h"
 #include "cfr/graph/builder.h"
 #include "cfr/graph/graph.h"
 #include "cfr/graph/validation.h"
@@ -405,6 +406,22 @@ namespace {
             }
         }
     };
+
+    chance_event_table make_benchmark_chance_event_table(const game_graph& graph)
+    {
+        auto table = make_uniform_chance_event_table(graph);
+        uint32_t partition_id = 0;
+        for (auto& outcome : table.outcomes) {
+            outcome.board_partition_id = partition_id++;
+        }
+        if (!table.outcomes.empty()) {
+            auto result = validate_chance_event_table(graph, table);
+            if (!result) {
+                std::abort();
+            }
+        }
+        return table;
+    }
 
     class benchmark_board_range_pool {
     public:
@@ -819,6 +836,7 @@ void set_scheduler_counters(
 {
     state.counters["workers"] = static_cast<double>(config.worker_count);
     state.counters["boards"] = static_cast<double>(plan.board_count);
+    state.counters["chance_board_partitions"] = static_cast<double>(plan.board_count);
     state.counters["partitions"] = static_cast<double>(plan.partitions.size());
     state.counters["task_chunk_size"] = static_cast<double>(task_chunk_size);
     state.counters["task_work_repeats"] = static_cast<double>(task_work_repeats);
@@ -837,7 +855,8 @@ static void BM_BoardPartitionSchedulerOverhead(benchmark::State& state)
         compute_dfs_partitions(
             graph,
             dfs_partition_strategy{MEDIUM_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
-    auto plan = make_board_partition_plan(32, partitions).value();
+    auto chance_events = make_benchmark_chance_event_table(graph);
+    auto plan = make_chance_board_partition_plan(chance_events, partitions).value();
     const scheduler_runtime_config config{static_cast<uint32_t>(state.range(0))};
 
     scheduler_run_summary last_summary;
@@ -874,7 +893,8 @@ static void BM_BoardPartitionSchedulerRealistic(benchmark::State& state)
         compute_dfs_partitions(
             graph,
             dfs_partition_strategy{REALISTIC_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
-    auto plan = make_board_partition_plan(REALISTIC_BENCHMARK_BOARD_COUNT, partitions).value();
+    auto chance_events = make_benchmark_chance_event_table(graph);
+    auto plan = make_chance_board_partition_plan(chance_events, partitions).value();
     const scheduler_runtime_config config{static_cast<uint32_t>(state.range(0))};
     benchmark_scheduler_pool pool(config.worker_count);
 
@@ -921,6 +941,8 @@ static void BM_BoardPartitionStaticRangeRealistic(benchmark::State& state)
         compute_dfs_partitions(
             graph,
             dfs_partition_strategy{REALISTIC_BENCHMARK_PARTITION_COUNT, BENCHMARK_WORK_DEPTH_SHIFT}));
+    auto chance_events = make_benchmark_chance_event_table(graph);
+    const auto board_count = chance_board_partition_count(chance_events);
     const auto worker_count = static_cast<uint32_t>(state.range(0));
     benchmark_board_range_pool pool(worker_count);
 
@@ -928,7 +950,7 @@ static void BM_BoardPartitionStaticRangeRealistic(benchmark::State& state)
     for (auto _ : state) {
         std::vector<benchmark_worker_counter> counters(worker_count);
         pool.run(
-            REALISTIC_BENCHMARK_BOARD_COUNT,
+            board_count,
             [&graph, &partitions, &counters](const uint32_t worker_id, const uint32_t begin_board, const uint32_t end_board) {
                 uint64_t local_actions = 0;
                 for (uint32_t board = begin_board; board < end_board; ++board) {
@@ -953,7 +975,8 @@ static void BM_BoardPartitionStaticRangeRealistic(benchmark::State& state)
     }
 
     state.counters["workers"] = static_cast<double>(worker_count);
-    state.counters["boards"] = static_cast<double>(REALISTIC_BENCHMARK_BOARD_COUNT);
+    state.counters["boards"] = static_cast<double>(board_count);
+    state.counters["chance_board_partitions"] = static_cast<double>(board_count);
     state.counters["partitions"] = static_cast<double>(partitions.size());
     state.counters["task_work_repeats"] = static_cast<double>(REALISTIC_BENCHMARK_TASK_WORK_REPEATS);
     state.counters["actions/s"] = benchmark::Counter(
@@ -1111,7 +1134,11 @@ void run_cfr_iteration_benchmark_impl(
         compute_dfs_partitions(
             graph,
             dfs_partition_strategy{1, BENCHMARK_WORK_DEPTH_SHIFT}));
-    auto plan = make_board_partition_plan(board_count, partitions).value();
+    auto chance_events = make_benchmark_chance_event_table(graph);
+    const auto chance_partition_count = chance_board_partition_count(chance_events);
+    auto plan = chance_partition_count == 0u
+        ? make_board_partition_plan(board_count, partitions).value()
+        : make_chance_board_partition_plan(chance_events, partitions).value();
 
     std::vector<worker_context> workers(worker_count);
     for (auto& worker : workers) {
@@ -1123,6 +1150,7 @@ void run_cfr_iteration_benchmark_impl(
     traversal_config traversal_cfg;
     traversal_cfg.initial_reach_oop = 2.0f;
     traversal_cfg.initial_reach_ip = 1.0f;
+    traversal_cfg.chance_events = chance_partition_count == 0u ? nullptr : &chance_events;
 
     std::vector<benchmark_worker_counter> counters(worker_count);
     reduction_diagnostics last_reduction;
@@ -1199,7 +1227,7 @@ void run_cfr_iteration_benchmark_impl(
         state,
         graph,
         worker_count,
-        board_count,
+        plan.board_count,
         counters,
         last_reduction);
     state.counters["task_chunk_size"] = static_cast<double>(task_chunk_size);
