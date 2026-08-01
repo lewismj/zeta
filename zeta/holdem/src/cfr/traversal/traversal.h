@@ -13,6 +13,7 @@
 #include <concepts>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <ostream>
 #include <span>
 #include <type_traits>
@@ -82,6 +83,7 @@ namespace zeta::holdem::cfr::traversal {
         uint64_t strategy_updates = 0;
         uint64_t terminal_evaluations = 0;
         uint64_t reduction_values = 0;
+        uint64_t zero_reach_skips = 0;
     };
 
     struct traversal_result {
@@ -154,6 +156,13 @@ namespace zeta::holdem::cfr::traversal {
         std::vector<float> node_utility;
         std::vector<float> child_action_value;
         std::vector<float> edge_probability;
+        std::vector<uint32_t> cfr_frame_node_id;
+        std::vector<uint32_t> cfr_frame_edge_cursor;
+        std::vector<uint32_t> cfr_frame_reach_slot;
+        std::vector<uint32_t> cfr_frame_value_slot;
+        std::vector<traversal_phase> cfr_frame_phase;
+        std::vector<float> cfr_value_scratch;
+        std::vector<float> cfr_reach_scratch;
         table_delta_buffer delta_buffer;
         traversal_diagnostics diagnostics{};
 
@@ -175,6 +184,27 @@ namespace zeta::holdem::cfr::traversal {
         [[nodiscard]] uint32_t child_action_value_capacity() const noexcept
         {
             return static_cast<uint32_t>(child_action_value.size());
+        }
+
+        [[nodiscard]] uint32_t cfr_frame_capacity() const noexcept
+        {
+            return std::min({
+                static_cast<uint32_t>(cfr_frame_node_id.size()),
+                static_cast<uint32_t>(cfr_frame_edge_cursor.size()),
+                static_cast<uint32_t>(cfr_frame_reach_slot.size()),
+                static_cast<uint32_t>(cfr_frame_value_slot.size()),
+                static_cast<uint32_t>(cfr_frame_phase.size())
+            });
+        }
+
+        [[nodiscard]] uint32_t cfr_value_scratch_capacity() const noexcept
+        {
+            return static_cast<uint32_t>(cfr_value_scratch.size());
+        }
+
+        [[nodiscard]] uint32_t cfr_reach_scratch_capacity() const noexcept
+        {
+            return static_cast<uint32_t>(cfr_reach_scratch.size());
         }
     };
 
@@ -286,6 +316,13 @@ namespace zeta::holdem::cfr::traversal {
         worker.node_utility.resize(graph.node_count);
         worker.child_action_value.resize(graph.edges.size());
         worker.edge_probability.resize(graph.edges.size());
+        const auto cfr_frame_capacity = static_cast<size_t>(graph.max_depth) + 1u + stack_margin;
+        worker.cfr_frame_node_id.resize(cfr_frame_capacity);
+        worker.cfr_frame_edge_cursor.resize(cfr_frame_capacity);
+        worker.cfr_frame_reach_slot.resize(cfr_frame_capacity);
+        worker.cfr_frame_value_slot.resize(cfr_frame_capacity);
+        worker.cfr_frame_phase.resize(cfr_frame_capacity);
+        worker.cfr_value_scratch.resize(cfr_frame_capacity);
         worker.diagnostics = {};
 
         if (auto result = worker.delta_buffer.reset_layout(regrets.action_offsets); !result) {

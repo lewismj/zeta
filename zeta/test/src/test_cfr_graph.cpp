@@ -57,6 +57,29 @@ namespace {
         BOOST_FAIL("compatible live combos not found");
         return {0, 0};
     }
+
+    std::array<zeta::holdem::combination_index, 3> first_three_compatible_live_combos(
+        const zeta::holdem::river_terminal_cache& cache)
+    {
+        for (std::size_t first_order = 0; first_order < cache.rank_order_count; ++first_order) {
+            const auto first = cache.rank_order[first_order];
+            for (std::size_t second_order = first_order + 1; second_order < cache.rank_order_count; ++second_order) {
+                const auto second = cache.rank_order[second_order];
+                if ((cache.masks[first] & cache.masks[second]) != 0) {
+                    continue;
+                }
+                for (std::size_t third_order = second_order + 1; third_order < cache.rank_order_count; ++third_order) {
+                    const auto third = cache.rank_order[third_order];
+                    if (((cache.masks[first] | cache.masks[second]) & cache.masks[third]) == 0) {
+                        return {first, second, third};
+                    }
+                }
+            }
+        }
+
+        BOOST_FAIL("three compatible live combos not found");
+        return {0, 0, 0};
+    }
 }
 
 game_graph require_graph(std::expected<game_graph, graph_build_error> result)
@@ -1269,6 +1292,8 @@ BOOST_AUTO_TEST_CASE(cfr_engine_selects_heads_up_and_nway_kernels_at_compile_tim
     static_assert(!cfr_engine<3>::heads_up);
     static_assert(std::is_same_v<cfr_engine<2>::reach_state, hu_reach_state>);
     static_assert(std::is_same_v<cfr_engine<3>::reach_state, nway_reach_state<3>>);
+    static_assert(cfr_engine<2>::reach_scratch_width == 3u);
+    static_assert(cfr_engine<3>::reach_scratch_width == 4u);
     static_assert(std::is_trivially_copyable_v<cfr_traversal_frame>);
 
     BOOST_CHECK(cfr_engine<2>::heads_up);
@@ -1283,6 +1308,156 @@ BOOST_AUTO_TEST_CASE(cfr_engine_selects_heads_up_and_nway_kernels_at_compile_tim
     BOOST_CHECK_SMALL(cfr_engine<3>::counterfactual_reach(nway_reach, 2.0f, 0) - 0.75f, 0.00001f);
 }
 
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_evaluates_heads_up_terminal_state_provider) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    regrets.value(0, 0) = 1.0f;
+    regrets.value(0, 1) = 0.0f;
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const auto terminal_context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(terminal_context));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(
+        terminal_context,
+        zeta::holdem::heads_up_player::ip));
+    std::vector<cfr_terminal_leaf> leaves(graph.node_count);
+    leaves[0] = cfr_terminal_leaf{0};
+    leaves[1] = cfr_terminal_leaf{1};
+    std::array<zeta::holdem::combination_index, 2> combos{oop_combo, ip_combo};
+
+    std::array<worker_context, 1> workers;
+    auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        leaves,
+        terminal_states.view(),
+        combos);
+
+    auto result = run_cfr_iteration(
+        context,
+        iteration_config{.updating_player = 0},
+        std::span<worker_context>{workers});
+    const zeta::holdem::terminal_engine<2> engine{};
+    const auto values = engine.evaluate_terminal_values(cache, reach_indices, terminal_states[0]);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_SMALL(result->root_utility - values[0][oop_combo], 0.00001f);
+    BOOST_CHECK_EQUAL(result->diagnostics.terminal_evaluations, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_evaluates_nway_terminal_state_provider) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    regrets.value(0, 0) = 1.0f;
+    regrets.value(0, 1) = 0.0f;
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto combos = first_three_compatible_live_combos(cache);
+    std::array<zeta::holdem::reach_vector, 3> ranges{};
+    for (std::size_t player = 0; player < combos.size(); ++player) {
+        ranges[player][combos[player]] = 1.0f;
+    }
+    const std::array<zeta::holdem::river_reach_index, 3> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, ranges[0]),
+        zeta::holdem::make_river_reach_index(cache, ranges[1]),
+        zeta::holdem::make_river_reach_index(cache, ranges[2])
+    };
+    zeta::holdem::terminal_context<3> terminal_context{
+        .gross_pot = 300.0,
+        .rake = 0.0,
+        .contribution = {100.0, 100.0, 100.0}
+    };
+    zeta::holdem::folded_mask<3> folded;
+    folded.set_folded(2, true);
+    zeta::holdem::terminal_state_table<3> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(terminal_context, folded));
+    std::vector<cfr_terminal_leaf> leaves(graph.node_count);
+    leaves[0] = cfr_terminal_leaf{0};
+    leaves[1] = cfr_terminal_leaf{0};
+
+    std::array<worker_context, 1> workers;
+    auto context = make_cfr_solver_context<3>(graph, annotations, layout, regrets, strategy_sums);
+    context.terminal_provider = make_terminal_state_provider<3>(
+        cache,
+        reach_indices,
+        leaves,
+        terminal_states.view(),
+        combos);
+
+    auto result = run_cfr_iteration(
+        context,
+        iteration_config{.updating_player = 1},
+        std::span<worker_context>{workers});
+    const zeta::holdem::terminal_engine<3> engine{};
+    const auto values = engine.evaluate_terminal_values(cache, reach_indices, terminal_states[0]);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_SMALL(result->root_utility - values[1][combos[1]], 0.00001f);
+    BOOST_CHECK_EQUAL(result->diagnostics.terminal_evaluations, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_rejects_invalid_terminal_state_reference) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(
+        zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0)));
+    std::vector<cfr_terminal_leaf> leaves(graph.node_count);
+    leaves[0] = cfr_terminal_leaf{9};
+    leaves[1] = cfr_terminal_leaf{0};
+    std::array<zeta::holdem::combination_index, 2> combos{oop_combo, ip_combo};
+
+    std::array<worker_context, 1> workers;
+    auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        leaves,
+        terminal_states.view(),
+        combos);
+
+    auto result = run_cfr_iteration(
+        context,
+        iteration_config{.updating_player = 0},
+        std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(!result);
+    BOOST_CHECK(result.error().kind == iteration_error_kind::traversal);
+    BOOST_CHECK(result.error().traversal.kind == traversal_error_kind::invalid_terminal_context);
+    BOOST_CHECK_EQUAL(result.error().traversal.node_id, 0u);
+}
+
 BOOST_AUTO_TEST_CASE(run_cfr_iteration_traverses_reduces_and_reports_diagnostics) {
     auto graph = create_simple_tree();
     auto annotations = make_default_annotations(graph);
@@ -1290,12 +1465,14 @@ BOOST_AUTO_TEST_CASE(run_cfr_iteration_traverses_reduces_and_reports_diagnostics
     regret_table regrets(layout);
     strategy_sum_table strategy_sums(layout);
     std::array<worker_context, 2> workers;
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
     auto context = make_cfr_solver_context<2>(
         graph,
         annotations,
         layout,
         regrets,
         strategy_sums);
+    context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
 
     auto result = run_cfr_iteration(
         context,
@@ -1422,7 +1599,7 @@ BOOST_AUTO_TEST_CASE(run_cfr_iteration_writes_counterfactual_regret_only_for_upd
         layout,
         regrets,
         strategy_sums);
-    context.terminal_utility_by_node = terminal_utility;
+    context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
 
     auto result = run_cfr_iteration(
         context,
@@ -1471,7 +1648,7 @@ BOOST_AUTO_TEST_CASE(run_cfr_iteration_uses_chance_probabilities_in_counterfactu
         regrets,
         strategy_sums);
     context.chance_events = &chance_events;
-    context.terminal_utility_by_node = terminal_utility;
+    context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
 
     auto result = run_cfr_iteration(context, iteration_config{.updating_player = 0}, std::span<worker_context>{workers});
 
@@ -1515,7 +1692,7 @@ BOOST_AUTO_TEST_CASE(run_cfr_iteration_uses_three_player_counterfactual_reach_pr
         layout,
         regrets,
         strategy_sums);
-    context.terminal_utility_by_node = terminal_utility;
+    context.terminal_provider = make_fixed_terminal_provider<3>(terminal_utility);
 
     auto result = run_cfr_iteration(
         context,
@@ -1528,6 +1705,64 @@ BOOST_AUTO_TEST_CASE(run_cfr_iteration_uses_three_player_counterfactual_reach_pr
     BOOST_CHECK_SMALL(strategy_sums.value(1, 0) - 0.5f, 0.00001f);
     BOOST_CHECK_SMALL(strategy_sums.value(1, 1) - 0.5f, 0.00001f);
     BOOST_CHECK_EQUAL(result->diagnostics.regret_updates, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(run_cfr_iteration_reuses_worker_scratch_without_growing_after_setup) {
+    graph_builder builder;
+    const auto root = builder.add_node(node_kind::player);
+    const auto p1 = builder.add_node(node_kind::player);
+    const auto win_terminal = builder.add_node(node_kind::terminal);
+    const auto root_lose_terminal = builder.add_node(node_kind::terminal);
+    const auto p1_lose_terminal = builder.add_node(node_kind::terminal);
+    builder.add_edge(root, p1, 0);
+    builder.add_edge(root, root_lose_terminal, 1);
+    builder.add_edge(p1, win_terminal, 0);
+    builder.add_edge(p1, p1_lose_terminal, 1);
+    builder.set_infoset_id(root, 0);
+    builder.set_infoset_id(p1, 1);
+    auto graph = require_graph(builder.build());
+    auto annotations = make_default_annotations(graph);
+    const auto root_node = graph.root_node;
+    const auto graph_root_edges = graph.out_edges(root_node);
+    const auto p1_node = graph_root_edges[0].child_node;
+    const auto graph_root_lose_terminal = graph_root_edges[1].child_node;
+    const auto graph_p1_edges = graph.out_edges(p1_node);
+    const auto graph_win_terminal = graph_p1_edges[0].child_node;
+    const auto graph_p1_lose_terminal = graph_p1_edges[1].child_node;
+    annotations.actor_by_node[graph.root_node] = 0;
+    annotations.actor_by_node[p1_node] = 1;
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    terminal_utility[graph_win_terminal] = 3.0f;
+    terminal_utility[graph_root_lose_terminal] = -1.0f;
+    terminal_utility[graph_p1_lose_terminal] = -1.0f;
+    std::array<worker_context, 1> workers;
+    auto context = make_cfr_solver_context<3>(graph, annotations, layout, regrets, strategy_sums);
+    context.terminal_provider = make_fixed_terminal_provider<3>(terminal_utility);
+
+    auto first = run_cfr_iteration(context, iteration_config{.updating_player = 1}, std::span<worker_context>{workers});
+    BOOST_REQUIRE(first.has_value());
+
+    const auto cfr_node_stack_capacity = workers[0].cfr_frame_node_id.capacity();
+    const auto cfr_edge_cursor_capacity = workers[0].cfr_frame_edge_cursor.capacity();
+    const auto cfr_reach_slot_capacity = workers[0].cfr_frame_reach_slot.capacity();
+    const auto cfr_value_slot_capacity = workers[0].cfr_frame_value_slot.capacity();
+    const auto cfr_phase_capacity = workers[0].cfr_frame_phase.capacity();
+    const auto cfr_value_scratch_capacity = workers[0].cfr_value_scratch.capacity();
+    const auto cfr_reach_scratch_capacity = workers[0].cfr_reach_scratch.capacity();
+
+    auto second = run_cfr_iteration(context, iteration_config{.updating_player = 1}, std::span<worker_context>{workers});
+    BOOST_REQUIRE(second.has_value());
+    BOOST_CHECK_EQUAL(workers[0].cfr_frame_node_id.capacity(), cfr_node_stack_capacity);
+    BOOST_CHECK_EQUAL(workers[0].cfr_frame_edge_cursor.capacity(), cfr_edge_cursor_capacity);
+    BOOST_CHECK_EQUAL(workers[0].cfr_frame_reach_slot.capacity(), cfr_reach_slot_capacity);
+    BOOST_CHECK_EQUAL(workers[0].cfr_frame_value_slot.capacity(), cfr_value_slot_capacity);
+    BOOST_CHECK_EQUAL(workers[0].cfr_frame_phase.capacity(), cfr_phase_capacity);
+    BOOST_CHECK_EQUAL(workers[0].cfr_value_scratch.capacity(), cfr_value_scratch_capacity);
+    BOOST_CHECK_EQUAL(workers[0].cfr_reach_scratch.capacity(), cfr_reach_scratch_capacity);
+    BOOST_CHECK_GE(workers[0].cfr_reach_scratch.size(), workers[0].stack_capacity() * cfr_engine<3>::reach_scratch_width);
 }
 
 BOOST_AUTO_TEST_CASE(run_cfr_iteration_rejects_chance_graph_without_enumerated_events) {

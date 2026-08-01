@@ -1457,7 +1457,7 @@ static void BM_CFRSolverIterationTinyReference(benchmark::State& state)
     terminal_utility[1] = -1.0f;
     std::vector<worker_context> workers(static_cast<uint32_t>(state.range(0)));
     auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
-    context.terminal_utility_by_node = terminal_utility;
+    context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
 
     iteration_result last_result;
     for (auto _ : state) {
@@ -1481,6 +1481,8 @@ static void BM_CFRSolverIterationTinyReference(benchmark::State& state)
     }
 
     state.counters["workers"] = static_cast<double>(workers.size());
+    state.counters["kernel_heads_up"] = static_cast<double>(cfr_engine<2>::heads_up ? 1u : 0u);
+    state.counters["cfr_reach_scratch_values"] = static_cast<double>(workers.front().cfr_reach_scratch.size());
     state.counters["nodes/s"] = benchmark::Counter(
         static_cast<double>(last_result.diagnostics.nodes_visited),
         benchmark::Counter::kIsIterationInvariantRate);

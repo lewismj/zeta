@@ -208,6 +208,70 @@ namespace zeta::holdem::cfr::solver {
         }
     };
 
+    enum class cfr_terminal_provider_kind : uint8_t {
+        none,
+        terminal_state_table,
+        fixed_utility_fixture
+    };
+
+    /**
+     * Terminal leaf metadata consumed by production CFR iteration.
+     */
+    struct cfr_terminal_leaf {
+        uint32_t terminal_state_id = INVALID_METADATA_ID;
+    };
+
+    /**
+     * Non-owning terminal evaluator inputs for CFR leaf evaluation.
+     */
+    template <std::size_t N>
+    struct cfr_terminal_provider {
+        cfr_terminal_provider_kind kind = cfr_terminal_provider_kind::none;
+        const ::zeta::holdem::river_terminal_cache* river_cache = nullptr;
+        const std::array<::zeta::holdem::river_reach_index, N>* reach_indices = nullptr;
+        std::span<const cfr_terminal_leaf> terminal_leaves{};
+        std::span<const ::zeta::holdem::terminal_state<N>> terminal_states{};
+        std::array<::zeta::holdem::combination_index, N> combo_by_player{};
+        std::span<const float> fixed_terminal_utility_by_node{};
+        uint16_t samples_per_combo = 64;
+    };
+
+    /**
+     * Build a production terminal-state provider.
+     */
+    template <std::size_t N>
+    [[nodiscard]] cfr_terminal_provider<N> make_terminal_state_provider(
+        const ::zeta::holdem::river_terminal_cache& river_cache,
+        const std::array<::zeta::holdem::river_reach_index, N>& reach_indices,
+        const std::span<const cfr_terminal_leaf> terminal_leaves,
+        const std::span<const ::zeta::holdem::terminal_state<N>> terminal_states,
+        const std::array<::zeta::holdem::combination_index, N>& combo_by_player,
+        const uint16_t samples_per_combo = 64) noexcept
+    {
+        return cfr_terminal_provider<N>{
+            .kind = cfr_terminal_provider_kind::terminal_state_table,
+            .river_cache = &river_cache,
+            .reach_indices = &reach_indices,
+            .terminal_leaves = terminal_leaves,
+            .terminal_states = terminal_states,
+            .combo_by_player = combo_by_player,
+            .samples_per_combo = samples_per_combo
+        };
+    }
+
+    /**
+     * Build an explicit fixed-utility fixture for reference tests and benchmarks.
+     */
+    template <std::size_t N>
+    [[nodiscard]] cfr_terminal_provider<N> make_fixed_terminal_provider(
+        const std::span<const float> terminal_utility_by_node) noexcept
+    {
+        return cfr_terminal_provider<N>{
+            .kind = cfr_terminal_provider_kind::fixed_utility_fixture,
+            .fixed_terminal_utility_by_node = terminal_utility_by_node
+        };
+    }
+
     /**
      * Non-owning solver inputs shared by the public CFR iteration entry point.
      */
@@ -221,7 +285,7 @@ namespace zeta::holdem::cfr::solver {
         regret_table* regrets = nullptr;
         strategy_sum_table* strategy_sums = nullptr;
         const chance_event_table* chance_events = nullptr;
-        std::span<const float> terminal_utility_by_node{};
+        cfr_terminal_provider<N> terminal_provider{};
         numeric_policy numeric{};
         reduction_policy reduction{};
         const infoset_owner_map* owner_map = nullptr;
@@ -769,11 +833,15 @@ namespace zeta::holdem::cfr::solver {
         return hash.value;
     }
 
+    template <std::size_t N>
     [[nodiscard]] inline uint64_t hash_terminal_state_layout(
-        const std::span<const float> terminal_utility_by_node) noexcept
+        const cfr_terminal_provider<N>& terminal_provider) noexcept
     {
         compatibility_hasher hash;
-        hash.add_u64(terminal_utility_by_node.size());
+        hash.add_u64(static_cast<uint64_t>(terminal_provider.kind));
+        hash.add_u64(terminal_provider.terminal_leaves.size());
+        hash.add_u64(terminal_provider.terminal_states.size());
+        hash.add_u64(terminal_provider.fixed_terminal_utility_by_node.size());
         return hash.value;
     }
 
@@ -802,7 +870,7 @@ namespace zeta::holdem::cfr::solver {
                 context.reduction,
                 context.chance),
             .owner_range_hash = hash_owner_ranges(context.owner_map),
-            .terminal_state_layout_hash = hash_terminal_state_layout(context.terminal_utility_by_node),
+            .terminal_state_layout_hash = hash_terminal_state_layout(context.terminal_provider),
             .rng_stream_policy_hash = compatibility_hasher::OFFSET
         };
     }
@@ -1086,10 +1154,90 @@ namespace zeta::holdem::cfr::solver {
         float chance = 1.0f;
     };
 
+    namespace detail {
+        template <std::size_t N, typename StrategyPolicy>
+        [[nodiscard]] std::expected<traversal::traversal_result, iteration_error> traverse_cfr_tree(
+            const game_graph& graph,
+            const solver_graph_annotations& annotations,
+            const chance_event_table* chance_events,
+            const regret_table& regrets,
+            traversal::worker_context& worker,
+            const iteration_config& config,
+            const cfr_terminal_provider<N>& terminal_provider);
+
+        template <typename StrategyPolicy>
+        [[nodiscard]] std::expected<traversal::traversal_result, iteration_error> traverse_heads_up_cfr_tree(
+            const game_graph& graph,
+            const solver_graph_annotations& annotations,
+            const chance_event_table* chance_events,
+            const regret_table& regrets,
+            traversal::worker_context& worker,
+            const iteration_config& config,
+            const cfr_terminal_provider<2>& terminal_provider);
+
+        template <std::size_t N, typename StrategyPolicy>
+            requires (N >= 3)
+        [[nodiscard]] std::expected<traversal::traversal_result, iteration_error> traverse_nway_cfr_tree(
+            const game_graph& graph,
+            const solver_graph_annotations& annotations,
+            const chance_event_table* chance_events,
+            const regret_table& regrets,
+            traversal::worker_context& worker,
+            const iteration_config& config,
+            const cfr_terminal_provider<N>& terminal_provider);
+    }
+
     template <>
     struct cfr_engine<2> {
         static constexpr bool heads_up = true;
         using reach_state = hu_reach_state;
+
+        [[nodiscard]] static reach_state initial_reach() noexcept
+        {
+            return reach_state{};
+        }
+
+        static constexpr uint32_t reach_scratch_width = 3;
+
+        [[nodiscard]] static float chance_reach(const reach_state& reach) noexcept
+        {
+            return reach.chance;
+        }
+
+        [[nodiscard]] static reach_state load_reach(
+            const std::span<const float> scratch,
+            const uint32_t slot) noexcept
+        {
+            const auto offset = slot * reach_scratch_width;
+            return reach_state{
+                .oop = scratch[offset],
+                .ip = scratch[offset + 1u],
+                .chance = scratch[offset + 2u]
+            };
+        }
+
+        static void store_reach(
+            const std::span<float> scratch,
+            const uint32_t slot,
+            const reach_state reach) noexcept
+        {
+            const auto offset = slot * reach_scratch_width;
+            scratch[offset] = reach.oop;
+            scratch[offset + 1u] = reach.ip;
+            scratch[offset + 2u] = reach.chance;
+        }
+
+        static void propagate_chance(reach_state& reach, const float probability) noexcept
+        {
+            reach.chance *= probability;
+        }
+
+        [[nodiscard]] static float counterfactual_reach(
+            const reach_state& reach,
+            const uint8_t actor) noexcept
+        {
+            return reach.chance * (actor == 0u ? reach.ip : reach.oop);
+        }
 
         /**
          * Counterfactual reach for heads-up CFR without an N-way product loop.
@@ -1112,6 +1260,13 @@ namespace zeta::holdem::cfr::solver {
             return actor == 0u ? reach[0] : reach[1];
         }
 
+        [[nodiscard]] static float own_reach(
+            const reach_state& reach,
+            const uint8_t actor) noexcept
+        {
+            return actor == 0u ? reach.oop : reach.ip;
+        }
+
         /**
          * Propagate a heads-up player action by direct scalar seat update.
          */
@@ -1127,29 +1282,39 @@ namespace zeta::holdem::cfr::solver {
             }
         }
 
+        static void propagate_player_action(
+            reach_state& reach,
+            const uint8_t actor,
+            const float probability) noexcept
+        {
+            if (actor == 0u) {
+                reach.oop *= probability;
+            } else {
+                reach.ip *= probability;
+            }
+        }
+
         /**
-         * Execute one heads-up traversal using the scalar OOP/IP reach path.
+         * Execute one heads-up traversal using the scalar OOP/IP CFR kernel.
          */
+        template <typename StrategyPolicy>
         [[nodiscard]] static std::expected<traversal::traversal_result, iteration_error> traverse(
             const game_graph& graph,
+            const solver_graph_annotations& annotations,
+            const chance_event_table* chance_events,
             const regret_table& regrets,
             traversal::worker_context& worker,
-            const iteration_config&)
+            const iteration_config& config,
+            const cfr_terminal_provider<2>& terminal_provider)
         {
-            traversal::traversal_config config;
-            config.scope = traversal::whole_graph_scope(graph);
-            config.initial_reach_oop = 1.0f;
-            config.initial_reach_ip = 1.0f;
-            config.initial_chance_weight = 1.0f;
-
-            auto result = traversal::traverse_game_tree(graph, regrets, worker, traversal::default_terminal_policy{}, config);
-            if (!result) {
-                return std::unexpected(iteration_error{
-                    .kind = iteration_error_kind::traversal,
-                    .traversal = result.error()
-                });
-            }
-            return *result;
+            return detail::traverse_heads_up_cfr_tree<StrategyPolicy>(
+                graph,
+                annotations,
+                chance_events,
+                regrets,
+                worker,
+                config,
+                terminal_provider);
         }
     };
 
@@ -1158,6 +1323,64 @@ namespace zeta::holdem::cfr::solver {
     struct cfr_engine<N> {
         static constexpr bool heads_up = false;
         using reach_state = nway_reach_state<N>;
+
+        [[nodiscard]] static reach_state initial_reach() noexcept
+        {
+            reach_state reach{};
+            reach.player.fill(1.0f);
+            reach.chance = 1.0f;
+            return reach;
+        }
+
+        static constexpr uint32_t reach_scratch_width = static_cast<uint32_t>(N + 1u);
+
+        [[nodiscard]] static float chance_reach(const reach_state& reach) noexcept
+        {
+            return reach.chance;
+        }
+
+        [[nodiscard]] static reach_state load_reach(
+            const std::span<const float> scratch,
+            const uint32_t slot) noexcept
+        {
+            const auto offset = slot * reach_scratch_width;
+            reach_state reach{};
+            for (uint8_t player = 0; player < N; ++player) {
+                reach.player[player] = scratch[offset + player];
+            }
+            reach.chance = scratch[offset + N];
+            return reach;
+        }
+
+        static void store_reach(
+            const std::span<float> scratch,
+            const uint32_t slot,
+            const reach_state& reach) noexcept
+        {
+            const auto offset = slot * reach_scratch_width;
+            for (uint8_t player = 0; player < N; ++player) {
+                scratch[offset + player] = reach.player[player];
+            }
+            scratch[offset + N] = reach.chance;
+        }
+
+        static void propagate_chance(reach_state& reach, const float probability) noexcept
+        {
+            reach.chance *= probability;
+        }
+
+        [[nodiscard]] static float counterfactual_reach(
+            const reach_state& reach,
+            const uint8_t actor) noexcept
+        {
+            float result = reach.chance;
+            for (uint8_t player = 0; player < N; ++player) {
+                if (player != actor) {
+                    result *= reach.player[player];
+                }
+            }
+            return result;
+        }
 
         /**
          * Counterfactual reach for an N-way CFR update.
@@ -1186,6 +1409,13 @@ namespace zeta::holdem::cfr::solver {
             return reach[actor];
         }
 
+        [[nodiscard]] static float own_reach(
+            const reach_state& reach,
+            const uint8_t actor) noexcept
+        {
+            return reach.player[actor];
+        }
+
         /**
          * Propagate one acting player's reach through an action probability.
          */
@@ -1197,29 +1427,35 @@ namespace zeta::holdem::cfr::solver {
             reach[actor] *= probability;
         }
 
+        static void propagate_player_action(
+            reach_state& reach,
+            const uint8_t actor,
+            const float probability) noexcept
+        {
+            reach.player[actor] *= probability;
+        }
+
         /**
          * Execute one N-way traversal through the shared graph/table storage.
          */
+        template <typename StrategyPolicy>
         [[nodiscard]] static std::expected<traversal::traversal_result, iteration_error> traverse(
             const game_graph& graph,
+            const solver_graph_annotations& annotations,
+            const chance_event_table* chance_events,
             const regret_table& regrets,
             traversal::worker_context& worker,
-            const iteration_config&)
+            const iteration_config& config,
+            const cfr_terminal_provider<N>& terminal_provider)
         {
-            traversal::traversal_config config;
-            config.scope = traversal::whole_graph_scope(graph);
-            config.initial_reach_oop = 1.0f;
-            config.initial_reach_ip = 1.0f;
-            config.initial_chance_weight = 1.0f;
-
-            auto result = traversal::traverse_game_tree(graph, regrets, worker, traversal::default_terminal_policy{}, config);
-            if (!result) {
-                return std::unexpected(iteration_error{
-                    .kind = iteration_error_kind::traversal,
-                    .traversal = result.error()
-                });
-            }
-            return *result;
+            return detail::traverse_nway_cfr_tree<N, StrategyPolicy>(
+                graph,
+                annotations,
+                chance_events,
+                regrets,
+                worker,
+                config,
+                terminal_provider);
         }
     };
 
@@ -1243,36 +1479,102 @@ namespace zeta::holdem::cfr::solver {
             aggregate.strategy_updates += delta.strategy_updates;
             aggregate.terminal_evaluations += delta.terminal_evaluations;
             aggregate.reduction_values += delta.reduction_values;
-        }
-
-        [[nodiscard]] inline float terminal_utility_for_node(
-            const std::span<const float> terminal_utility_by_node,
-            const uint32_t node_id) noexcept
-        {
-            return node_id < terminal_utility_by_node.size() ? terminal_utility_by_node[node_id] : 0.0f;
+            aggregate.zero_reach_skips += delta.zero_reach_skips;
         }
 
         template <std::size_t N>
-        [[nodiscard]] float counterfactual_reach(
-            const std::array<float, N>& reach,
-            const float chance_reach,
-            const uint8_t actor) noexcept
+        [[nodiscard]] std::expected<void, iteration_error> validate_terminal_provider(
+            const game_graph& graph,
+            const cfr_terminal_provider<N>& provider) noexcept
         {
-            return cfr_engine<N>::counterfactual_reach(reach, chance_reach, actor);
+            using enum cfr_terminal_provider_kind;
+            switch (provider.kind) {
+                case fixed_utility_fixture:
+                    if (provider.fixed_terminal_utility_by_node.size() < graph.node_count) {
+                        return std::unexpected(iteration_error{
+                            .kind = iteration_error_kind::traversal,
+                            .traversal = traversal::traversal_error{traversal::traversal_error_kind::invalid_terminal_context}
+                        });
+                    }
+                    return {};
+                case terminal_state_table:
+                    if (provider.river_cache == nullptr
+                        || provider.reach_indices == nullptr
+                        || provider.terminal_leaves.size() < graph.node_count
+                        || provider.terminal_states.empty()) {
+                        return std::unexpected(iteration_error{
+                            .kind = iteration_error_kind::traversal,
+                            .traversal = traversal::traversal_error{traversal::traversal_error_kind::invalid_terminal_context}
+                        });
+                    }
+                    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+                        if (graph.node_types[node_id] != node_kind::terminal) {
+                            continue;
+                        }
+                        if (provider.terminal_leaves[node_id].terminal_state_id >= provider.terminal_states.size()) {
+                            return std::unexpected(iteration_error{
+                                .kind = iteration_error_kind::traversal,
+                                .traversal = traversal::traversal_error{
+                                    traversal::traversal_error_kind::invalid_terminal_context,
+                                    node_id
+                                }
+                            });
+                        }
+                    }
+                    return {};
+                case none:
+                    return std::unexpected(iteration_error{
+                        .kind = iteration_error_kind::traversal,
+                        .traversal = traversal::traversal_error{traversal::traversal_error_kind::invalid_terminal_context}
+                    });
+            }
+            return std::unexpected(iteration_error{
+                .kind = iteration_error_kind::traversal,
+                .traversal = traversal::traversal_error{traversal::traversal_error_kind::invalid_terminal_context}
+            });
         }
 
-        template <std::size_t N, typename StrategyPolicy>
-        [[nodiscard]] float traverse_cfr_node(
-            const game_graph& graph,
-            const solver_graph_annotations& annotations,
-            const chance_event_table* chance_events,
-            const regret_table& regrets,
-            traversal::worker_context& worker,
+        template <std::size_t N>
+        [[nodiscard]] std::expected<float, iteration_error> terminal_utility_for_node(
+            const cfr_terminal_provider<N>& provider,
             const iteration_config& config,
-            const uint32_t node_id,
-            const std::array<float, N>& reach,
-            const float chance_reach,
-            const std::span<const float> terminal_utility_by_node)
+            const uint32_t node_id) noexcept
+        {
+            using enum cfr_terminal_provider_kind;
+            switch (provider.kind) {
+                case fixed_utility_fixture:
+                    assert(node_id < provider.fixed_terminal_utility_by_node.size());
+                    return provider.fixed_terminal_utility_by_node[node_id];
+                case terminal_state_table: {
+                    assert(provider.river_cache != nullptr);
+                    assert(provider.reach_indices != nullptr);
+                    assert(node_id < provider.terminal_leaves.size());
+                    const auto terminal_state_id = provider.terminal_leaves[node_id].terminal_state_id;
+                    assert(terminal_state_id < provider.terminal_states.size());
+
+                    const ::zeta::holdem::terminal_engine<N> engine{};
+                    const auto values = engine.evaluate_terminal_values(
+                        *provider.river_cache,
+                        *provider.reach_indices,
+                        provider.terminal_states[terminal_state_id],
+                        provider.samples_per_combo);
+                    const auto player = static_cast<std::size_t>(config.updating_player);
+                    return values[player][provider.combo_by_player[player]];
+                }
+                case none:
+                    break;
+            }
+            return std::unexpected(iteration_error{
+                .kind = iteration_error_kind::traversal,
+                .traversal = traversal::traversal_error{traversal::traversal_error_kind::invalid_terminal_context, node_id}
+            });
+        }
+
+        template <std::size_t N>
+        inline void record_cfr_node_entry(
+            const game_graph& graph,
+            traversal::worker_context& worker,
+            const uint32_t node_id) noexcept
         {
             ++worker.diagnostics.nodes_visited;
             worker.diagnostics.max_action_count = std::max(worker.diagnostics.max_action_count, graph.action_count(node_id));
@@ -1291,83 +1593,39 @@ namespace zeta::holdem::cfr::solver {
                     break;
                 case terminal:
                     ++worker.diagnostics.terminal_nodes;
-                    ++worker.diagnostics.terminal_evaluations;
-                    worker.node_utility[node_id] = terminal_utility_for_node(terminal_utility_by_node, node_id);
-                    return worker.node_utility[node_id];
+                    break;
+            }
+        }
+
+        template <std::size_t N>
+        [[nodiscard]] std::expected<void, iteration_error> prepare_cfr_kernel_scratch(
+            const game_graph& graph,
+            traversal::worker_context& worker)
+        {
+            using engine = cfr_engine<N>;
+            const auto frame_capacity = worker.stack_capacity();
+            const auto required_reach_scratch = frame_capacity * engine::reach_scratch_width;
+            worker.cfr_reach_scratch.resize(required_reach_scratch);
+
+            if (worker.cfr_frame_capacity() < frame_capacity
+                || worker.cfr_value_scratch_capacity() < frame_capacity
+                || worker.cfr_reach_scratch_capacity() < required_reach_scratch) {
+                return std::unexpected(iteration_error{
+                    .kind = iteration_error_kind::traversal,
+                    .traversal = traversal::traversal_error{
+                        traversal::traversal_error_kind::scratch_capacity_exceeded,
+                        graph.root_node,
+                        std::max(frame_capacity, required_reach_scratch),
+                        std::min({
+                            worker.cfr_frame_capacity(),
+                            worker.cfr_value_scratch_capacity(),
+                            worker.cfr_reach_scratch_capacity()
+                        })
+                    }
+                });
             }
 
-            const auto edges = graph.out_edges(node_id);
-            if (kind == node_kind::chance) {
-                float node_value = 0.0f;
-                for (const auto& child_edge : edges) {
-                    ++worker.diagnostics.edges_scanned;
-                    ++worker.diagnostics.chance_outcomes;
-                    const auto probability = chance_events == nullptr
-                        ? 0.0f
-                        : chance_events->probability_for_edge(node_id, child_edge);
-                    node_value += probability * traverse_cfr_node<N, StrategyPolicy>(
-                        graph,
-                        annotations,
-                        chance_events,
-                        regrets,
-                        worker,
-                        config,
-                        child_edge.child_node,
-                        reach,
-                        chance_reach * probability,
-                        terminal_utility_by_node);
-                }
-                worker.node_utility[node_id] = node_value;
-                return node_value;
-            }
-
-            const auto infoset_id = graph.infoset_id[node_id];
-            const auto actor = annotations.actor_by_node[node_id];
-            const auto begin = graph.row_offsets[node_id];
-            auto edge_probabilities = std::span<float>{worker.edge_probability.data() + begin, edges.size()};
-            compute_regret_matching_strategy<StrategyPolicy>(regrets.infoset_regrets(infoset_id), edges, edge_probabilities);
-
-            auto child_values = std::span<float>{worker.child_action_value.data() + begin, edges.size()};
-            float node_value = 0.0f;
-            for (uint32_t local_index = 0; local_index < edges.size(); ++local_index) {
-                ++worker.diagnostics.edges_scanned;
-                auto child_reach = reach;
-                cfr_engine<N>::propagate_player_action(child_reach, actor, edge_probabilities[local_index]);
-                child_values[local_index] = traverse_cfr_node<N, StrategyPolicy>(
-                    graph,
-                    annotations,
-                    chance_events,
-                    regrets,
-                    worker,
-                    config,
-                    edges[local_index].child_node,
-                    child_reach,
-                    chance_reach,
-                    terminal_utility_by_node);
-                node_value += edge_probabilities[local_index] * child_values[local_index];
-            }
-
-            auto strategy_deltas = worker.delta_buffer.strategy_deltas(infoset_id);
-            auto regret_deltas = actor == config.updating_player
-                ? worker.delta_buffer.regret_deltas(infoset_id)
-                : std::span<float>{};
-            const auto strategy_scale = config.strategy_weight * chance_reach * cfr_engine<N>::own_reach(reach, actor);
-            const auto regret_scale = actor == config.updating_player
-                ? counterfactual_reach<N>(reach, chance_reach, actor)
-                : 0.0f;
-
-            for (uint32_t local_index = 0; local_index < edges.size(); ++local_index) {
-                const auto action_index = edges[local_index].action_index;
-                strategy_deltas[action_index] += strategy_scale * edge_probabilities[local_index];
-                ++worker.diagnostics.strategy_updates;
-                if (actor == config.updating_player) {
-                    regret_deltas[action_index] += regret_scale * (child_values[local_index] - node_value);
-                    ++worker.diagnostics.regret_updates;
-                }
-            }
-
-            worker.node_utility[node_id] = node_value;
-            return node_value;
+            return {};
         }
 
         template <std::size_t N, typename StrategyPolicy>
@@ -1378,28 +1636,235 @@ namespace zeta::holdem::cfr::solver {
             const regret_table& regrets,
             traversal::worker_context& worker,
             const iteration_config& config,
-            const std::span<const float> terminal_utility_by_node)
+            const cfr_terminal_provider<N>& terminal_provider)
         {
+            using engine = cfr_engine<N>;
+            using reach_state = typename engine::reach_state;
+
+            const auto required_edge_scratch = static_cast<uint32_t>(graph.edges.size());
+            if (worker.stack_capacity() < static_cast<uint32_t>(graph.max_depth) + 1u) {
+                return std::unexpected(iteration_error{
+                    .kind = iteration_error_kind::traversal,
+                    .traversal = traversal::traversal_error{
+                        traversal::traversal_error_kind::stack_capacity_exceeded,
+                        graph.root_node,
+                        static_cast<uint32_t>(graph.max_depth) + 1u,
+                        worker.stack_capacity()
+                    }
+                });
+            }
+            if (worker.node_utility_capacity() < graph.node_count
+                || worker.child_action_value_capacity() < required_edge_scratch
+                || worker.edge_probability_capacity() < required_edge_scratch) {
+                return std::unexpected(iteration_error{
+                    .kind = iteration_error_kind::traversal,
+                    .traversal = traversal::traversal_error{
+                        traversal::traversal_error_kind::scratch_capacity_exceeded,
+                        graph.root_node,
+                        std::max(graph.node_count, required_edge_scratch),
+                        std::min(worker.node_utility_capacity(), worker.edge_probability_capacity())
+                    }
+                });
+            }
+
             std::fill(worker.node_utility.begin(), worker.node_utility.end(), 0.0f);
             std::fill(worker.edge_probability.begin(), worker.edge_probability.end(), 0.0f);
             std::fill(worker.child_action_value.begin(), worker.child_action_value.end(), 0.0f);
             worker.delta_buffer.clear();
             worker.diagnostics = {};
-            worker.diagnostics.max_stack_depth = graph.max_depth + 1u;
 
-            std::array<float, N> reach{};
-            reach.fill(1.0f);
-            const auto root_utility = traverse_cfr_node<N, StrategyPolicy>(
-                graph,
-                annotations,
-                chance_events,
-                regrets,
-                worker,
-                config,
-                graph.root_node,
-                reach,
-                1.0f,
-                terminal_utility_by_node);
+            const auto frame_capacity = worker.stack_capacity();
+            const auto required_reach_scratch = frame_capacity * engine::reach_scratch_width;
+            if (worker.cfr_frame_capacity() < frame_capacity
+                || worker.cfr_value_scratch_capacity() < frame_capacity
+                || worker.cfr_reach_scratch_capacity() < required_reach_scratch) {
+                return std::unexpected(iteration_error{
+                    .kind = iteration_error_kind::traversal,
+                    .traversal = traversal::traversal_error{
+                        traversal::traversal_error_kind::scratch_capacity_exceeded,
+                        graph.root_node,
+                        std::max(frame_capacity, required_reach_scratch),
+                        std::min({
+                            worker.cfr_frame_capacity(),
+                            worker.cfr_value_scratch_capacity(),
+                            worker.cfr_reach_scratch_capacity()
+                        })
+                    }
+                });
+            }
+
+            std::fill(worker.cfr_value_scratch.begin(), worker.cfr_value_scratch.end(), 0.0f);
+            uint32_t stack_size = 1;
+            worker.cfr_frame_node_id[0] = graph.root_node;
+            worker.cfr_frame_edge_cursor[0] = 0;
+            worker.cfr_frame_reach_slot[0] = 0;
+            worker.cfr_frame_value_slot[0] = 0;
+            worker.cfr_frame_phase[0] = traversal::traversal_phase::enter;
+            engine::store_reach(worker.cfr_reach_scratch, 0, engine::initial_reach());
+
+            auto propagate_child_value = [&](const uint32_t child_value_slot) noexcept {
+                if (stack_size == 0u) {
+                    return;
+                }
+                const auto parent_index = stack_size - 1u;
+                const auto parent_node_id = worker.cfr_frame_node_id[parent_index];
+                const auto parent_kind = graph.node_types[parent_node_id];
+                if (worker.cfr_frame_edge_cursor[parent_index] == 0u) {
+                    return;
+                }
+
+                const auto local_index = worker.cfr_frame_edge_cursor[parent_index] - 1u;
+                const auto edge_offset = graph.row_offsets[parent_node_id] + local_index;
+                const auto child_value = worker.cfr_value_scratch[child_value_slot];
+                const auto parent_value_slot = worker.cfr_frame_value_slot[parent_index];
+                if (parent_kind == node_kind::chance) {
+                    worker.cfr_value_scratch[parent_value_slot] += worker.edge_probability[edge_offset] * child_value;
+                } else {
+                    worker.child_action_value[edge_offset] = child_value;
+                    worker.cfr_value_scratch[parent_value_slot] += worker.edge_probability[edge_offset] * child_value;
+                }
+            };
+
+            while (stack_size != 0u) {
+                worker.diagnostics.max_stack_depth = std::max(
+                    worker.diagnostics.max_stack_depth,
+                    stack_size);
+                const auto frame_index = stack_size - 1u;
+                const auto node_id = worker.cfr_frame_node_id[frame_index];
+                const auto kind = graph.node_types[node_id];
+                auto& phase = worker.cfr_frame_phase[frame_index];
+
+                if (phase == traversal::traversal_phase::enter) {
+                    record_cfr_node_entry<N>(graph, worker, node_id);
+                    const auto value_slot = worker.cfr_frame_value_slot[frame_index];
+                    worker.cfr_value_scratch[value_slot] = 0.0f;
+
+                    if (kind == node_kind::terminal) {
+                        ++worker.diagnostics.terminal_evaluations;
+                        auto terminal_value = terminal_utility_for_node(terminal_provider, config, node_id);
+                        if (!terminal_value) {
+                            return std::unexpected(terminal_value.error());
+                        }
+                        worker.cfr_value_scratch[value_slot] = *terminal_value;
+                        worker.node_utility[node_id] = worker.cfr_value_scratch[value_slot];
+                        phase = traversal::traversal_phase::exit;
+                        continue;
+                    }
+
+                    if (kind != node_kind::chance) {
+                        const auto infoset_id = graph.infoset_id[node_id];
+                        const auto begin = graph.row_offsets[node_id];
+                        const auto edges = graph.out_edges(node_id);
+                        auto edge_probabilities = std::span<float>{worker.edge_probability.data() + begin, edges.size()};
+                        compute_regret_matching_strategy<StrategyPolicy>(
+                            regrets.infoset_regrets(infoset_id),
+                            edges,
+                            edge_probabilities);
+                    }
+
+                    worker.cfr_frame_edge_cursor[frame_index] = 0;
+                    phase = traversal::traversal_phase::visit_children;
+                    continue;
+                }
+
+                if (phase == traversal::traversal_phase::visit_children) {
+                    const auto edges = graph.out_edges(node_id);
+                    if (worker.cfr_frame_edge_cursor[frame_index] < edges.size()) {
+                        const auto local_index = worker.cfr_frame_edge_cursor[frame_index]++;
+                        const auto edge_offset = graph.row_offsets[node_id] + local_index;
+                        const auto& child_edge = edges[local_index];
+                        ++worker.diagnostics.edges_scanned;
+
+                        auto child_reach = engine::load_reach(
+                            worker.cfr_reach_scratch,
+                            worker.cfr_frame_reach_slot[frame_index]);
+                        float edge_probability = 0.0f;
+                        if (kind == node_kind::chance) {
+                            ++worker.diagnostics.chance_outcomes;
+                            edge_probability = chance_events == nullptr
+                                ? 0.0f
+                                : chance_events->probability_for_edge(node_id, child_edge);
+                            worker.edge_probability[edge_offset] = edge_probability;
+                            if (edge_probability == 0.0f || engine::chance_reach(child_reach) == 0.0f) {
+                                ++worker.diagnostics.zero_reach_skips;
+                                continue;
+                            }
+                            engine::propagate_chance(child_reach, edge_probability);
+                        } else {
+                            edge_probability = worker.edge_probability[edge_offset];
+                            const auto actor = annotations.actor_by_node[node_id];
+                            engine::propagate_player_action(child_reach, actor, edge_probability);
+                        }
+
+                        if (stack_size >= frame_capacity) {
+                            return std::unexpected(iteration_error{
+                                .kind = iteration_error_kind::traversal,
+                                .traversal = traversal::traversal_error{
+                                    traversal::traversal_error_kind::stack_capacity_exceeded,
+                                    child_edge.child_node,
+                                    stack_size + 1u,
+                                    frame_capacity
+                                }
+                            });
+                        }
+
+                        const auto child_slot = stack_size;
+                        engine::store_reach(worker.cfr_reach_scratch, child_slot, child_reach);
+                        worker.cfr_value_scratch[child_slot] = 0.0f;
+                        worker.cfr_frame_node_id[child_slot] = child_edge.child_node;
+                        worker.cfr_frame_edge_cursor[child_slot] = 0;
+                        worker.cfr_frame_reach_slot[child_slot] = child_slot;
+                        worker.cfr_frame_value_slot[child_slot] = child_slot;
+                        worker.cfr_frame_phase[child_slot] = traversal::traversal_phase::enter;
+                        ++stack_size;
+                        continue;
+                    }
+
+                    phase = traversal::traversal_phase::exit;
+                    continue;
+                }
+
+                if (kind != node_kind::terminal && kind != node_kind::chance) {
+                    const auto infoset_id = graph.infoset_id[node_id];
+                    const auto actor = annotations.actor_by_node[node_id];
+                    const auto edges = graph.out_edges(node_id);
+                    const auto begin = graph.row_offsets[node_id];
+                    auto edge_probabilities = std::span<const float>{worker.edge_probability.data() + begin, edges.size()};
+                    auto child_values = std::span<const float>{worker.child_action_value.data() + begin, edges.size()};
+                    auto strategy_deltas = worker.delta_buffer.strategy_deltas(infoset_id);
+                    auto regret_deltas = actor == config.updating_player
+                        ? worker.delta_buffer.regret_deltas(infoset_id)
+                        : std::span<float>{};
+                    const auto reach = engine::load_reach(
+                        worker.cfr_reach_scratch,
+                        worker.cfr_frame_reach_slot[frame_index]);
+                    const auto node_value = worker.cfr_value_scratch[worker.cfr_frame_value_slot[frame_index]];
+                    const auto strategy_scale =
+                        config.strategy_weight * engine::chance_reach(reach) * engine::own_reach(reach, actor);
+                    const auto regret_scale = actor == config.updating_player
+                        ? engine::counterfactual_reach(reach, actor)
+                        : 0.0f;
+
+                    for (uint32_t local_index = 0; local_index < edges.size(); ++local_index) {
+                        const auto action_index = edges[local_index].action_index;
+                        strategy_deltas[action_index] += strategy_scale * edge_probabilities[local_index];
+                        ++worker.diagnostics.strategy_updates;
+                        if (actor == config.updating_player) {
+                            regret_deltas[action_index] += regret_scale * (child_values[local_index] - node_value);
+                            ++worker.diagnostics.regret_updates;
+                        }
+                    }
+                    worker.node_utility[node_id] = node_value;
+                } else if (kind == node_kind::chance) {
+                    worker.node_utility[node_id] = worker.cfr_value_scratch[worker.cfr_frame_value_slot[frame_index]];
+                }
+
+                const auto completed_value_slot = worker.cfr_frame_value_slot[frame_index];
+                --stack_size;
+                propagate_child_value(completed_value_slot);
+            }
+
+            const auto root_utility = worker.node_utility[graph.root_node];
             worker.diagnostics.local_delta_entries_touched = worker.delta_buffer.entry_count();
 
             return traversal::traversal_result{
@@ -1409,6 +1874,47 @@ namespace zeta::holdem::cfr::solver {
                 .scope_begin_node = 0,
                 .scope_end_node = graph.node_count
             };
+        }
+
+        template <typename StrategyPolicy>
+        [[nodiscard]] std::expected<traversal::traversal_result, iteration_error> traverse_heads_up_cfr_tree(
+            const game_graph& graph,
+            const solver_graph_annotations& annotations,
+            const chance_event_table* chance_events,
+            const regret_table& regrets,
+            traversal::worker_context& worker,
+            const iteration_config& config,
+            const cfr_terminal_provider<2>& terminal_provider)
+        {
+            return traverse_cfr_tree<2, StrategyPolicy>(
+                graph,
+                annotations,
+                chance_events,
+                regrets,
+                worker,
+                config,
+                terminal_provider);
+        }
+
+        template <std::size_t N, typename StrategyPolicy>
+            requires (N >= 3)
+        [[nodiscard]] std::expected<traversal::traversal_result, iteration_error> traverse_nway_cfr_tree(
+            const game_graph& graph,
+            const solver_graph_annotations& annotations,
+            const chance_event_table* chance_events,
+            const regret_table& regrets,
+            traversal::worker_context& worker,
+            const iteration_config& config,
+            const cfr_terminal_provider<N>& terminal_provider)
+        {
+            return traverse_cfr_tree<N, StrategyPolicy>(
+                graph,
+                annotations,
+                chance_events,
+                regrets,
+                worker,
+                config,
+                terminal_provider);
         }
 
         template <std::size_t N>
@@ -1463,6 +1969,9 @@ namespace zeta::holdem::cfr::solver {
                     }
                 }
             }
+            if (auto terminal_result = validate_terminal_provider(*context.graph, context.terminal_provider); !terminal_result) {
+                return std::unexpected(terminal_result.error());
+            }
 
             return {};
         }
@@ -1485,29 +1994,33 @@ namespace zeta::holdem::cfr::solver {
         auto& regrets = *context.regrets;
         auto& strategy_sums = *context.strategy_sums;
         auto& worker = workers.front();
+        using engine = cfr_engine<N>;
 
         if (auto prepared = traversal::prepare_worker_context(worker, graph, regrets); !prepared) {
             return std::unexpected(iteration_error{iteration_error_kind::table_layout_mismatch});
         }
+        if (auto prepared = detail::prepare_cfr_kernel_scratch<N>(graph, worker); !prepared) {
+            return std::unexpected(prepared.error());
+        }
 
         std::expected<traversal::traversal_result, iteration_error> traversal_result =
             config.variant == cfr_variant::cfr_plus
-                ? detail::traverse_cfr_tree<N, cfr_plus_regret_matching_policy>(
+                ? engine::template traverse<cfr_plus_regret_matching_policy>(
                     graph,
                     *context.graph_annotations,
                     context.chance_events,
                     regrets,
                     worker,
                     config,
-                    context.terminal_utility_by_node)
-                : detail::traverse_cfr_tree<N, vanilla_regret_matching_policy>(
+                    context.terminal_provider)
+                : engine::template traverse<vanilla_regret_matching_policy>(
                     graph,
                     *context.graph_annotations,
                     context.chance_events,
                     regrets,
                     worker,
                     config,
-                    context.terminal_utility_by_node);
+                    context.terminal_provider);
         if (!traversal_result) {
             return std::unexpected(traversal_result.error());
         }
