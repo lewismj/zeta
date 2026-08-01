@@ -1972,6 +1972,146 @@ BOOST_AUTO_TEST_CASE(cfr_checkpoint_rejects_incompatible_owner_ranges) {
     BOOST_CHECK(loaded.error().kind == checkpoint_error_kind::incompatible_owner_ranges);
 }
 
+BOOST_AUTO_TEST_CASE(cfr_checkpoint_rejects_incompatible_graph_metadata) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    auto saving_context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    saving_context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
+
+    std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+    BOOST_REQUIRE(save_cfr_checkpoint(stream, saving_context, iteration_config{}).has_value());
+    stream.seekg(0);
+
+    annotations.state_by_node[0].public_state_id += 1;
+    auto loading_context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    loading_context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
+    auto loaded = load_cfr_checkpoint(stream, loading_context, iteration_config{});
+
+    BOOST_REQUIRE(!loaded);
+    BOOST_CHECK(loaded.error().kind == checkpoint_error_kind::incompatible_graph_metadata);
+}
+
+BOOST_AUTO_TEST_CASE(cfr_checkpoint_rejects_incompatible_terminal_state_layout) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::vector<float> saved_terminal_utility(graph.node_count, 0.0f);
+    auto saving_context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    saving_context.terminal_provider = make_fixed_terminal_provider<2>(saved_terminal_utility);
+
+    std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+    BOOST_REQUIRE(save_cfr_checkpoint(stream, saving_context, iteration_config{}).has_value());
+    stream.seekg(0);
+
+    std::vector<float> loading_terminal_utility(graph.node_count + 1u, 0.0f);
+    auto loading_context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    loading_context.terminal_provider = make_fixed_terminal_provider<2>(loading_terminal_utility);
+    auto loaded = load_cfr_checkpoint(stream, loading_context, iteration_config{});
+
+    BOOST_REQUIRE(!loaded);
+    BOOST_CHECK(loaded.error().kind == checkpoint_error_kind::incompatible_terminal_state_layout);
+}
+
+BOOST_AUTO_TEST_CASE(cfr_checkpoint_resume_matches_uninterrupted_generated_holdem_solving) {
+    auto lowered = lower_betting_tree_to_graph(cfr_betting_generation::tiny_river_betting_config());
+    BOOST_REQUIRE(lowered.has_value());
+
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+    regret_table uninterrupted_regrets(layout);
+    strategy_sum_table uninterrupted_strategy_sums(layout);
+    regret_table resumed_regrets(layout);
+    strategy_sum_table resumed_strategy_sums(layout);
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const std::array<zeta::holdem::combination_index, 2> combos{oop_combo, ip_combo};
+
+    auto uninterrupted_context = make_cfr_solver_context<2>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        uninterrupted_regrets,
+        uninterrupted_strategy_sums);
+    uninterrupted_context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        lowered->terminal_leaves,
+        lowered->terminal_states.view(),
+        combos);
+
+    auto resumed_context = make_cfr_solver_context<2>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        resumed_regrets,
+        resumed_strategy_sums);
+    resumed_context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        lowered->terminal_leaves,
+        lowered->terminal_states.view(),
+        combos);
+
+    const iteration_config first_config{
+        .variant = cfr_variant::vanilla,
+        .update_mode = cfr_update_mode::alternating,
+        .iteration = 1,
+        .updating_player = 0,
+        .strategy_weight = 1.0f
+    };
+    const iteration_config second_config{
+        .variant = cfr_variant::vanilla,
+        .update_mode = cfr_update_mode::alternating,
+        .iteration = 2,
+        .updating_player = 0,
+        .strategy_weight = 2.0f
+    };
+
+    std::array<worker_context, 1> uninterrupted_workers;
+    BOOST_REQUIRE(run_cfr_iteration(
+        uninterrupted_context,
+        first_config,
+        std::span<worker_context>{uninterrupted_workers}).has_value());
+
+    std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+    BOOST_REQUIRE(save_cfr_checkpoint(stream, uninterrupted_context, first_config).has_value());
+    stream.seekg(0);
+    auto loaded = load_cfr_checkpoint(stream, resumed_context, first_config);
+    BOOST_REQUIRE(loaded.has_value());
+    BOOST_CHECK_EQUAL(loaded->header.iteration, 1u);
+
+    std::array<worker_context, 1> uninterrupted_next_workers;
+    std::array<worker_context, 1> resumed_next_workers;
+    BOOST_REQUIRE(run_cfr_iteration(
+        uninterrupted_context,
+        second_config,
+        std::span<worker_context>{uninterrupted_next_workers}).has_value());
+    BOOST_REQUIRE(run_cfr_iteration(
+        resumed_context,
+        second_config,
+        std::span<worker_context>{resumed_next_workers}).has_value());
+
+    BOOST_REQUIRE_EQUAL(uninterrupted_regrets.regrets.size(), resumed_regrets.regrets.size());
+    for (uint32_t value_id = 0; value_id < uninterrupted_regrets.regrets.size(); ++value_id) {
+        BOOST_CHECK_SMALL(uninterrupted_regrets.regrets[value_id] - resumed_regrets.regrets[value_id], 0.00001f);
+        BOOST_CHECK_SMALL(uninterrupted_strategy_sums.sums[value_id] - resumed_strategy_sums.sums[value_id], 0.00001f);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(run_cfr_iteration_writes_counterfactual_regret_only_for_updating_player) {
     auto graph = create_simple_tree();
     auto annotations = make_default_annotations(graph);

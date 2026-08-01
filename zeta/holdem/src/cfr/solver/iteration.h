@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -303,6 +304,10 @@ namespace zeta::holdem::cfr::solver {
         chance_mode chance = chance_mode::enumerate;
     };
 
+    enum class checkpoint_table_storage_encoding : uint8_t {
+        float32_infoset_major = 0
+    };
+
     /**
      * Build a non-owning CFR solver context from existing graph, metadata, and table storage.
      */
@@ -324,6 +329,7 @@ namespace zeta::holdem::cfr::solver {
     }
 
     enum class checkpoint_error_kind : uint8_t {
+        invalid_context,
         stream_write_failed,
         stream_read_failed,
         invalid_magic,
@@ -334,9 +340,13 @@ namespace zeta::holdem::cfr::solver {
         incompatible_numeric_policy,
         incompatible_reduction_policy,
         incompatible_chance_mode,
+        incompatible_solver_config,
         incompatible_graph_metadata,
         incompatible_action_layout,
         incompatible_owner_ranges,
+        incompatible_terminal_state_layout,
+        incompatible_rng_policy,
+        incompatible_storage_encoding,
         incompatible_table_size
     };
 
@@ -348,6 +358,7 @@ namespace zeta::holdem::cfr::solver {
     {
         using enum checkpoint_error_kind;
         switch (kind) {
+            case invalid_context:                return "checkpoint_error_kind::invalid_context";
             case stream_write_failed:           return "checkpoint_error_kind::stream_write_failed";
             case stream_read_failed:            return "checkpoint_error_kind::stream_read_failed";
             case invalid_magic:                 return "checkpoint_error_kind::invalid_magic";
@@ -358,9 +369,13 @@ namespace zeta::holdem::cfr::solver {
             case incompatible_numeric_policy:   return "checkpoint_error_kind::incompatible_numeric_policy";
             case incompatible_reduction_policy: return "checkpoint_error_kind::incompatible_reduction_policy";
             case incompatible_chance_mode:      return "checkpoint_error_kind::incompatible_chance_mode";
+            case incompatible_solver_config:    return "checkpoint_error_kind::incompatible_solver_config";
             case incompatible_graph_metadata:   return "checkpoint_error_kind::incompatible_graph_metadata";
             case incompatible_action_layout:    return "checkpoint_error_kind::incompatible_action_layout";
             case incompatible_owner_ranges:     return "checkpoint_error_kind::incompatible_owner_ranges";
+            case incompatible_terminal_state_layout: return "checkpoint_error_kind::incompatible_terminal_state_layout";
+            case incompatible_rng_policy:       return "checkpoint_error_kind::incompatible_rng_policy";
+            case incompatible_storage_encoding: return "checkpoint_error_kind::incompatible_storage_encoding";
             case incompatible_table_size:       return "checkpoint_error_kind::incompatible_table_size";
         }
         return "checkpoint_error_kind::unknown";
@@ -372,25 +387,40 @@ namespace zeta::holdem::cfr::solver {
     }
 
     struct cfr_checkpoint_header {
-        uint64_t magic = 0x5a45544143465231ull;
-        uint32_t version = 1;
+        uint64_t magic = 0x5a45544143465232ull;
+        uint32_t version = 2;
         uint32_t endian_marker = 0x01020304u;
         uint32_t player_count = 0;
         uint32_t infoset_count = 0;
         uint32_t value_count = 0;
         uint64_t iteration = 0;
         cfr_variant variant = cfr_variant::vanilla;
+        cfr_update_mode update_mode = cfr_update_mode::alternating;
         numeric_policy numeric{};
         reduction_policy reduction{};
         chance_mode chance = chance_mode::enumerate;
+        checkpoint_table_storage_encoding regret_storage = checkpoint_table_storage_encoding::float32_infoset_major;
+        checkpoint_table_storage_encoding strategy_storage = checkpoint_table_storage_encoding::float32_infoset_major;
         solver_compatibility_key compatibility{};
+        uint64_t solver_config_hash = compatibility_hasher::OFFSET;
+        uint64_t graph_config_metadata_hash = compatibility_hasher::OFFSET;
+        uint64_t infoset_action_layout_hash = compatibility_hasher::OFFSET;
         uint64_t owner_range_hash = compatibility_hasher::OFFSET;
         uint64_t terminal_state_layout_hash = compatibility_hasher::OFFSET;
         uint64_t rng_stream_policy_hash = compatibility_hasher::OFFSET;
+        float strategy_weight = 1.0f;
     };
 
     struct cfr_checkpoint_resume {
         cfr_checkpoint_header header{};
+    };
+
+    struct cfr_checkpoint_table_chunk_header {
+        uint32_t owner_worker = 0;
+        uint32_t begin_infoset = 0;
+        uint32_t end_infoset = 0;
+        uint32_t begin_value = 0;
+        uint32_t value_count = 0;
     };
 
     /**
@@ -844,6 +874,47 @@ namespace zeta::holdem::cfr::solver {
         return hash.value;
     }
 
+    [[nodiscard]] inline uint64_t hash_solver_config(const iteration_config config) noexcept
+    {
+        compatibility_hasher hash;
+        hash.add_enum(config.variant);
+        hash.add_enum(config.update_mode);
+        hash.add_u64(std::bit_cast<uint32_t>(config.strategy_weight));
+        return hash.value;
+    }
+
+    [[nodiscard]] inline uint64_t hash_graph_config_metadata(const solver_compatibility_key& key) noexcept
+    {
+        compatibility_hasher hash;
+        hash.add_u64(key.graph_metadata_hash);
+        hash.add_u64(key.player_count);
+        return hash.value;
+    }
+
+    [[nodiscard]] inline std::vector<infoset_owner_range> checkpoint_owner_ranges(
+        const action_table_layout& layout,
+        const infoset_owner_map* owner_map)
+    {
+        if (owner_map != nullptr) {
+            return owner_map->ranges;
+        }
+        return {infoset_owner_range{
+            .owner_worker = 0,
+            .begin_infoset = 0,
+            .end_infoset = layout.infoset_count()
+        }};
+    }
+
+    [[nodiscard]] inline uint64_t hash_float_span(const uint64_t seed, const std::span<const float> values) noexcept
+    {
+        compatibility_hasher hash{seed};
+        hash.add_u64(values.size());
+        for (const auto value : values) {
+            hash.add_u64(std::bit_cast<uint32_t>(value));
+        }
+        return hash.value;
+    }
+
     template <std::size_t N>
     [[nodiscard]] inline uint64_t hash_terminal_state_layout(
         const cfr_terminal_provider<N>& terminal_provider) noexcept
@@ -853,6 +924,32 @@ namespace zeta::holdem::cfr::solver {
         hash.add_u64(terminal_provider.terminal_leaves.size());
         hash.add_u64(terminal_provider.terminal_states.size());
         hash.add_u64(terminal_provider.fixed_terminal_utility_by_node.size());
+        for (const auto& leaf : terminal_provider.terminal_leaves) {
+            hash.add_u64(leaf.terminal_state_id);
+        }
+        for (const auto& state : terminal_provider.terminal_states) {
+            hash.add_enum(state.kind);
+            hash.add_u64(std::bit_cast<uint64_t>(state.context.gross_pot));
+            hash.add_u64(std::bit_cast<uint64_t>(state.context.rake));
+            for (const auto contribution : state.context.contribution) {
+                hash.add_u64(std::bit_cast<uint64_t>(contribution));
+            }
+            hash.add_u64(state.pot_layers.size());
+            for (const auto& layer : state.pot_layers) {
+                hash.add_u64(std::bit_cast<uint64_t>(layer.amount));
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    hash.add_u64(layer.eligible_mask[seat] ? 1u : 0u);
+                    hash.add_u64(layer.contributors_mask[seat] ? 1u : 0u);
+                }
+            }
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                hash.add_u64(state.folded[seat] ? 1u : 0u);
+                hash.add_u64(state.all_in_eligible_mask[seat] ? 1u : 0u);
+                hash.add_u64(state.active_eligible_mask[seat] ? 1u : 0u);
+            }
+            hash.add_u64(state.variant_payload_id);
+        }
+        hash.value = hash_float_span(hash.value, terminal_provider.fixed_terminal_utility_by_node);
         return hash.value;
     }
 
@@ -862,27 +959,35 @@ namespace zeta::holdem::cfr::solver {
         const iteration_config config) noexcept
     {
         const auto view = make_solver_graph_view<N>(*context.graph, *context.graph_annotations);
+        const auto compatibility = make_solver_compatibility_key(
+            view,
+            *context.layout,
+            context.numeric,
+            context.reduction,
+            context.chance);
         return cfr_checkpoint_header{
-            .magic = 0x5a45544143465231ull,
-            .version = 1,
+            .magic = 0x5a45544143465232ull,
+            .version = 2,
             .endian_marker = 0x01020304u,
             .player_count = static_cast<uint32_t>(N),
             .infoset_count = context.layout->infoset_count(),
             .value_count = context.layout->value_count(),
             .iteration = config.iteration,
             .variant = config.variant,
+            .update_mode = config.update_mode,
             .numeric = context.numeric,
             .reduction = context.reduction,
             .chance = context.chance,
-            .compatibility = make_solver_compatibility_key(
-                view,
-                *context.layout,
-                context.numeric,
-                context.reduction,
-                context.chance),
+            .regret_storage = checkpoint_table_storage_encoding::float32_infoset_major,
+            .strategy_storage = checkpoint_table_storage_encoding::float32_infoset_major,
+            .compatibility = compatibility,
+            .solver_config_hash = hash_solver_config(config),
+            .graph_config_metadata_hash = hash_graph_config_metadata(compatibility),
+            .infoset_action_layout_hash = compatibility.action_layout_hash,
             .owner_range_hash = hash_owner_ranges(context.owner_map),
             .terminal_state_layout_hash = hash_terminal_state_layout(context.terminal_provider),
-            .rng_stream_policy_hash = compatibility_hasher::OFFSET
+            .rng_stream_policy_hash = compatibility_hasher::OFFSET,
+            .strategy_weight = config.strategy_weight
         };
     }
 
@@ -908,9 +1013,9 @@ namespace zeta::holdem::cfr::solver {
             return {};
         }
 
-        [[nodiscard]] inline std::expected<void, checkpoint_error> write_float_vector(
+        [[nodiscard]] inline std::expected<void, checkpoint_error> write_float_span(
             std::ostream& os,
-            const std::vector<float>& values)
+            const std::span<const float> values)
         {
             const auto count = static_cast<uint64_t>(values.size());
             if (auto result = write_binary(os, count); !result) {
@@ -925,9 +1030,9 @@ namespace zeta::holdem::cfr::solver {
             return {};
         }
 
-        [[nodiscard]] inline std::expected<void, checkpoint_error> read_float_vector(
+        [[nodiscard]] inline std::expected<void, checkpoint_error> read_float_span(
             std::istream& is,
-            std::vector<float>& values,
+            const std::span<float> values,
             const uint64_t expected_count)
         {
             uint64_t count = 0;
@@ -941,6 +1046,27 @@ namespace zeta::holdem::cfr::solver {
                 is.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(float)));
                 if (!is) {
                     return std::unexpected(checkpoint_error{checkpoint_error_kind::stream_read_failed});
+                }
+            }
+            return {};
+        }
+
+        template <std::size_t N>
+        [[nodiscard]] std::expected<void, checkpoint_error> validate_checkpoint_context(
+            const cfr_solver_context<N>& context) noexcept
+        {
+            if (context.graph == nullptr
+                || context.graph_annotations == nullptr
+                || context.layout == nullptr
+                || context.regrets == nullptr
+                || context.strategy_sums == nullptr
+                || !same_action_offsets(context.layout->action_offsets, context.regrets->action_offsets)
+                || !same_action_offsets(context.layout->action_offsets, context.strategy_sums->action_offsets)) {
+                return std::unexpected(checkpoint_error{checkpoint_error_kind::invalid_context});
+            }
+            if (context.owner_map != nullptr) {
+                if (auto owner_result = validate_infoset_owner_map(*context.owner_map, context.layout->infoset_count()); !owner_result) {
+                    return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_owner_ranges});
                 }
             }
             return {};
@@ -965,6 +1091,10 @@ namespace zeta::holdem::cfr::solver {
             if (loaded.variant != expected.variant) {
                 return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_variant});
             }
+            if (loaded.update_mode != expected.update_mode
+                || loaded.solver_config_hash != expected.solver_config_hash) {
+                return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_solver_config});
+            }
             if (loaded.numeric.table_storage != expected.numeric.table_storage
                 || loaded.numeric.accumulation != expected.numeric.accumulation) {
                 return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_numeric_policy});
@@ -975,18 +1105,75 @@ namespace zeta::holdem::cfr::solver {
             if (loaded.chance != expected.chance) {
                 return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_chance_mode});
             }
+            if (loaded.regret_storage != expected.regret_storage
+                || loaded.strategy_storage != expected.strategy_storage) {
+                return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_storage_encoding});
+            }
             if (loaded.compatibility.graph_metadata_hash != expected.compatibility.graph_metadata_hash) {
                 return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_graph_metadata});
             }
             if (loaded.compatibility.action_layout_hash != expected.compatibility.action_layout_hash
+                || loaded.infoset_action_layout_hash != expected.infoset_action_layout_hash
                 || loaded.infoset_count != expected.infoset_count
                 || loaded.value_count != expected.value_count) {
                 return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_action_layout});
             }
+            if (loaded.graph_config_metadata_hash != expected.graph_config_metadata_hash) {
+                return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_graph_metadata});
+            }
             if (loaded.owner_range_hash != expected.owner_range_hash) {
                 return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_owner_ranges});
             }
+            if (loaded.terminal_state_layout_hash != expected.terminal_state_layout_hash) {
+                return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_terminal_state_layout});
+            }
+            if (loaded.rng_stream_policy_hash != expected.rng_stream_policy_hash) {
+                return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_rng_policy});
+            }
             return {};
+        }
+
+        [[nodiscard]] inline cfr_checkpoint_table_chunk_header make_checkpoint_chunk_header(
+            const action_table_layout& layout,
+            const infoset_owner_range& range) noexcept
+        {
+            const auto begin_value = layout.action_offsets[range.begin_infoset];
+            const auto end_value = layout.action_offsets[range.end_infoset];
+            return cfr_checkpoint_table_chunk_header{
+                .owner_worker = range.owner_worker,
+                .begin_infoset = range.begin_infoset,
+                .end_infoset = range.end_infoset,
+                .begin_value = begin_value,
+                .value_count = end_value - begin_value
+            };
+        }
+
+        [[nodiscard]] inline bool same_checkpoint_chunk(
+            const cfr_checkpoint_table_chunk_header& lhs,
+            const cfr_checkpoint_table_chunk_header& rhs) noexcept
+        {
+            return lhs.owner_worker == rhs.owner_worker
+                && lhs.begin_infoset == rhs.begin_infoset
+                && lhs.end_infoset == rhs.end_infoset
+                && lhs.begin_value == rhs.begin_value
+                && lhs.value_count == rhs.value_count;
+        }
+
+        template <typename T>
+        [[nodiscard]] inline std::span<T> checkpoint_value_span(
+            std::vector<T>& values,
+            const uint32_t begin,
+            const uint32_t count) noexcept
+        {
+            return count == 0u ? std::span<T>{} : std::span<T>{values.data() + begin, count};
+        }
+
+        [[nodiscard]] inline std::span<const float> checkpoint_value_span(
+            const std::vector<float>& values,
+            const uint32_t begin,
+            const uint32_t count) noexcept
+        {
+            return count == 0u ? std::span<const float>{} : std::span<const float>{values.data() + begin, count};
         }
     }
 
@@ -996,14 +1183,39 @@ namespace zeta::holdem::cfr::solver {
         const cfr_solver_context<N>& context,
         const iteration_config config)
     {
+        if (auto validation = detail::validate_checkpoint_context(context); !validation) {
+            return validation;
+        }
         const auto header = make_cfr_checkpoint_header(context, config);
         if (auto result = detail::write_binary(os, header); !result) {
             return result;
         }
-        if (auto result = detail::write_float_vector(os, context.regrets->regrets); !result) {
+        const auto ranges = checkpoint_owner_ranges(*context.layout, context.owner_map);
+        const auto chunk_count = static_cast<uint64_t>(ranges.size());
+        if (auto result = detail::write_binary(os, chunk_count); !result) {
             return result;
         }
-        return detail::write_float_vector(os, context.strategy_sums->sums);
+        for (const auto& range : ranges) {
+            const auto chunk = detail::make_checkpoint_chunk_header(*context.layout, range);
+            if (auto result = detail::write_binary(os, chunk); !result) {
+                return result;
+            }
+            const auto begin = chunk.begin_value;
+            const auto count = chunk.value_count;
+            if (auto result = detail::write_float_span(
+                    os,
+                    detail::checkpoint_value_span(context.regrets->regrets, begin, count));
+                !result) {
+                return result;
+            }
+            if (auto result = detail::write_float_span(
+                    os,
+                    detail::checkpoint_value_span(context.strategy_sums->sums, begin, count));
+                !result) {
+                return result;
+            }
+        }
+        return {};
     }
 
     template <std::size_t N>
@@ -1012,6 +1224,9 @@ namespace zeta::holdem::cfr::solver {
         cfr_solver_context<N>& context,
         const iteration_config expected_config)
     {
+        if (auto validation = detail::validate_checkpoint_context(context); !validation) {
+            return std::unexpected(validation.error());
+        }
         cfr_checkpoint_header loaded_header;
         if (auto result = detail::read_binary(is, loaded_header); !result) {
             return std::unexpected(result.error());
@@ -1021,19 +1236,45 @@ namespace zeta::holdem::cfr::solver {
         if (auto result = detail::validate_checkpoint_header(loaded_header, expected_header); !result) {
             return std::unexpected(result.error());
         }
-        if (auto result = detail::read_float_vector(
-                is,
-                context.regrets->regrets,
-                context.regrets->value_count());
-            !result) {
+
+        uint64_t loaded_chunk_count = 0;
+        if (auto result = detail::read_binary(is, loaded_chunk_count); !result) {
             return std::unexpected(result.error());
         }
-        if (auto result = detail::read_float_vector(
-                is,
-                context.strategy_sums->sums,
-                context.strategy_sums->value_count());
-            !result) {
-            return std::unexpected(result.error());
+        const auto ranges = checkpoint_owner_ranges(*context.layout, context.owner_map);
+        if (loaded_chunk_count != ranges.size()) {
+            return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_owner_ranges});
+        }
+        for (const auto& range : ranges) {
+            cfr_checkpoint_table_chunk_header loaded_chunk;
+            if (auto result = detail::read_binary(is, loaded_chunk); !result) {
+                return std::unexpected(result.error());
+            }
+            const auto expected_chunk = detail::make_checkpoint_chunk_header(*context.layout, range);
+            if (!detail::same_checkpoint_chunk(loaded_chunk, expected_chunk)) {
+                return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_owner_ranges});
+            }
+
+            const auto begin = loaded_chunk.begin_value;
+            const auto count = loaded_chunk.value_count;
+            if (begin + count > context.regrets->regrets.size()
+                || begin + count > context.strategy_sums->sums.size()) {
+                return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_table_size});
+            }
+            if (auto result = detail::read_float_span(
+                    is,
+                    detail::checkpoint_value_span(context.regrets->regrets, begin, count),
+                    count);
+                !result) {
+                return std::unexpected(result.error());
+            }
+            if (auto result = detail::read_float_span(
+                    is,
+                    detail::checkpoint_value_span(context.strategy_sums->sums, begin, count),
+                    count);
+                !result) {
+                return std::unexpected(result.error());
+            }
         }
 
         return cfr_checkpoint_resume{loaded_header};

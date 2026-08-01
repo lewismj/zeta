@@ -26,6 +26,7 @@
 #include <optional>
 #include <random>
 #include <span>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -1574,6 +1575,72 @@ static void BM_CFRSolverIterationTinyReference(benchmark::State& state)
     state.counters["positive_regrets"] = static_cast<double>(last_result.quality.positive_regret_count);
 }
 
+static void BM_CFRCheckpointGeneratedRiver(benchmark::State& state)
+{
+    auto lowered = lower_betting_tree_to_graph(make_tiny_generated_river_config());
+    if (!lowered) {
+        state.SkipWithError(to_string(lowered.error().kind));
+        return;
+    }
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    auto owner_map = make_even_infoset_owner_map(layout, static_cast<uint32_t>(state.range(0))).value();
+    auto context = make_cfr_solver_context<2>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.owner_map = &owner_map;
+    context.reduction = reduction_policy{.order = reduction_order::owner_range_then_worker};
+
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const std::array<zeta::holdem::combination_index, 2> combos{oop_combo, ip_combo};
+    context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        lowered->terminal_leaves,
+        lowered->terminal_states.view(),
+        combos);
+
+    std::size_t checkpoint_bytes = 0;
+    for (auto _ : state) {
+        std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+        if (auto saved = save_cfr_checkpoint(stream, context, iteration_config{.iteration = 1}); !saved) {
+            state.SkipWithError(to_string(saved.error().kind));
+            break;
+        }
+        checkpoint_bytes = stream.str().size();
+        stream.seekg(0);
+        if (auto loaded = load_cfr_checkpoint(stream, context, iteration_config{.iteration = 1}); !loaded) {
+            state.SkipWithError(to_string(loaded.error().kind));
+            break;
+        }
+        benchmark::DoNotOptimize(regrets.regrets.data());
+        benchmark::DoNotOptimize(strategy_sums.sums.data());
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["workers"] = static_cast<double>(state.range(0));
+    state.counters["checkpoint_bytes"] = static_cast<double>(checkpoint_bytes);
+    state.counters["checkpoint_bytes/s"] = benchmark::Counter(
+        static_cast<double>(checkpoint_bytes),
+        benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["checkpoint_chunks"] = static_cast<double>(owner_map.ranges.size());
+    state.counters["graph_nodes"] = static_cast<double>(lowered->graph.node_count);
+    state.counters["terminal_states"] = static_cast<double>(lowered->terminal_states.size());
+}
+
 #if defined(__linux__)
 static void BM_CFRIteration_L1MissRate(benchmark::State& state)
 {
@@ -1596,6 +1663,7 @@ BENCHMARK(BM_CFRIterationMedium)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRe
 BENCHMARK(BM_CFRIterationLarge)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIterationLargeRealistic)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRSolverIterationTinyReference)->Arg(1)->Arg(2)->Arg(4)->UseRealTime();
+BENCHMARK(BM_CFRCheckpointGeneratedRiver)->Arg(1)->Arg(2)->Arg(4)->UseRealTime();
 #if defined(__linux__)
 BENCHMARK(BM_CFRIteration_L1MissRate)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
 BENCHMARK(BM_CFRIteration_LLCMissRate)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(12)->UseRealTime();
