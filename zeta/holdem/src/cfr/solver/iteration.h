@@ -100,6 +100,81 @@ namespace zeta::holdem::cfr::solver {
         uint32_t workers_used = 0;
     };
 
+    struct cfr_reference_iteration_result {
+        float root_utility = 0.0f;
+        traversal::traversal_diagnostics diagnostics{};
+        std::vector<float> node_values;
+        std::vector<float> action_values;
+        std::vector<float> edge_probabilities;
+        std::vector<float> terminal_values;
+        std::vector<float> chance_probabilities;
+        std::vector<float> reach_products;
+        std::vector<float> counterfactual_reach;
+        std::vector<float> regret_deltas;
+        std::vector<float> strategy_deltas;
+    };
+
+    struct cfr_reference_tolerance {
+        float root_utility = 0.00001f;
+        float node_value = 0.00001f;
+        float action_value = 0.00001f;
+        float edge_probability = 0.00001f;
+        float terminal_value = 0.00001f;
+        float chance_probability = 0.00001f;
+        float reach_product = 0.00001f;
+        float regret_delta = 0.00001f;
+        float strategy_delta = 0.00001f;
+    };
+
+    struct cfr_reference_comparison {
+        bool passed = true;
+        double max_root_utility_error = 0.0;
+        double max_node_value_error = 0.0;
+        double max_action_value_error = 0.0;
+        double max_edge_probability_error = 0.0;
+        double max_terminal_value_error = 0.0;
+        double max_chance_probability_error = 0.0;
+        double max_reach_product_error = 0.0;
+        double max_regret_delta_error = 0.0;
+        double max_strategy_delta_error = 0.0;
+        uint32_t max_node_value_node = game_graph::INVALID_NODE;
+        uint32_t max_action_value_edge = std::numeric_limits<uint32_t>::max();
+        uint32_t max_edge_probability_edge = std::numeric_limits<uint32_t>::max();
+        uint32_t max_terminal_value_node = game_graph::INVALID_NODE;
+        uint32_t max_chance_probability_edge = std::numeric_limits<uint32_t>::max();
+        uint32_t max_reach_product_node = game_graph::INVALID_NODE;
+        infoset_diagnostic_location max_regret_delta_location{};
+        infoset_diagnostic_location max_strategy_delta_location{};
+    };
+
+    struct cfr_reference_validation_result {
+        cfr_reference_iteration_result reference{};
+        traversal::traversal_result production{};
+        cfr_reference_comparison comparison{};
+    };
+
+    struct best_response_result {
+        float value = 0.0f;
+        std::vector<uint32_t> best_action_by_infoset;
+    };
+
+    struct exploitability_result {
+        double exploitability = 0.0;
+        std::vector<best_response_result> best_responses;
+    };
+
+    struct convergence_gate {
+        double max_exploitability = 0.0;
+        double max_regret_norm = std::numeric_limits<double>::infinity();
+        double min_average_strategy_mass = 0.0;
+    };
+
+    struct convergence_gate_result {
+        bool passed = false;
+        exploitability_result exploitability{};
+        quality_diagnostics quality{};
+    };
+
     enum class iteration_error_kind : uint8_t {
         invalid_context,
         invalid_update_player,
@@ -2270,6 +2345,648 @@ namespace zeta::holdem::cfr::solver {
 
             return partitions;
         }
+    }
+
+    template <std::size_t N>
+    [[nodiscard]] std::expected<iteration_result, iteration_error> run_cfr_iteration(
+        cfr_solver_context<N>& context,
+        iteration_config config,
+        std::span<traversal::worker_context> workers);
+
+    /**
+     * Execute a slow recursive CFR traversal over the same production graph, table, chance, and terminal surfaces.
+     */
+    template <std::size_t N>
+    [[nodiscard]] std::expected<cfr_reference_iteration_result, iteration_error> run_cfr_reference_iteration(
+        const cfr_solver_context<N>& context,
+        const iteration_config config)
+    {
+        if (context.graph == nullptr
+            || context.graph_annotations == nullptr
+            || context.layout == nullptr
+            || context.regrets == nullptr
+            || context.strategy_sums == nullptr) {
+            return std::unexpected(iteration_error{iteration_error_kind::invalid_context});
+        }
+        if (config.update_mode != cfr_update_mode::alternating) {
+            return std::unexpected(iteration_error{iteration_error_kind::unsupported_update_mode});
+        }
+        if (config.updating_player >= N) {
+            return std::unexpected(iteration_error{iteration_error_kind::invalid_update_player});
+        }
+        if (!same_action_offsets(context.layout->action_offsets, context.regrets->action_offsets)
+            || !same_action_offsets(context.layout->action_offsets, context.strategy_sums->action_offsets)) {
+            return std::unexpected(iteration_error{iteration_error_kind::table_layout_mismatch});
+        }
+
+        const auto view = make_solver_graph_view<N>(*context.graph, *context.graph_annotations);
+        if (auto metadata_result = validate_solver_graph_view(view, context.chance); !metadata_result) {
+            return std::unexpected(iteration_error{
+                .kind = iteration_error_kind::graph_metadata,
+                .graph_metadata = metadata_result.error()
+            });
+        }
+        if (context.chance != chance_mode::enumerate) {
+            return std::unexpected(iteration_error{iteration_error_kind::unsupported_update_mode});
+        }
+        if (context.chance_events != nullptr) {
+            if (auto chance_result = validate_chance_event_table(*context.graph, *context.chance_events); !chance_result) {
+                return std::unexpected(iteration_error{
+                    .kind = iteration_error_kind::chance_table,
+                    .chance_table = chance_result.error()
+                });
+            }
+        } else {
+            for (uint32_t node_id = 0; node_id < context.graph->node_count; ++node_id) {
+                if (context.graph->node_types[node_id] == node_kind::chance) {
+                    return std::unexpected(iteration_error{
+                        .kind = iteration_error_kind::chance_table,
+                        .chance_table = chance_table_error{chance_table_error_kind::missing_chance_event, node_id}
+                    });
+                }
+            }
+        }
+        if (auto terminal_result = detail::validate_terminal_provider(*context.graph, context.terminal_provider); !terminal_result) {
+            return std::unexpected(terminal_result.error());
+        }
+
+        const auto& graph = *context.graph;
+        const auto& annotations = *context.graph_annotations;
+        cfr_reference_iteration_result result;
+        result.node_values.assign(graph.node_count, 0.0f);
+        result.action_values.assign(graph.edges.size(), 0.0f);
+        result.edge_probabilities.assign(graph.edges.size(), 0.0f);
+        result.terminal_values.assign(graph.node_count, 0.0f);
+        result.chance_probabilities.assign(graph.edges.size(), 0.0f);
+        result.reach_products.assign(graph.node_count, 0.0f);
+        result.counterfactual_reach.assign(graph.node_count, 0.0f);
+        result.regret_deltas.assign(context.layout->value_count(), 0.0f);
+        result.strategy_deltas.assign(context.layout->value_count(), 0.0f);
+
+        using engine = cfr_engine<N>;
+        using reach_state = typename engine::reach_state;
+        const auto use_cfr_plus = config.variant == cfr_variant::cfr_plus;
+
+        std::function<std::expected<float, iteration_error>(uint32_t, reach_state)> visit =
+            [&](const uint32_t node_id, const reach_state reach) -> std::expected<float, iteration_error> {
+            ++result.diagnostics.nodes_visited;
+            result.diagnostics.max_action_count = std::max(result.diagnostics.max_action_count, graph.action_count(node_id));
+            result.diagnostics.max_stack_depth = std::max<uint32_t>(
+                result.diagnostics.max_stack_depth,
+                static_cast<uint32_t>(graph.node_depth[node_id]) + 1u);
+
+            float reach_product = engine::chance_reach(reach);
+            for (uint8_t player = 0; player < N; ++player) {
+                reach_product *= engine::own_reach(reach, player);
+            }
+            result.reach_products[node_id] = reach_product;
+
+            const auto kind = graph.node_types[node_id];
+            using enum node_kind;
+            switch (kind) {
+                case player_chance: ++result.diagnostics.player_chance_nodes; break;
+                case player:        ++result.diagnostics.player_nodes; break;
+                case chance:        ++result.diagnostics.chance_nodes; break;
+                case terminal:      ++result.diagnostics.terminal_nodes; break;
+            }
+
+            if (kind == terminal) {
+                ++result.diagnostics.terminal_evaluations;
+                auto terminal_value = detail::terminal_utility_for_node(context.terminal_provider, config, node_id);
+                if (!terminal_value) {
+                    return std::unexpected(terminal_value.error());
+                }
+                result.terminal_values[node_id] = *terminal_value;
+                result.node_values[node_id] = *terminal_value;
+                return *terminal_value;
+            }
+
+            const auto edges = graph.out_edges(node_id);
+            const auto edge_begin = graph.row_offsets[node_id];
+            float node_value = 0.0f;
+
+            if (kind == chance) {
+                for (uint32_t local_index = 0; local_index < edges.size(); ++local_index) {
+                    const auto edge_offset = edge_begin + local_index;
+                    const auto& child_edge = edges[local_index];
+                    ++result.diagnostics.edges_scanned;
+                    ++result.diagnostics.chance_outcomes;
+                    const auto probability = context.chance_events == nullptr
+                        ? 0.0f
+                        : context.chance_events->probability_for_edge(node_id, child_edge);
+                    result.edge_probabilities[edge_offset] = probability;
+                    result.chance_probabilities[edge_offset] = probability;
+                    if (probability == 0.0f || engine::chance_reach(reach) == 0.0f) {
+                        ++result.diagnostics.zero_reach_skips;
+                        continue;
+                    }
+                    auto child_reach = reach;
+                    engine::propagate_chance(child_reach, probability);
+                    auto child_value = visit(child_edge.child_node, child_reach);
+                    if (!child_value) {
+                        return std::unexpected(child_value.error());
+                    }
+                    result.action_values[edge_offset] = *child_value;
+                    node_value += probability * *child_value;
+                }
+                result.node_values[node_id] = node_value;
+                return node_value;
+            }
+
+            const auto infoset_id = graph.infoset_id[node_id];
+            const auto actor = annotations.actor_by_node[node_id];
+            std::vector<float> probabilities(edges.size(), 0.0f);
+            if (use_cfr_plus) {
+                compute_regret_matching_strategy<cfr_plus_regret_matching_policy>(
+                    context.regrets->infoset_regrets(infoset_id),
+                    edges,
+                    probabilities);
+            } else {
+                compute_regret_matching_strategy<vanilla_regret_matching_policy>(
+                    context.regrets->infoset_regrets(infoset_id),
+                    edges,
+                    probabilities);
+            }
+
+            result.counterfactual_reach[node_id] = actor == config.updating_player
+                ? engine::counterfactual_reach(reach, actor)
+                : 0.0f;
+            for (uint32_t local_index = 0; local_index < edges.size(); ++local_index) {
+                const auto edge_offset = edge_begin + local_index;
+                const auto& child_edge = edges[local_index];
+                const auto probability = probabilities[local_index];
+                ++result.diagnostics.edges_scanned;
+                result.edge_probabilities[edge_offset] = probability;
+                auto child_reach = reach;
+                engine::propagate_player_action(child_reach, actor, probability);
+                auto child_value = visit(child_edge.child_node, child_reach);
+                if (!child_value) {
+                    return std::unexpected(child_value.error());
+                }
+                result.action_values[edge_offset] = *child_value;
+                node_value += probability * *child_value;
+            }
+
+            const auto global_begin = context.layout->action_offsets[infoset_id];
+            const auto strategy_scale = config.strategy_weight * engine::chance_reach(reach) * engine::own_reach(reach, actor);
+            const auto regret_scale = actor == config.updating_player
+                ? engine::counterfactual_reach(reach, actor)
+                : 0.0f;
+            for (uint32_t local_index = 0; local_index < edges.size(); ++local_index) {
+                const auto action_index = edges[local_index].action_index;
+                result.strategy_deltas[global_begin + action_index] += strategy_scale * probabilities[local_index];
+                ++result.diagnostics.strategy_updates;
+                if (actor == config.updating_player) {
+                    result.regret_deltas[global_begin + action_index] += regret_scale
+                        * (result.action_values[edge_begin + local_index] - node_value);
+                    ++result.diagnostics.regret_updates;
+                }
+            }
+            result.node_values[node_id] = node_value;
+            return node_value;
+        };
+
+        auto root_value = visit(graph.root_node, engine::initial_reach());
+        if (!root_value) {
+            return std::unexpected(root_value.error());
+        }
+        result.root_utility = *root_value;
+        result.diagnostics.local_delta_entries_touched = 0;
+        for (uint32_t infoset_id = 0; infoset_id < context.layout->infoset_count(); ++infoset_id) {
+            const auto begin = context.layout->action_offsets[infoset_id];
+            const auto end = context.layout->action_offsets[infoset_id + 1u];
+            const auto touched = std::any_of(
+                result.regret_deltas.begin() + begin,
+                result.regret_deltas.begin() + end,
+                [](const float value) { return value != 0.0f; })
+                || std::any_of(
+                    result.strategy_deltas.begin() + begin,
+                    result.strategy_deltas.begin() + end,
+                    [](const float value) { return value != 0.0f; });
+            result.diagnostics.local_delta_entries_touched += touched ? 1u : 0u;
+        }
+        return result;
+    }
+
+    namespace detail {
+
+        inline void update_reference_error(
+            double& max_error,
+            const double error,
+            bool& passed,
+            const float tolerance) noexcept
+        {
+            max_error = std::max(max_error, error);
+            if (error > tolerance) {
+                passed = false;
+            }
+        }
+
+        inline void flatten_delta_buffer(
+            const table_delta_buffer& buffer,
+            const action_table_layout& layout,
+            std::vector<float>& regret_deltas,
+            std::vector<float>& strategy_deltas)
+        {
+            regret_deltas.assign(layout.value_count(), 0.0f);
+            strategy_deltas.assign(layout.value_count(), 0.0f);
+            for (const auto& entry : buffer.entries()) {
+                const auto global_begin = layout.action_offsets[entry.infoset_id];
+                const auto regrets = buffer.regret_deltas_for(entry);
+                const auto strategies = buffer.strategy_deltas_for(entry);
+                for (uint32_t action_index = 0; action_index < regrets.size(); ++action_index) {
+                    regret_deltas[global_begin + action_index] += regrets[action_index];
+                    strategy_deltas[global_begin + action_index] += strategies[action_index];
+                }
+            }
+        }
+
+        inline void compare_reference_tables(
+            const action_table_layout& layout,
+            const std::span<const float> expected_regrets,
+            const std::span<const float> expected_strategies,
+            const std::span<const float> actual_regrets,
+            const std::span<const float> actual_strategies,
+            const cfr_reference_tolerance tolerance,
+            cfr_reference_comparison& comparison) noexcept
+        {
+            for (uint32_t infoset_id = 0; infoset_id < layout.infoset_count(); ++infoset_id) {
+                const auto begin = layout.action_offsets[infoset_id];
+                const auto end = layout.action_offsets[infoset_id + 1u];
+                for (uint32_t action_index = 0; action_index < end - begin; ++action_index) {
+                    const auto offset = begin + action_index;
+                    const auto regret_error = std::abs(static_cast<double>(expected_regrets[offset] - actual_regrets[offset]));
+                    if (regret_error > comparison.max_regret_delta_error) {
+                        comparison.max_regret_delta_error = regret_error;
+                        comparison.max_regret_delta_location = infoset_diagnostic_location{
+                            .infoset_id = infoset_id,
+                            .begin_action = 0,
+                            .end_action = end - begin,
+                            .action_index = action_index
+                        };
+                    }
+                    const auto strategy_error = std::abs(static_cast<double>(expected_strategies[offset] - actual_strategies[offset]));
+                    if (strategy_error > comparison.max_strategy_delta_error) {
+                        comparison.max_strategy_delta_error = strategy_error;
+                        comparison.max_strategy_delta_location = infoset_diagnostic_location{
+                            .infoset_id = infoset_id,
+                            .begin_action = 0,
+                            .end_action = end - begin,
+                            .action_index = action_index
+                        };
+                    }
+                    if (regret_error > tolerance.regret_delta || strategy_error > tolerance.strategy_delta) {
+                        comparison.passed = false;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Compare the production traversal kernel with the slow reference traversal before reduction.
+     */
+    template <std::size_t N>
+    [[nodiscard]] std::expected<cfr_reference_validation_result, iteration_error> validate_cfr_reference_traversal(
+        const cfr_solver_context<N>& context,
+        const iteration_config config,
+        traversal::worker_context& worker,
+        const cfr_reference_tolerance tolerance = {})
+    {
+        auto reference = run_cfr_reference_iteration(context, config);
+        if (!reference) {
+            return std::unexpected(reference.error());
+        }
+        if (auto prepared = traversal::prepare_worker_context(worker, *context.graph, *context.regrets); !prepared) {
+            return std::unexpected(iteration_error{iteration_error_kind::table_layout_mismatch});
+        }
+        if (auto prepared = detail::prepare_cfr_kernel_scratch<N>(*context.graph, worker); !prepared) {
+            return std::unexpected(prepared.error());
+        }
+
+        using engine = cfr_engine<N>;
+        auto production = config.variant == cfr_variant::cfr_plus
+            ? engine::template traverse<cfr_plus_regret_matching_policy>(
+                *context.graph,
+                *context.graph_annotations,
+                context.chance_events,
+                *context.regrets,
+                worker,
+                config,
+                context.terminal_provider)
+            : engine::template traverse<vanilla_regret_matching_policy>(
+                *context.graph,
+                *context.graph_annotations,
+                context.chance_events,
+                *context.regrets,
+                worker,
+                config,
+                context.terminal_provider);
+        if (!production) {
+            return std::unexpected(production.error());
+        }
+
+        cfr_reference_comparison comparison;
+        detail::update_reference_error(
+            comparison.max_root_utility_error,
+            std::abs(static_cast<double>(reference->root_utility - production->root_utility)),
+            comparison.passed,
+            tolerance.root_utility);
+        for (uint32_t node_id = 0; node_id < context.graph->node_count; ++node_id) {
+            const auto node_error = std::abs(static_cast<double>(reference->node_values[node_id] - worker.node_utility[node_id]));
+            if (node_error > comparison.max_node_value_error) {
+                comparison.max_node_value_error = node_error;
+                comparison.max_node_value_node = node_id;
+            }
+            if (node_error > tolerance.node_value) {
+                comparison.passed = false;
+            }
+            if (context.graph->node_types[node_id] == node_kind::terminal) {
+                const auto terminal_error = std::abs(
+                    static_cast<double>(reference->terminal_values[node_id] - worker.node_utility[node_id]));
+                if (terminal_error > comparison.max_terminal_value_error) {
+                    comparison.max_terminal_value_error = terminal_error;
+                    comparison.max_terminal_value_node = node_id;
+                }
+                if (terminal_error > tolerance.terminal_value) {
+                    comparison.passed = false;
+                }
+            }
+        }
+        for (uint32_t node_id = 0; node_id < context.graph->node_count; ++node_id) {
+            const auto kind = context.graph->node_types[node_id];
+            const auto begin = context.graph->row_offsets[node_id];
+            const auto end = context.graph->row_offsets[node_id + 1u];
+            for (uint32_t edge_id = begin; edge_id < end; ++edge_id) {
+                if (kind != node_kind::chance) {
+                    const auto action_error = std::abs(
+                        static_cast<double>(reference->action_values[edge_id] - worker.child_action_value[edge_id]));
+                    if (action_error > comparison.max_action_value_error) {
+                        comparison.max_action_value_error = action_error;
+                        comparison.max_action_value_edge = edge_id;
+                    }
+                    if (action_error > tolerance.action_value) {
+                        comparison.passed = false;
+                    }
+                }
+                const auto probability_error = std::abs(
+                    static_cast<double>(reference->edge_probabilities[edge_id] - worker.edge_probability[edge_id]));
+                if (probability_error > comparison.max_edge_probability_error) {
+                    comparison.max_edge_probability_error = probability_error;
+                    comparison.max_edge_probability_edge = edge_id;
+                }
+                if (probability_error > tolerance.edge_probability) {
+                    comparison.passed = false;
+                }
+                if (kind == node_kind::chance) {
+                    const auto chance_error = std::abs(
+                        static_cast<double>(reference->chance_probabilities[edge_id] - worker.edge_probability[edge_id]));
+                    if (chance_error > comparison.max_chance_probability_error) {
+                        comparison.max_chance_probability_error = chance_error;
+                        comparison.max_chance_probability_edge = edge_id;
+                    }
+                    if (chance_error > tolerance.chance_probability) {
+                        comparison.passed = false;
+                    }
+                }
+            }
+        }
+
+        std::vector<float> production_regret_deltas;
+        std::vector<float> production_strategy_deltas;
+        detail::flatten_delta_buffer(
+            worker.delta_buffer,
+            *context.layout,
+            production_regret_deltas,
+            production_strategy_deltas);
+        detail::compare_reference_tables(
+            *context.layout,
+            reference->regret_deltas,
+            reference->strategy_deltas,
+            production_regret_deltas,
+            production_strategy_deltas,
+            tolerance,
+            comparison);
+
+        return cfr_reference_validation_result{
+            .reference = std::move(*reference),
+            .production = *production,
+            .comparison = comparison
+        };
+    }
+
+    /**
+     * Validate one full production iteration by comparing reduced table movement against the reference traversal.
+     */
+    template <std::size_t N>
+    [[nodiscard]] std::expected<cfr_reference_comparison, iteration_error> validate_cfr_iteration_against_reference(
+        cfr_solver_context<N>& context,
+        const iteration_config config,
+        std::span<traversal::worker_context> workers,
+        const cfr_reference_tolerance tolerance = {})
+    {
+        auto reference = run_cfr_reference_iteration(context, config);
+        if (!reference) {
+            return std::unexpected(reference.error());
+        }
+        const auto initial_regrets = context.regrets->regrets;
+        const auto initial_strategies = context.strategy_sums->sums;
+        auto production = run_cfr_iteration(context, config, workers);
+        if (!production) {
+            return std::unexpected(production.error());
+        }
+
+        cfr_reference_comparison comparison;
+        detail::update_reference_error(
+            comparison.max_root_utility_error,
+            std::abs(static_cast<double>(reference->root_utility - production->root_utility)),
+            comparison.passed,
+            tolerance.root_utility);
+
+        std::vector<float> expected_regrets(initial_regrets.size(), 0.0f);
+        std::vector<float> expected_strategies(initial_strategies.size(), 0.0f);
+        for (uint32_t value_id = 0; value_id < initial_regrets.size(); ++value_id) {
+            expected_regrets[value_id] = initial_regrets[value_id] + reference->regret_deltas[value_id];
+            if (config.variant == cfr_variant::cfr_plus) {
+                expected_regrets[value_id] = std::max(expected_regrets[value_id], 0.0f);
+            }
+            expected_strategies[value_id] = initial_strategies[value_id] + reference->strategy_deltas[value_id];
+        }
+        detail::compare_reference_tables(
+            *context.layout,
+            expected_regrets,
+            expected_strategies,
+            context.regrets->regrets,
+            context.strategy_sums->sums,
+            tolerance,
+            comparison);
+        return comparison;
+    }
+
+    namespace detail {
+        inline float average_strategy_probability(
+            const strategy_sum_table& strategy_sums,
+            const uint32_t infoset_id,
+            const std::span<const edge> edges,
+            const uint32_t local_index) noexcept
+        {
+            const auto sums = strategy_sums.infoset_sums(infoset_id);
+            double mass = 0.0;
+            for (const auto& edge : edges) {
+                mass += sums[edge.action_index];
+            }
+            return mass > 0.0
+                ? static_cast<float>(static_cast<double>(sums[edges[local_index].action_index]) / mass)
+                : (edges.empty() ? 0.0f : 1.0f / static_cast<float>(edges.size()));
+        }
+
+        template <std::size_t N>
+        [[nodiscard]] std::expected<float, iteration_error> best_response_value_for_node(
+            const cfr_solver_context<N>& context,
+            const iteration_config config,
+            best_response_result& result,
+            const uint32_t node_id)
+        {
+            const auto& graph = *context.graph;
+            const auto kind = graph.node_types[node_id];
+            if (kind == node_kind::terminal) {
+                auto value = terminal_utility_for_node(context.terminal_provider, config, node_id);
+                if (!value) {
+                    return std::unexpected(value.error());
+                }
+                return *value;
+            }
+
+            const auto edges = graph.out_edges(node_id);
+            if (kind == node_kind::chance) {
+                float value = 0.0f;
+                for (const auto& child_edge : edges) {
+                    const auto probability = context.chance_events == nullptr
+                        ? 0.0f
+                        : context.chance_events->probability_for_edge(node_id, child_edge);
+                    if (probability == 0.0f) {
+                        continue;
+                    }
+                    auto child_value = best_response_value_for_node(context, config, result, child_edge.child_node);
+                    if (!child_value) {
+                        return std::unexpected(child_value.error());
+                    }
+                    value += probability * *child_value;
+                }
+                return value;
+            }
+
+            const auto infoset_id = graph.infoset_id[node_id];
+            const auto actor = context.graph_annotations->actor_by_node[node_id];
+            if (actor == config.updating_player) {
+                float best_value = -std::numeric_limits<float>::infinity();
+                uint32_t best_action = 0;
+                for (uint32_t local_index = 0; local_index < edges.size(); ++local_index) {
+                    auto child_value = best_response_value_for_node(context, config, result, edges[local_index].child_node);
+                    if (!child_value) {
+                        return std::unexpected(child_value.error());
+                    }
+                    if (*child_value > best_value) {
+                        best_value = *child_value;
+                        best_action = edges[local_index].action_index;
+                    }
+                }
+                result.best_action_by_infoset[infoset_id] = best_action;
+                return best_value;
+            }
+
+            float value = 0.0f;
+            for (uint32_t local_index = 0; local_index < edges.size(); ++local_index) {
+                auto child_value = best_response_value_for_node(context, config, result, edges[local_index].child_node);
+                if (!child_value) {
+                    return std::unexpected(child_value.error());
+                }
+                value += average_strategy_probability(*context.strategy_sums, infoset_id, edges, local_index) * *child_value;
+            }
+            return value;
+        }
+    }
+
+    /**
+     * Compute a best response against the current average strategy table using production terminal utilities.
+     */
+    template <std::size_t N>
+    [[nodiscard]] std::expected<best_response_result, iteration_error> compute_best_response(
+        const cfr_solver_context<N>& context,
+        const uint8_t player)
+    {
+        if (context.graph == nullptr
+            || context.graph_annotations == nullptr
+            || context.layout == nullptr
+            || context.regrets == nullptr
+            || context.strategy_sums == nullptr) {
+            return std::unexpected(iteration_error{iteration_error_kind::invalid_context});
+        }
+        if (player >= N) {
+            return std::unexpected(iteration_error{iteration_error_kind::invalid_update_player});
+        }
+        const iteration_config config{.updating_player = player};
+        auto reference = run_cfr_reference_iteration(context, config);
+        if (!reference) {
+            return std::unexpected(reference.error());
+        }
+
+        best_response_result result;
+        result.best_action_by_infoset.assign(context.layout->infoset_count(), 0u);
+        auto value = detail::best_response_value_for_node(context, config, result, context.graph->root_node);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        result.value = *value;
+        return result;
+    }
+
+    /**
+     * Sum per-player best-response values against the current average strategy table.
+     */
+    template <std::size_t N>
+    [[nodiscard]] std::expected<exploitability_result, iteration_error> compute_exploitability(
+        const cfr_solver_context<N>& context)
+    {
+        exploitability_result result;
+        result.best_responses.reserve(N);
+        for (uint8_t player = 0; player < N; ++player) {
+            auto best_response = compute_best_response(context, player);
+            if (!best_response) {
+                return std::unexpected(best_response.error());
+            }
+            result.exploitability += best_response->value;
+            result.best_responses.push_back(std::move(*best_response));
+        }
+        return result;
+    }
+
+    /**
+     * Evaluate strategy-quality thresholds that should fail on convergence regressions.
+     */
+    template <std::size_t N>
+    [[nodiscard]] std::expected<convergence_gate_result, iteration_error> evaluate_convergence_gate(
+        const cfr_solver_context<N>& context,
+        const convergence_gate gate)
+    {
+        auto exploitability = compute_exploitability(context);
+        if (!exploitability) {
+            return std::unexpected(exploitability.error());
+        }
+        auto quality = compute_quality_diagnostics(
+            *context.graph,
+            *context.graph_annotations,
+            *context.regrets,
+            *context.strategy_sums,
+            static_cast<uint32_t>(N));
+        const auto passed = exploitability->exploitability <= gate.max_exploitability
+            && quality.regret_norm <= gate.max_regret_norm
+            && quality.average_strategy_mass >= gate.min_average_strategy_mass;
+        return convergence_gate_result{
+            .passed = passed,
+            .exploitability = std::move(*exploitability),
+            .quality = std::move(quality)
+        };
     }
 
     /**

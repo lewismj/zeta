@@ -1909,6 +1909,148 @@ BOOST_AUTO_TEST_CASE(quality_diagnostics_identify_regret_and_strategy_locations)
     BOOST_CHECK_GT(diagnostics.largest_strategy_entropy_drop, 0.0);
 }
 
+BOOST_AUTO_TEST_CASE(cfr_reference_traversal_matches_production_kernel_on_tiny_chance_graph) {
+    auto graph = create_chance_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (graph.is_terminal(node_id)) {
+            terminal_utility[node_id] = static_cast<float>(node_id) - 3.0f;
+        }
+    }
+    auto chance_events = make_uniform_chance_event_table(graph);
+    auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    context.chance_events = &chance_events;
+    context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
+    worker_context worker;
+
+    auto validation = validate_cfr_reference_traversal(
+        context,
+        iteration_config{.updating_player = 0},
+        worker);
+
+    BOOST_REQUIRE(validation.has_value());
+    BOOST_CHECK(validation->comparison.passed);
+    BOOST_CHECK_SMALL(validation->comparison.max_node_value_error, 0.00001);
+    BOOST_CHECK_SMALL(validation->comparison.max_action_value_error, 0.00001);
+    BOOST_CHECK_SMALL(validation->comparison.max_regret_delta_error, 0.00001);
+    BOOST_CHECK_EQUAL(validation->reference.diagnostics.chance_outcomes, 4u);
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (graph.is_terminal(node_id)) {
+            BOOST_CHECK_SMALL(
+                validation->reference.terminal_values[node_id] - validation->reference.node_values[node_id],
+                0.00001f);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(cfr_iteration_matches_reference_on_generated_river_graph) {
+    auto lowered = lower_betting_tree_to_graph(cfr_betting_generation::tiny_river_betting_config());
+    BOOST_REQUIRE(lowered.has_value());
+
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
+    const auto [oop_combo, ip_combo] = first_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_reach{};
+    zeta::holdem::reach_vector ip_reach{};
+    oop_reach[oop_combo] = 1.0f;
+    ip_reach[ip_combo] = 1.0f;
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_reach),
+        zeta::holdem::make_river_reach_index(cache, ip_reach)
+    };
+    const std::array<zeta::holdem::combination_index, 2> combos{oop_combo, ip_combo};
+    std::array<worker_context, 2> workers;
+    auto context = make_cfr_solver_context<2>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        regrets,
+        strategy_sums);
+    context.terminal_provider = make_terminal_state_provider<2>(
+        cache,
+        reach_indices,
+        lowered->terminal_leaves,
+        lowered->terminal_states.view(),
+        combos);
+
+    auto comparison = validate_cfr_iteration_against_reference(
+        context,
+        iteration_config{.updating_player = 0},
+        std::span<worker_context>{workers});
+
+    BOOST_REQUIRE(comparison.has_value());
+    BOOST_CHECK(comparison->passed);
+    BOOST_CHECK_SMALL(comparison->max_root_utility_error, 0.00001);
+    BOOST_CHECK_SMALL(comparison->max_regret_delta_error, 0.00001);
+    BOOST_CHECK_SMALL(comparison->max_strategy_delta_error, 0.00001);
+}
+
+BOOST_AUTO_TEST_CASE(best_response_uses_terminal_provider_and_records_action) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    const auto root_edges = graph.out_edges(graph.root_node);
+    terminal_utility[root_edges[0].child_node] = 1.0f;
+    terminal_utility[root_edges[1].child_node] = -1.0f;
+    auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
+
+    auto response = compute_best_response(context, 0);
+
+    BOOST_REQUIRE(response.has_value());
+    BOOST_CHECK_SMALL(response->value - 1.0f, 0.00001f);
+    BOOST_REQUIRE_EQUAL(response->best_action_by_infoset.size(), 1u);
+    BOOST_CHECK_EQUAL(response->best_action_by_infoset[0], 0u);
+}
+
+BOOST_AUTO_TEST_CASE(convergence_gate_passes_equilibrium_and_fails_regret_regression) {
+    auto graph = create_simple_tree();
+    auto annotations = make_default_annotations(graph);
+    auto layout = require_layout(make_action_table_layout(graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    strategy_sums.value(0, 0) = 0.5f;
+    strategy_sums.value(0, 1) = 0.5f;
+    std::vector<float> terminal_utility(graph.node_count, 0.0f);
+    auto context = make_cfr_solver_context<2>(graph, annotations, layout, regrets, strategy_sums);
+    context.terminal_provider = make_fixed_terminal_provider<2>(terminal_utility);
+
+    auto passing = evaluate_convergence_gate(
+        context,
+        convergence_gate{
+            .max_exploitability = 0.0,
+            .max_regret_norm = 0.0,
+            .min_average_strategy_mass = 1.0
+        });
+
+    BOOST_REQUIRE(passing.has_value());
+    BOOST_CHECK(passing->passed);
+    BOOST_CHECK_EQUAL(passing->exploitability.exploitability, 0.0);
+
+    regrets.value(0, 0) = 1.0f;
+    auto failing = evaluate_convergence_gate(
+        context,
+        convergence_gate{
+            .max_exploitability = 0.0,
+            .max_regret_norm = 0.0,
+            .min_average_strategy_mass = 1.0
+        });
+
+    BOOST_REQUIRE(failing.has_value());
+    BOOST_CHECK(!failing->passed);
+    BOOST_CHECK_EQUAL(failing->quality.max_regret_location.infoset_id, 0u);
+    BOOST_CHECK_EQUAL(failing->quality.max_regret_location.action_index, 0u);
+}
+
 BOOST_AUTO_TEST_CASE(cfr_checkpoint_round_trips_tables_and_resume_metadata) {
     auto graph = create_simple_tree();
     auto annotations = make_default_annotations(graph);
