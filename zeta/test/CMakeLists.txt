@@ -152,6 +152,8 @@ set(_zeta_holdem_test_cases    holdem_detects_straight_flush
     holdem_cli_solve_produces_valid_artifact
     holdem_cli_validate_rejects_duplicate_board_cards
     holdem_cli_roundtrips_artifact_json_and_dump
+    holdem_cli_solve_multiway_produces_valid_artifact
+    holdem_cli_solve_supports_turn_and_flop_streets
 )
 zeta_register_boost_test_cases(holdem ${_zeta_holdem_test_cases})
 

@@ -7,17 +7,60 @@ namespace {
     constexpr const char* sample_spot = R"({
   "players": ["BTN", "BB"],
   "board": ["As", "Kd", "7c", "4h", "2s"],
-  "oop_range": "AA,AKs",
-  "ip_range": "AA,AKs",
+  "ranges": ["AA,AKs", "AA,AKs"],
   "gross_pot": 100.0,
   "rake": 0.0,
-  "oop_contribution": 50.0,
-  "ip_contribution": 50.0,
-  "oop_stack": 100.0,
-  "ip_stack": 100.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
   "bet_fraction": 0.5,
   "max_history": 8,
   "public_state_id": 7
+})";
+
+    constexpr const char* sample_spot_multiway = R"({
+  "players": ["BTN", "BB", "CO"],
+  "board": ["2s", "3h", "4d", "5c", "9d"],
+  "ranges": ["AsKs", "QhQd", "JcTc"],
+  "gross_pot": 150.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0, 50.0],
+  "stacks": [200.0, 200.0, 200.0],
+  "bet_fraction": 0.5,
+  "max_history": 8,
+  "public_state_id": 11,
+  "root_actor": 0,
+  "hero_seat": 0,
+  "samples_per_combo": 8
+})";
+
+    constexpr const char* sample_spot_turn = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Kd", "7c", "4h"],
+  "ranges": ["AhKh", "QdJd"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "max_history": 6,
+  "public_state_id": 5,
+  "samples_per_combo": 8
+})";
+
+    constexpr const char* sample_spot_flop = R"({
+  "street": "flop",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Kd", "7c"],
+  "ranges": ["AhKh", "QdJd"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "max_history": 4,
+  "public_state_id": 3,
+  "samples_per_combo": 4
 })";
 
 }
@@ -26,6 +69,7 @@ BOOST_AUTO_TEST_CASE(holdem_cli_parses_spot_json) {
     auto spot = zeta::holdem::cli::parse_spot_json(sample_spot);
 
     BOOST_REQUIRE(spot.has_value());
+    BOOST_CHECK_EQUAL(spot->players.size(), 2u);
     BOOST_CHECK_EQUAL(spot->players[0], "BTN");
     BOOST_CHECK_EQUAL(spot->players[1], "BB");
     BOOST_CHECK_EQUAL(spot->board[0], "As");
@@ -50,6 +94,8 @@ BOOST_AUTO_TEST_CASE(holdem_cli_solve_produces_valid_artifact) {
     BOOST_CHECK_EQUAL(output->artifact.schema_version, 1u);
     BOOST_CHECK_EQUAL(output->artifact.game, "holdem");
     BOOST_CHECK_EQUAL(output->artifact.street, "river");
+    BOOST_CHECK_EQUAL(output->artifact.players.size(), 2u);
+    BOOST_CHECK_EQUAL(output->artifact.hero_seat, 0u);
     BOOST_CHECK_EQUAL(output->artifact.solver.algorithm, "cfr+");
     BOOST_CHECK_EQUAL(output->artifact.solver.iterations, 2u);
     BOOST_CHECK_EQUAL(output->artifact.solver.timestamp, "2026-08-01T19:47:11Z");
@@ -87,4 +133,35 @@ BOOST_AUTO_TEST_CASE(holdem_cli_roundtrips_artifact_json_and_dump) {
     BOOST_CHECK(dump.find("Hand") != std::string::npos);
     BOOST_CHECK(dump.find("EV") != std::string::npos);
     BOOST_CHECK(dump.find('%') != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_solve_multiway_produces_valid_artifact) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_multiway);
+    BOOST_REQUIRE(spot.has_value());
+
+    auto output = zeta::holdem::cli::solve_spot(*spot, 1);
+    BOOST_REQUIRE(output.has_value());
+    BOOST_CHECK_EQUAL(output->artifact.players.size(), 3u);
+    BOOST_CHECK_EQUAL(output->artifact.players[2], "CO");
+    BOOST_CHECK_EQUAL(output->artifact.hero_seat, 0u);
+    BOOST_CHECK_GT(output->artifact.strategy.size(), 0u);
+    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(output->artifact).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_solve_supports_turn_and_flop_streets) {
+    auto turn_spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
+    BOOST_REQUIRE(turn_spot.has_value());
+    auto turn_output = zeta::holdem::cli::solve_spot(*turn_spot, 1);
+    BOOST_REQUIRE(turn_output.has_value());
+    BOOST_CHECK_EQUAL(turn_output->artifact.street, "turn");
+    BOOST_CHECK_EQUAL(turn_output->artifact.board.size(), 4u);
+    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(turn_output->artifact).has_value());
+
+    auto flop_spot = zeta::holdem::cli::parse_spot_json(sample_spot_flop);
+    BOOST_REQUIRE(flop_spot.has_value());
+    auto flop_output = zeta::holdem::cli::solve_spot(*flop_spot, 1);
+    BOOST_REQUIRE(flop_output.has_value());
+    BOOST_CHECK_EQUAL(flop_output->artifact.street, "flop");
+    BOOST_CHECK_EQUAL(flop_output->artifact.board.size(), 3u);
+    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(flop_output->artifact).has_value());
 }

@@ -21,6 +21,7 @@
 #include <fstream>
 #include <iomanip>
 #include <ios>
+#include <iterator>
 #include <limits>
 #include <regex>
 #include <set>
@@ -30,6 +31,9 @@
 #include <vector>
 
 namespace zeta::holdem::cli {
+
+    inline constexpr std::size_t cli_min_players = 2;
+    inline constexpr std::size_t cli_max_players = 6;
 
     enum class cli_error_kind : uint8_t {
         io,
@@ -66,26 +70,28 @@ namespace zeta::holdem::cli {
         uint32_t schema_version = 1;
         std::string game = "holdem";
         std::string street = "river";
-        std::array<std::string, 2> players{"BTN", "BB"};
-        std::array<std::string, 5> board{};
+        std::vector<std::string> players{"BTN", "BB"};
+        std::vector<std::string> board{};
+        uint8_t hero_seat = 0;
         solver_metadata solver{};
         std::vector<hand_strategy> strategy;
     };
 
     struct solve_spot {
-        std::array<std::string, 2> players{"BTN", "BB"};
-        std::array<std::string, 5> board{};
-        std::string oop_range = "AA";
-        std::string ip_range = "AA";
-        terminal_context<2> terminal{
-            .gross_pot = 100.0,
-            .rake = 0.0,
-            .contribution = {50.0, 50.0}
-        };
-        std::array<utility, 2> stacks{100.0, 100.0};
+        std::vector<std::string> players{"BTN", "BB"};
+        std::string street = "river";
+        std::vector<std::string> board{};
+        std::vector<std::string> ranges{"AA", "AA"};
+        double gross_pot = 100.0;
+        double rake = 0.0;
+        std::vector<utility> contributions{50.0, 50.0};
+        std::vector<utility> stacks{100.0, 100.0};
         double bet_fraction = 0.75;
         uint16_t max_history = 8;
         uint32_t public_state_id = 0;
+        uint8_t root_actor = 0;
+        uint8_t hero_seat = 0;
+        uint16_t samples_per_combo = 64;
     };
 
     struct solve_runtime_options {
@@ -217,7 +223,7 @@ namespace zeta::holdem::cli {
         {
             const std::regex re{make_key_pattern(key, "\"([^\"]*)\"")};
             std::cmatch match;
-            if (!std::regex_search(json.begin(), json.end(), match, re)) {
+            if (!std::regex_search(json.data(), json.data() + json.size(), match, re)) {
                 return false;
             }
             out = match[1].str();
@@ -231,7 +237,7 @@ namespace zeta::holdem::cli {
         {
             const std::regex re{make_key_pattern(key, "([-+0-9.eE]+)")};
             std::cmatch match;
-            if (!std::regex_search(json.begin(), json.end(), match, re)) {
+            if (!std::regex_search(json.data(), json.data() + json.size(), match, re)) {
                 return false;
             }
             out = match[1].str();
@@ -292,6 +298,19 @@ namespace zeta::holdem::cli {
             std::vector<std::string> values;
             const std::string text{array_body};
             const std::regex token_re{"\"([^\"]*)\""};
+            for (auto it = std::sregex_iterator(text.begin(), text.end(), token_re);
+                 it != std::sregex_iterator{};
+                 ++it) {
+                values.push_back((*it)[1].str());
+            }
+            return values;
+        }
+
+        [[nodiscard]] inline std::vector<std::string> parse_number_array(const std::string_view array_body)
+        {
+            std::vector<std::string> values;
+            const std::string text{array_body};
+            const std::regex token_re{"([-+0-9.eE]+)"};
             for (auto it = std::sregex_iterator(text.begin(), text.end(), token_re);
                  it != std::sregex_iterator{};
                  ++it) {
@@ -385,8 +404,41 @@ namespace zeta::holdem::cli {
             return card_text_from_id(first) + card_text_from_id(second);
         }
 
-        [[nodiscard]] inline std::expected<board, cli_error> board_from_cards(const std::array<std::string, 5>& cards)
+        [[nodiscard]] inline std::expected<cfr::solver::holdem_street, cli_error> parse_holdem_street(const std::string_view text)
         {
+            if (text == "flop") {
+                return cfr::solver::holdem_street::flop;
+            }
+            if (text == "turn") {
+                return cfr::solver::holdem_street::turn;
+            }
+            if (text == "river") {
+                return cfr::solver::holdem_street::river;
+            }
+            return std::unexpected(cli_error{cli_error_kind::parse, "street must be one of: flop, turn, river."});
+        }
+
+        [[nodiscard]] inline std::size_t board_size_for_street(const cfr::solver::holdem_street street)
+        {
+            switch (street) {
+                case cfr::solver::holdem_street::flop: return 3u;
+                case cfr::solver::holdem_street::turn: return 4u;
+                case cfr::solver::holdem_street::river: return 5u;
+                default: return 0u;
+            }
+        }
+
+        [[nodiscard]] inline std::expected<board, cli_error> board_from_cards(
+            const std::vector<std::string>& cards,
+            const cfr::solver::holdem_street street)
+        {
+            const auto expected_size = board_size_for_street(street);
+            if (cards.size() != expected_size) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::invalid_spot,
+                    "Board card count does not match street."
+                });
+            }
             board river{};
             std::set<card> seen;
             for (const auto& text : cards) {
@@ -401,9 +453,86 @@ namespace zeta::holdem::cli {
                 river.add(card_mask{1} << *parsed);
             }
             if (river.size() != 5) {
-                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Board must contain exactly 5 unique cards."});
+                if (street == cfr::solver::holdem_street::flop) {
+                    if (river.size() != 3) {
+                        return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Flop board must contain exactly 3 unique cards."});
+                    }
+                } else if (street == cfr::solver::holdem_street::turn) {
+                    if (river.size() != 4) {
+                        return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Turn board must contain exactly 4 unique cards."});
+                    }
+                } else {
+                    return std::unexpected(cli_error{cli_error_kind::invalid_spot, "River board must contain exactly 5 unique cards."});
+                }
             }
             return river;
+        }
+
+        [[nodiscard]] inline std::vector<card> board_cards_from_mask(card_mask mask)
+        {
+            std::vector<card> cards;
+            cards.reserve(5);
+            for (uint8_t id = 0; id < 52; ++id) {
+                if ((mask & (card_mask{1} << id)) != 0) {
+                    cards.push_back(id);
+                }
+            }
+            return cards;
+        }
+
+        [[nodiscard]] inline std::vector<board> enumerate_river_runouts(
+            const board& partial_board,
+            const std::array<combination_index, cli_max_players>& combo_by_player,
+            const std::size_t player_count)
+        {
+            std::vector<board> runouts;
+            const auto base_cards = board_cards_from_mask(partial_board.mask);
+            std::set<card> dead_cards;
+            for (const auto c : base_cards) {
+                dead_cards.insert(c);
+            }
+            for (std::size_t seat = 0; seat < player_count; ++seat) {
+                const auto [first, second] = extract_combo_cards(combination_mask(combo_by_player[seat]));
+                dead_cards.insert(first);
+                dead_cards.insert(second);
+            }
+
+            std::vector<card> available;
+            available.reserve(52);
+            for (uint8_t id = 0; id < 52; ++id) {
+                if (!dead_cards.contains(id)) {
+                    available.push_back(id);
+                }
+            }
+
+            const auto missing = 5 - static_cast<int>(base_cards.size());
+            if (missing <= 0) {
+                runouts.push_back(partial_board);
+                return runouts;
+            }
+
+            if (missing == 1) {
+                runouts.reserve(available.size());
+                for (const auto c : available) {
+                    board river = partial_board;
+                    river.add(card_mask{1} << c);
+                    runouts.push_back(river);
+                }
+                return runouts;
+            }
+
+            if (missing == 2) {
+                runouts.reserve((available.size() * (available.size() - 1)) / 2);
+                for (std::size_t i = 0; i < available.size(); ++i) {
+                    for (std::size_t j = i + 1; j < available.size(); ++j) {
+                        board river = partial_board;
+                        river.add((card_mask{1} << available[i]) | (card_mask{1} << available[j]));
+                        runouts.push_back(river);
+                    }
+                }
+            }
+
+            return runouts;
         }
 
         [[nodiscard]] inline std::string now_utc_iso8601()
@@ -441,22 +570,80 @@ namespace zeta::holdem::cli {
             return "action";
         }
 
-        [[nodiscard]] inline std::expected<std::array<combination_index, 2>, cli_error> choose_combo_pair(
+        template <std::size_t N>
+        [[nodiscard]] inline bool choose_combo_set_recursive(
             const river_terminal_cache& cache,
-            const river_reach_index& oop,
-            const river_reach_index& ip)
+            const std::array<river_reach_index, N>& reach_indices,
+            std::array<combination_index, N>& chosen,
+            const std::size_t seat,
+            const card_mask used_cards)
         {
-            for (uint16_t oop_offset = 0; oop_offset < oop.active_count; ++oop_offset) {
-                const auto oop_combo = oop.active_indices[oop_offset];
-                const auto oop_mask = cache.masks[oop_combo];
-                for (uint16_t ip_offset = 0; ip_offset < ip.active_count; ++ip_offset) {
-                    const auto ip_combo = ip.active_indices[ip_offset];
-                    if ((oop_mask & cache.masks[ip_combo]) == 0) {
-                        return std::array<combination_index, 2>{oop_combo, ip_combo};
-                    }
+            if (seat == N) {
+                return true;
+            }
+            const auto& reach = reach_indices[seat];
+            for (uint16_t offset = 0; offset < reach.active_count; ++offset) {
+                const auto combo = reach.active_indices[offset];
+                const auto combo_mask = cache.masks[combo];
+                if ((combo_mask & used_cards) != 0) {
+                    continue;
+                }
+                chosen[seat] = combo;
+                if (choose_combo_set_recursive(cache, reach_indices, chosen, seat + 1, used_cards | combo_mask)) {
+                    return true;
                 }
             }
-            return std::unexpected(cli_error{cli_error_kind::solver, "No disjoint live OOP/IP combo pair found."});
+            return false;
+        }
+
+        template <std::size_t N>
+        [[nodiscard]] inline std::expected<std::array<combination_index, N>, cli_error> choose_combo_set(
+            const river_terminal_cache& cache,
+            const std::array<river_reach_index, N>& reach_indices)
+        {
+            std::array<combination_index, N> chosen{};
+            if (!choose_combo_set_recursive(cache, reach_indices, chosen, 0u, card_mask{0})) {
+                return std::unexpected(cli_error{cli_error_kind::solver, "No disjoint live combo set found across all players."});
+            }
+            return chosen;
+        }
+
+        template <std::size_t N>
+        [[nodiscard]] inline bool choose_combo_set_from_ranges_recursive(
+            const std::array<reach_vector, N>& reach_vectors,
+            std::array<combination_index, N>& chosen,
+            const std::size_t seat,
+            const card_mask used_cards)
+        {
+            if (seat == N) {
+                return true;
+            }
+            for (combination_index combo = 0; combo < combination_count; ++combo) {
+                if (reach_vectors[seat][combo] <= 0.0f) {
+                    continue;
+                }
+                const auto combo_mask = combination_masks[combo];
+                if ((combo_mask & used_cards) != 0) {
+                    continue;
+                }
+                chosen[seat] = combo;
+                if (choose_combo_set_from_ranges_recursive(reach_vectors, chosen, seat + 1, used_cards | combo_mask)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        template <std::size_t N>
+        [[nodiscard]] inline std::expected<std::array<combination_index, N>, cli_error> choose_combo_set_from_ranges(
+            const std::array<reach_vector, N>& reach_vectors,
+            const card_mask board_mask)
+        {
+            std::array<combination_index, N> chosen{};
+            if (!choose_combo_set_from_ranges_recursive(reach_vectors, chosen, 0u, board_mask)) {
+                return std::unexpected(cli_error{cli_error_kind::solver, "No disjoint live combo set found across all players."});
+            }
+            return chosen;
         }
 
         [[nodiscard]] inline std::expected<void, cli_error> parse_range_checked(
@@ -521,64 +708,126 @@ namespace zeta::holdem::cli {
     {
         solve_spot spot{};
 
+        std::string street_text;
+        if (detail::extract_string_value(json, "street", street_text)) {
+            spot.street = street_text;
+        }
+        auto parsed_street = detail::parse_holdem_street(spot.street);
+        if (!parsed_street) {
+            return std::unexpected(parsed_street.error());
+        }
+
         std::string board_body;
         if (!detail::extract_array_body(json, "board", board_body)) {
             return std::unexpected(cli_error{cli_error_kind::parse, "Spot JSON missing board array."});
         }
-        const auto board_values = detail::parse_string_array(board_body);
-        if (board_values.size() != 5u) {
-            return std::unexpected(cli_error{cli_error_kind::parse, "Board array must have exactly 5 cards."});
-        }
-        for (std::size_t i = 0; i < board_values.size(); ++i) {
-            spot.board[i] = board_values[i];
+        spot.board = detail::parse_string_array(board_body);
+        if (spot.board.size() != detail::board_size_for_street(*parsed_street)) {
+            return std::unexpected(cli_error{cli_error_kind::parse, "Board card count must match street."});
         }
 
         std::string players_body;
         if (detail::extract_array_body(json, "players", players_body)) {
-            const auto players = detail::parse_string_array(players_body);
-            if (players.size() != 2u) {
-                return std::unexpected(cli_error{cli_error_kind::parse, "Players array must contain exactly 2 labels."});
+            spot.players = detail::parse_string_array(players_body);
+            if (spot.players.size() < cli_min_players || spot.players.size() > cli_max_players) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "Players array must contain between 2 and 6 labels."});
             }
-            spot.players[0] = players[0];
-            spot.players[1] = players[1];
+            spot.ranges.assign(spot.players.size(), "AA");
+            spot.contributions.assign(spot.players.size(), 0.0);
+            spot.stacks.assign(spot.players.size(), 100.0);
+            if (spot.players.size() >= 2u) {
+                spot.contributions[0] = 50.0;
+                spot.contributions[1] = 50.0;
+            }
         }
 
-        std::string oop_range;
-        if (detail::extract_string_value(json, "oop_range", oop_range)) {
-            spot.oop_range = oop_range;
+        std::string ranges_body;
+        if (detail::extract_array_body(json, "ranges", ranges_body)) {
+            spot.ranges = detail::parse_string_array(ranges_body);
         }
-        std::string ip_range;
-        if (detail::extract_string_value(json, "ip_range", ip_range)) {
-            spot.ip_range = ip_range;
+
+        std::string legacy_oop_range;
+        if (detail::extract_string_value(json, "oop_range", legacy_oop_range)) {
+            if (spot.ranges.size() < 2u) {
+                spot.ranges.assign(2u, "AA");
+            }
+            spot.ranges[0] = legacy_oop_range;
+        }
+        std::string legacy_ip_range;
+        if (detail::extract_string_value(json, "ip_range", legacy_ip_range)) {
+            if (spot.ranges.size() < 2u) {
+                spot.ranges.assign(2u, "AA");
+            }
+            spot.ranges[1] = legacy_ip_range;
         }
 
         std::string number_text;
         if (detail::extract_number_value(json, "gross_pot", number_text)) {
-            if (!detail::parse_double(number_text, spot.terminal.gross_pot)) {
+            if (!detail::parse_double(number_text, spot.gross_pot)) {
                 return std::unexpected(cli_error{cli_error_kind::parse, "Invalid gross_pot value."});
             }
         }
         if (detail::extract_number_value(json, "rake", number_text)) {
-            if (!detail::parse_double(number_text, spot.terminal.rake)) {
+            if (!detail::parse_double(number_text, spot.rake)) {
                 return std::unexpected(cli_error{cli_error_kind::parse, "Invalid rake value."});
             }
         }
+
+        std::string contributions_body;
+        if (detail::extract_array_body(json, "contributions", contributions_body)) {
+            const auto values = detail::parse_number_array(contributions_body);
+            spot.contributions.clear();
+            spot.contributions.reserve(values.size());
+            for (const auto& value_text : values) {
+                double value = 0.0;
+                if (!detail::parse_double(value_text, value)) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "Invalid contributions value."});
+                }
+                spot.contributions.push_back(value);
+            }
+        }
         if (detail::extract_number_value(json, "oop_contribution", number_text)) {
-            if (!detail::parse_double(number_text, spot.terminal.contribution[0])) {
+            if (spot.contributions.size() < 2u) {
+                spot.contributions.assign(2u, 0.0);
+            }
+            if (!detail::parse_double(number_text, spot.contributions[0])) {
                 return std::unexpected(cli_error{cli_error_kind::parse, "Invalid oop_contribution value."});
             }
         }
         if (detail::extract_number_value(json, "ip_contribution", number_text)) {
-            if (!detail::parse_double(number_text, spot.terminal.contribution[1])) {
+            if (spot.contributions.size() < 2u) {
+                spot.contributions.assign(2u, 0.0);
+            }
+            if (!detail::parse_double(number_text, spot.contributions[1])) {
                 return std::unexpected(cli_error{cli_error_kind::parse, "Invalid ip_contribution value."});
             }
         }
+
+        std::string stacks_body;
+        if (detail::extract_array_body(json, "stacks", stacks_body)) {
+            const auto values = detail::parse_number_array(stacks_body);
+            spot.stacks.clear();
+            spot.stacks.reserve(values.size());
+            for (const auto& value_text : values) {
+                double value = 0.0;
+                if (!detail::parse_double(value_text, value)) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "Invalid stacks value."});
+                }
+                spot.stacks.push_back(value);
+            }
+        }
         if (detail::extract_number_value(json, "oop_stack", number_text)) {
+            if (spot.stacks.size() < 2u) {
+                spot.stacks.assign(2u, 100.0);
+            }
             if (!detail::parse_double(number_text, spot.stacks[0])) {
                 return std::unexpected(cli_error{cli_error_kind::parse, "Invalid oop_stack value."});
             }
         }
         if (detail::extract_number_value(json, "ip_stack", number_text)) {
+            if (spot.stacks.size() < 2u) {
+                spot.stacks.assign(2u, 100.0);
+            }
             if (!detail::parse_double(number_text, spot.stacks[1])) {
                 return std::unexpected(cli_error{cli_error_kind::parse, "Invalid ip_stack value."});
             }
@@ -598,24 +847,67 @@ namespace zeta::holdem::cli {
                 return std::unexpected(cli_error{cli_error_kind::parse, "Invalid public_state_id value."});
             }
         }
+        if (detail::extract_number_value(json, "root_actor", number_text)) {
+            uint16_t root_actor = 0;
+            if (!detail::parse_u16(number_text, root_actor) || root_actor > 255) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "Invalid root_actor value."});
+            }
+            spot.root_actor = static_cast<uint8_t>(root_actor);
+        }
+        if (detail::extract_number_value(json, "hero_seat", number_text)) {
+            uint16_t hero_seat = 0;
+            if (!detail::parse_u16(number_text, hero_seat) || hero_seat > 255) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "Invalid hero_seat value."});
+            }
+            spot.hero_seat = static_cast<uint8_t>(hero_seat);
+        }
+        if (detail::extract_number_value(json, "samples_per_combo", number_text)) {
+            if (!detail::parse_u16(number_text, spot.samples_per_combo)) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "Invalid samples_per_combo value."});
+            }
+        }
 
-        if (spot.terminal.gross_pot <= 0.0) {
+        if (spot.players.size() < cli_min_players || spot.players.size() > cli_max_players) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Player count must be between 2 and 6."});
+        }
+        if (spot.ranges.size() != spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Ranges array must match player count."});
+        }
+        if (spot.stacks.size() != spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Stacks array must match player count."});
+        }
+        if (spot.contributions.size() != spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Contributions array must match player count."});
+        }
+        if (spot.root_actor >= spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "root_actor is out of range."});
+        }
+        if (spot.hero_seat >= spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "hero_seat is out of range."});
+        }
+        if (spot.samples_per_combo == 0) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "samples_per_combo must be positive."});
+        }
+
+        if (spot.gross_pot <= 0.0) {
             return std::unexpected(cli_error{cli_error_kind::invalid_spot, "gross_pot must be positive."});
         }
-        if (spot.terminal.rake < 0.0 || spot.terminal.rake > spot.terminal.gross_pot) {
+        if (spot.rake < 0.0 || spot.rake > spot.gross_pot) {
             return std::unexpected(cli_error{cli_error_kind::invalid_spot, "rake must be in [0, gross_pot]."});
         }
         if (spot.bet_fraction <= 0.0) {
             return std::unexpected(cli_error{cli_error_kind::invalid_spot, "bet_fraction must be positive."});
         }
-        if (spot.stacks[0] < 0.0 || spot.stacks[1] < 0.0) {
-            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Stacks must be non-negative."});
-        }
-        if (spot.terminal.contribution[0] < 0.0 || spot.terminal.contribution[1] < 0.0) {
-            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Contributions must be non-negative."});
+        for (std::size_t seat = 0; seat < spot.players.size(); ++seat) {
+            if (spot.stacks[seat] < 0.0) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Stacks must be non-negative."});
+            }
+            if (spot.contributions[seat] < 0.0) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Contributions must be non-negative."});
+            }
         }
 
-        auto board_result = detail::board_from_cards(spot.board);
+        auto board_result = detail::board_from_cards(spot.board, *parsed_street);
         if (!board_result) {
             return std::unexpected(board_result.error());
         }
@@ -629,7 +921,14 @@ namespace zeta::holdem::cli {
         os << "  \"schema_version\": " << artifact.schema_version << ",\n";
         os << "  \"game\": \"" << detail::json_escape(artifact.game) << "\",\n";
         os << "  \"street\": \"" << detail::json_escape(artifact.street) << "\",\n";
-        os << "  \"players\": [\"" << detail::json_escape(artifact.players[0]) << "\", \"" << detail::json_escape(artifact.players[1]) << "\"],\n";
+        os << "  \"players\": [";
+        for (std::size_t i = 0; i < artifact.players.size(); ++i) {
+            if (i != 0u) {
+                os << ", ";
+            }
+            os << "\"" << detail::json_escape(artifact.players[i]) << "\"";
+        }
+        os << "],\n";
         os << "  \"board\": [";
         for (std::size_t i = 0; i < artifact.board.size(); ++i) {
             if (i != 0u) {
@@ -638,6 +937,7 @@ namespace zeta::holdem::cli {
             os << "\"" << detail::json_escape(artifact.board[i]) << "\"";
         }
         os << "],\n";
+        os << "  \"hero_seat\": " << static_cast<uint32_t>(artifact.hero_seat) << ",\n";
         os << "  \"solver\": {\n";
         os << "    \"algorithm\": \"" << detail::json_escape(artifact.solver.algorithm) << "\",\n";
         os << "    \"iterations\": " << artifact.solver.iterations << ",\n";
@@ -691,27 +991,30 @@ namespace zeta::holdem::cli {
         if (!detail::extract_array_body(json, "players", players_body)) {
             return std::unexpected(cli_error{cli_error_kind::parse, "Missing players array."});
         }
-        {
-            const auto players = detail::parse_string_array(players_body);
-            if (players.size() != 2u) {
-                return std::unexpected(cli_error{cli_error_kind::parse, "Players array must have 2 labels."});
-            }
-            artifact.players[0] = players[0];
-            artifact.players[1] = players[1];
+        artifact.players = detail::parse_string_array(players_body);
+        if (artifact.players.size() < cli_min_players || artifact.players.size() > cli_max_players) {
+            return std::unexpected(cli_error{cli_error_kind::parse, "Players array must have between 2 and 6 labels."});
         }
 
         std::string board_body;
         if (!detail::extract_array_body(json, "board", board_body)) {
             return std::unexpected(cli_error{cli_error_kind::parse, "Missing board array."});
         }
-        {
-            const auto board_cards = detail::parse_string_array(board_body);
-            if (board_cards.size() != 5u) {
-                return std::unexpected(cli_error{cli_error_kind::parse, "Board must have exactly 5 cards."});
+        artifact.board = detail::parse_string_array(board_body);
+        const auto parsed_street = detail::parse_holdem_street(artifact.street);
+        if (!parsed_street) {
+            return std::unexpected(parsed_street.error());
+        }
+        if (artifact.board.size() != detail::board_size_for_street(*parsed_street)) {
+            return std::unexpected(cli_error{cli_error_kind::parse, "Board card count must match artifact street."});
+        }
+
+        if (detail::extract_number_value(json, "hero_seat", number_text)) {
+            uint16_t hero_seat = 0;
+            if (!detail::parse_u16(number_text, hero_seat) || hero_seat > 255) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "Invalid hero_seat value."});
             }
-            for (std::size_t i = 0; i < board_cards.size(); ++i) {
-                artifact.board[i] = board_cards[i];
-            }
+            artifact.hero_seat = static_cast<uint8_t>(hero_seat);
         }
 
         if (!detail::extract_string_value(json, "algorithm", artifact.solver.algorithm)) {
@@ -779,10 +1082,17 @@ namespace zeta::holdem::cli {
         if (artifact.game != "holdem") {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "game must be \"holdem\"."});
         }
-        if (artifact.street != "river") {
-            return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "street must be \"river\"."});
+        auto parsed_street = detail::parse_holdem_street(artifact.street);
+        if (!parsed_street) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_artifact, parsed_street.error().message});
         }
-        auto board_result = detail::board_from_cards(artifact.board);
+        if (artifact.players.size() < cli_min_players || artifact.players.size() > cli_max_players) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "players must contain between 2 and 6 labels."});
+        }
+        if (artifact.hero_seat >= artifact.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "hero_seat is out of range."});
+        }
+        auto board_result = detail::board_from_cards(artifact.board, *parsed_street);
         if (!board_result) {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact, board_result.error().message});
         }
@@ -827,181 +1137,382 @@ namespace zeta::holdem::cli {
         return {};
     }
 
+    namespace detail {
+
+        template <std::size_t N>
+        [[nodiscard]] inline std::expected<solve_output, cli_error> solve_spot_impl(
+            const solve_spot& spot,
+            const uint64_t iterations,
+            const solve_runtime_options& runtime)
+        {
+            auto parsed_street = parse_holdem_street(spot.street);
+            if (!parsed_street) {
+                return std::unexpected(parsed_street.error());
+            }
+            const auto street = *parsed_street;
+            auto board_result = board_from_cards(spot.board, street);
+            if (!board_result) {
+                return std::unexpected(board_result.error());
+            }
+            const auto public_board = *board_result;
+
+            std::array<hand_range, N> ranges{};
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                const auto label = "seat_" + std::to_string(seat);
+                if (auto parse = parse_range_checked(spot.ranges[seat], ranges[seat], label.c_str()); !parse) {
+                    return std::unexpected(parse.error());
+                }
+                ranges[seat].remove_dead(public_board.mask);
+            }
+
+            std::array<reach_vector, N> reach_vectors{};
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                reach_vectors[seat] = make_reach_vector(ranges[seat]);
+                bool has_live_combo = false;
+                for (combination_index combo = 0; combo < combination_count; ++combo) {
+                    if (reach_vectors[seat][combo] > 0.0f) {
+                        has_live_combo = true;
+                        break;
+                    }
+                }
+                if (!has_live_combo) {
+                    return std::unexpected(cli_error{
+                        cli_error_kind::invalid_spot,
+                        "Board blockers removed all combos from player range: " + spot.players[seat]
+                    });
+                }
+            }
+
+            std::array<utility, N> initial_stacks{};
+            std::array<utility, N> initial_committed{};
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                initial_stacks[seat] = spot.stacks[seat];
+                initial_committed[seat] = spot.contributions[seat];
+            }
+
+            solve_output output{};
+            const auto graph_begin = std::chrono::steady_clock::now();
+
+            cfr::holdem_betting_graph_config<N> config{};
+            config.street = street;
+            config.initial_stacks = initial_stacks;
+            config.initial_committed = initial_committed;
+            config.root_actor = spot.root_actor;
+            config.abstraction.fixed_pot_fractions = {spot.bet_fraction};
+            config.abstraction.geometric_size_count = 1;
+            config.abstraction.stack_ratio_buckets = {spot.bet_fraction};
+            config.abstraction.max_raises_per_street = 1;
+            config.max_history = spot.max_history;
+            config.public_state_id = spot.public_state_id;
+
+            auto lowered = cfr::lower_betting_tree_to_graph(config);
+            if (!lowered) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::solver,
+                    "Failed to lower betting tree to CFR graph."
+                });
+            }
+            auto layout_result = cfr::make_action_table_layout(lowered->graph);
+            if (!layout_result) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::solver,
+                    "Failed to build CFR action layout."
+                });
+            }
+            cfr::regret_table regrets(*layout_result);
+            cfr::strategy_sum_table strategy_sums(*layout_result);
+            auto context = cfr::solver::make_cfr_solver_context<N>(
+                lowered->graph,
+                lowered->annotations,
+                *layout_result,
+                regrets,
+                strategy_sums);
+
+            auto combos = choose_combo_set_from_ranges(reach_vectors, public_board.mask);
+            if (!combos) {
+                return std::unexpected(combos.error());
+            }
+
+            std::array<combination_index, cli_max_players> combo_fixed{};
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                combo_fixed[seat] = (*combos)[seat];
+            }
+
+            std::array<std::vector<float>, N> fixed_terminal_utility{};
+            if (street != cfr::solver::holdem_street::river) {
+                const auto runouts = enumerate_river_runouts(public_board, combo_fixed, N);
+                if (runouts.empty()) {
+                    return std::unexpected(cli_error{cli_error_kind::solver, "No valid river runouts available for this spot."});
+                }
+                for (auto& by_node : fixed_terminal_utility) {
+                    by_node.assign(lowered->graph.node_count, 0.0f);
+                }
+                std::size_t valid_runout_count = 0u;
+                for (const auto& river_board : runouts) {
+                    const auto runout_cache = make_river_terminal_cache(river_board);
+                    std::array<reach_vector, N> runout_reach{};
+                    std::array<river_reach_index, N> runout_indices{};
+                    bool valid_runout = true;
+                    for (std::size_t seat = 0; seat < N; ++seat) {
+                        runout_reach[seat][(*combos)[seat]] = 1.0f;
+                        runout_indices[seat] = make_river_reach_index(runout_cache, runout_reach[seat]);
+                        if (runout_indices[seat].active_count == 0u) {
+                            valid_runout = false;
+                            break;
+                        }
+                    }
+                    if (!valid_runout) {
+                        continue;
+                    }
+                    ++valid_runout_count;
+                    const terminal_engine<N> engine{};
+                    for (uint32_t node_id = 0; node_id < lowered->graph.node_count; ++node_id) {
+                        if (lowered->graph.node_types[node_id] != cfr::node_kind::terminal) {
+                            continue;
+                        }
+                        const auto terminal_state_id = lowered->terminal_leaves[node_id].terminal_state_id;
+                        const auto values = engine.evaluate_terminal_values(
+                            runout_cache,
+                            runout_indices,
+                            lowered->terminal_states[terminal_state_id],
+                            spot.samples_per_combo);
+                        for (std::size_t seat = 0; seat < N; ++seat) {
+                            fixed_terminal_utility[seat][node_id] += values[seat][(*combos)[seat]];
+                        }
+                    }
+                }
+                const auto divisor = static_cast<float>(valid_runout_count);
+                if (divisor <= 0.0f) {
+                    return std::unexpected(cli_error{cli_error_kind::solver, "No valid river runouts survived filtering."});
+                }
+                for (auto& by_node : fixed_terminal_utility) {
+                    for (auto& value : by_node) {
+                        value /= divisor;
+                    }
+                }
+            } else {
+                const auto cache = make_river_terminal_cache(public_board);
+                std::array<reach_vector, N> singleton_reach{};
+                std::array<river_reach_index, N> singleton_indices{};
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    singleton_reach[seat][(*combos)[seat]] = 1.0f;
+                    singleton_indices[seat] = make_river_reach_index(cache, singleton_reach[seat]);
+                }
+                const terminal_engine<N> engine{};
+                for (auto& by_node : fixed_terminal_utility) {
+                    by_node.assign(lowered->graph.node_count, 0.0f);
+                }
+                for (uint32_t node_id = 0; node_id < lowered->graph.node_count; ++node_id) {
+                    if (lowered->graph.node_types[node_id] != cfr::node_kind::terminal) {
+                        continue;
+                    }
+                    const auto terminal_state_id = lowered->terminal_leaves[node_id].terminal_state_id;
+                    const auto values = engine.evaluate_terminal_values(
+                        cache,
+                        singleton_indices,
+                        lowered->terminal_states[terminal_state_id],
+                        spot.samples_per_combo);
+                    for (std::size_t seat = 0; seat < N; ++seat) {
+                        fixed_terminal_utility[seat][node_id] = values[seat][(*combos)[seat]];
+                    }
+                }
+            }
+
+            output.timing.graph_build_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - graph_begin).count();
+
+            const auto iter_begin = std::chrono::steady_clock::now();
+            std::array<cfr::traversal::worker_context, 1> workers{};
+            for (uint64_t i = 0; i < iterations; ++i) {
+                for (uint8_t updating_player = 0; updating_player < N; ++updating_player) {
+                    context.terminal_provider = cfr::solver::make_fixed_terminal_provider<N>(
+                        std::span<const float>{fixed_terminal_utility[updating_player]});
+                    auto result = cfr::solver::run_cfr_iteration(
+                        context,
+                        cfr::solver::iteration_config{
+                            .variant = cfr::solver::cfr_variant::cfr_plus,
+                            .iteration = i,
+                            .updating_player = updating_player
+                        },
+                        std::span<cfr::traversal::worker_context>{workers});
+                    if (!result) {
+                        return std::unexpected(cli_error{
+                            cli_error_kind::solver,
+                            "CFR iteration failed for player update."
+                        });
+                    }
+                }
+            }
+            output.timing.cfr_iterations_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - iter_begin).count();
+
+            const auto extraction_begin = std::chrono::steady_clock::now();
+            const auto root_infoset = lowered->graph.infoset_id[lowered->graph.root_node];
+            const auto root_sums = strategy_sums.infoset_sums(root_infoset);
+            if (root_sums.empty()) {
+                return std::unexpected(cli_error{cli_error_kind::solver, "Root infoset has no actions."});
+            }
+
+            auto initial_state = cfr::make_initial_betting_state(config);
+            const auto root_actions = cfr::legal_betting_actions(initial_state, config.abstraction);
+            if (root_actions.size() != root_sums.size()) {
+                return std::unexpected(cli_error{cli_error_kind::solver, "Root action shape does not match strategy table shape."});
+            }
+
+            double sum = 0.0;
+            for (const auto value : root_sums) {
+                if (value > 0.0f) {
+                    sum += value;
+                }
+            }
+            std::vector<action_strategy> root_strategy;
+            root_strategy.reserve(root_sums.size());
+            const auto uniform = 1.0 / static_cast<double>(root_sums.size());
+            for (std::size_t action_index = 0; action_index < root_sums.size(); ++action_index) {
+                const auto frequency = sum > 0.0
+                    ? static_cast<double>(std::max(root_sums[action_index], 0.0f)) / sum
+                    : uniform;
+                root_strategy.push_back(action_strategy{
+                    .action = action_label(root_actions[action_index], spot.gross_pot),
+                    .frequency = frequency
+                });
+            }
+
+            terminal_context<N> terminal{};
+            terminal.gross_pot = spot.gross_pot;
+            terminal.rake = spot.rake;
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                terminal.contribution[seat] = spot.contributions[seat];
+            }
+
+            terminal_values<N> showdown_values{};
+            if (street == cfr::solver::holdem_street::river) {
+                const auto cache = make_river_terminal_cache(public_board);
+                std::array<reach_vector, N> hero_reach{};
+                std::array<river_reach_index, N> hero_indices{};
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    hero_reach[seat] = reach_vectors[seat];
+                    hero_indices[seat] = make_river_reach_index(cache, hero_reach[seat]);
+                }
+                if constexpr (N == 2) {
+                    showdown_values = evaluate_showdown(cache, hero_indices[0], hero_indices[1], terminal).values;
+                } else {
+                    showdown_values = evaluate_showdown_values_multiplayer_sampled(
+                        cache,
+                        hero_indices,
+                        terminal,
+                        spot.samples_per_combo);
+                }
+            } else {
+                const auto runouts = enumerate_river_runouts(public_board, combo_fixed, N);
+                if (runouts.empty()) {
+                    return std::unexpected(cli_error{cli_error_kind::solver, "No valid river runouts available for EV extraction."});
+                }
+                for (const auto& river_board : runouts) {
+                    const auto cache = make_river_terminal_cache(river_board);
+                    std::array<reach_vector, N> runout_reach{};
+                    std::array<river_reach_index, N> runout_indices{};
+                    for (std::size_t seat = 0; seat < N; ++seat) {
+                        runout_reach[seat] = reach_vectors[seat];
+                        runout_indices[seat] = make_river_reach_index(cache, runout_reach[seat]);
+                    }
+                    terminal_values<N> values{};
+                    if constexpr (N == 2) {
+                        values = evaluate_showdown(cache, runout_indices[0], runout_indices[1], terminal).values;
+                    } else {
+                        values = evaluate_showdown_values_multiplayer_sampled(
+                            cache,
+                            runout_indices,
+                            terminal,
+                            spot.samples_per_combo);
+                    }
+                    for (std::size_t seat = 0; seat < N; ++seat) {
+                        for (combination_index combo = 0; combo < combination_count; ++combo) {
+                            showdown_values[seat][combo] += values[seat][combo];
+                        }
+                    }
+                }
+                const auto denom = static_cast<float>(runouts.size());
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    for (combination_index combo = 0; combo < combination_count; ++combo) {
+                        showdown_values[seat][combo] = showdown_values[seat][combo] / denom;
+                    }
+                }
+            }
+
+            solve_artifact artifact{};
+            artifact.players.assign(spot.players.begin(), std::next(spot.players.begin(), N));
+            artifact.board = spot.board;
+            artifact.street = spot.street;
+            artifact.hero_seat = spot.hero_seat;
+            artifact.solver.algorithm = "cfr+";
+            artifact.solver.iterations = iterations;
+            artifact.solver.timestamp = runtime.timestamp_utc.empty() ? now_utc_iso8601() : runtime.timestamp_utc;
+            artifact.solver.git_revision = runtime.git_revision;
+
+            const auto hero = static_cast<std::size_t>(spot.hero_seat);
+            for (combination_index combo = 0; combo < combination_count; ++combo) {
+                if (reach_vectors[hero][combo] <= 0.0f) {
+                    continue;
+                }
+                artifact.strategy.push_back(hand_strategy{
+                    .hand = hand_text_from_combo(combo),
+                    .strategy = root_strategy,
+                    .ev = showdown_values[hero][combo]
+                });
+            }
+            output.artifact = std::move(artifact);
+
+            output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - extraction_begin).count();
+
+            if (auto validation = validate_artifact(output.artifact); !validation) {
+                return std::unexpected(validation.error());
+            }
+            return output;
+        }
+    }
+
     [[nodiscard]] inline std::expected<solve_output, cli_error> solve_spot(
         const solve_spot& spot,
         const uint64_t iterations,
         const solve_runtime_options& runtime = {})
     {
-        auto river_result = detail::board_from_cards(spot.board);
-        if (!river_result) {
-            return std::unexpected(river_result.error());
+        if (spot.players.size() < cli_min_players || spot.players.size() > cli_max_players) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Player count must be between 2 and 6."});
         }
-        const auto river = *river_result;
-
-        hand_range oop_range;
-        if (auto parse = detail::parse_range_checked(spot.oop_range, oop_range, "oop"); !parse) {
-            return std::unexpected(parse.error());
+        if (spot.ranges.size() != spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Ranges array must match player count."});
         }
-        hand_range ip_range;
-        if (auto parse = detail::parse_range_checked(spot.ip_range, ip_range, "ip"); !parse) {
-            return std::unexpected(parse.error());
+        if (spot.stacks.size() != spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Stacks array must match player count."});
         }
-        oop_range.remove_dead(river.mask);
-        ip_range.remove_dead(river.mask);
-
-        const auto cache = make_river_terminal_cache(river);
-        const auto oop_reach = make_reach_vector(oop_range);
-        const auto ip_reach = make_reach_vector(ip_range);
-        const std::array<river_reach_index, 2> reach_indices{
-            make_river_reach_index(cache, oop_reach),
-            make_river_reach_index(cache, ip_reach)
-        };
-        if (reach_indices[0].active_count == 0u || reach_indices[1].active_count == 0u) {
-            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Board blockers removed all combos from one or both ranges."});
+        if (spot.contributions.size() != spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Contributions array must match player count."});
+        }
+        if (spot.root_actor >= spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "root_actor is out of range."});
+        }
+        if (spot.hero_seat >= spot.players.size()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "hero_seat is out of range."});
+        }
+        auto street = detail::parse_holdem_street(spot.street);
+        if (!street) {
+            return std::unexpected(street.error());
+        }
+        if (spot.board.size() != detail::board_size_for_street(*street)) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Board card count must match street."});
         }
 
-        solve_output output{};
-        const auto graph_begin = std::chrono::steady_clock::now();
-
-        cfr::holdem_betting_graph_config<2> config{};
-        config.street = cfr::solver::holdem_street::river;
-        config.initial_stacks = spot.stacks;
-        config.initial_committed = spot.terminal.contribution;
-        config.root_actor = 0;
-        config.abstraction.fixed_pot_fractions = {spot.bet_fraction};
-        config.abstraction.geometric_size_count = 1;
-        config.abstraction.stack_ratio_buckets = {spot.bet_fraction};
-        config.abstraction.max_raises_per_street = 1;
-        config.max_history = spot.max_history;
-        config.public_state_id = spot.public_state_id;
-
-        auto lowered = cfr::lower_betting_tree_to_graph(config);
-        if (!lowered) {
-            return std::unexpected(cli_error{
-                cli_error_kind::solver,
-                "Failed to lower betting tree to CFR graph."
-            });
+        switch (spot.players.size()) {
+            case 2: return detail::solve_spot_impl<2>(spot, iterations, runtime);
+            case 3: return detail::solve_spot_impl<3>(spot, iterations, runtime);
+            case 4: return detail::solve_spot_impl<4>(spot, iterations, runtime);
+            case 5: return detail::solve_spot_impl<5>(spot, iterations, runtime);
+            case 6: return detail::solve_spot_impl<6>(spot, iterations, runtime);
+            default:
+                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Unsupported player count."});
         }
-        auto layout_result = cfr::make_action_table_layout(lowered->graph);
-        if (!layout_result) {
-            return std::unexpected(cli_error{
-                cli_error_kind::solver,
-                "Failed to build CFR action layout."
-            });
-        }
-        cfr::regret_table regrets(*layout_result);
-        cfr::strategy_sum_table strategy_sums(*layout_result);
-        auto context = cfr::solver::make_cfr_solver_context<2>(
-            lowered->graph,
-            lowered->annotations,
-            *layout_result,
-            regrets,
-            strategy_sums);
-
-        auto combo_pair = detail::choose_combo_pair(cache, reach_indices[0], reach_indices[1]);
-        if (!combo_pair) {
-            return std::unexpected(combo_pair.error());
-        }
-        context.terminal_provider = cfr::solver::make_terminal_state_provider<2>(
-            cache,
-            reach_indices,
-            lowered->terminal_leaves,
-            lowered->terminal_states.view(),
-            *combo_pair);
-
-        output.timing.graph_build_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - graph_begin).count();
-
-        const auto iter_begin = std::chrono::steady_clock::now();
-        std::array<cfr::traversal::worker_context, 1> workers{};
-        for (uint64_t i = 0; i < iterations; ++i) {
-            auto oop_result = cfr::solver::run_cfr_iteration(
-                context,
-                cfr::solver::iteration_config{
-                    .variant = cfr::solver::cfr_variant::cfr_plus,
-                    .iteration = i,
-                    .updating_player = 0
-                },
-                std::span<cfr::traversal::worker_context>{workers});
-            if (!oop_result) {
-                return std::unexpected(cli_error{cli_error_kind::solver, "CFR iteration failed for OOP update."});
-            }
-
-            auto ip_result = cfr::solver::run_cfr_iteration(
-                context,
-                cfr::solver::iteration_config{
-                    .variant = cfr::solver::cfr_variant::cfr_plus,
-                    .iteration = i,
-                    .updating_player = 1
-                },
-                std::span<cfr::traversal::worker_context>{workers});
-            if (!ip_result) {
-                return std::unexpected(cli_error{cli_error_kind::solver, "CFR iteration failed for IP update."});
-            }
-        }
-        output.timing.cfr_iterations_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - iter_begin).count();
-
-        const auto extraction_begin = std::chrono::steady_clock::now();
-        const auto root_infoset = lowered->graph.infoset_id[lowered->graph.root_node];
-        const auto root_sums = strategy_sums.infoset_sums(root_infoset);
-        if (root_sums.empty()) {
-            return std::unexpected(cli_error{cli_error_kind::solver, "Root infoset has no actions."});
-        }
-
-        auto initial_state = cfr::make_initial_betting_state(config);
-        const auto root_actions = cfr::legal_betting_actions(initial_state, config.abstraction);
-        if (root_actions.size() != root_sums.size()) {
-            return std::unexpected(cli_error{cli_error_kind::solver, "Root action shape does not match strategy table shape."});
-        }
-
-        double sum = 0.0;
-        for (const auto value : root_sums) {
-            if (value > 0.0f) {
-                sum += value;
-            }
-        }
-        std::vector<action_strategy> root_strategy;
-        root_strategy.reserve(root_sums.size());
-        const auto uniform = 1.0 / static_cast<double>(root_sums.size());
-        for (std::size_t action_index = 0; action_index < root_sums.size(); ++action_index) {
-            const auto frequency = sum > 0.0
-                ? static_cast<double>(std::max(root_sums[action_index], 0.0f)) / sum
-                : uniform;
-            root_strategy.push_back(action_strategy{
-                .action = detail::action_label(root_actions[action_index], spot.terminal.gross_pot),
-                .frequency = frequency
-            });
-        }
-
-        const auto showdown = evaluate_showdown(cache, reach_indices[0], reach_indices[1], spot.terminal);
-        solve_artifact artifact{};
-        artifact.players = spot.players;
-        artifact.board = spot.board;
-        artifact.solver.algorithm = "cfr+";
-        artifact.solver.iterations = iterations;
-        artifact.solver.timestamp = runtime.timestamp_utc.empty() ? detail::now_utc_iso8601() : runtime.timestamp_utc;
-        artifact.solver.git_revision = runtime.git_revision;
-
-        for (combination_index combo = 0; combo < combination_count; ++combo) {
-            if (oop_reach[combo] <= 0.0f) {
-                continue;
-            }
-            artifact.strategy.push_back(hand_strategy{
-                .hand = detail::hand_text_from_combo(combo),
-                .strategy = root_strategy,
-                .ev = showdown.values[player::oop][combo]
-            });
-        }
-        output.artifact = std::move(artifact);
-
-        output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - extraction_begin).count();
-
-        if (auto validation = validate_artifact(output.artifact); !validation) {
-            return std::unexpected(validation.error());
-        }
-        return output;
     }
 
     [[nodiscard]] inline std::string format_dump(const solve_artifact& artifact)

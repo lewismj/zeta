@@ -1,187 +1,133 @@
 # zeta-solve CLI
 
-`zeta-solve` is a command-line solver for heads-up Texas Hold'em river spots.
-It reads a spot description from a JSON file, runs CFR+, and writes a solution
-artifact to a second JSON file.  The artifact can then be validated for
-structural correctness or rendered as a human-readable strategy table.
+`zeta-solve` solves Texas Hold'em flop, turn, and river spots with CFR+, validates saved
+artifacts, and renders strategy tables.
 
-## Build
-
-```sh
-cmake --build cmake-build-release-wsl-clang
-```
-
-The binary is written to `cmake-build-release-wsl-clang/zeta/tools/holdem/zeta-solve`.
-
-## Subcommands
+## Commands
 
 ### solve
 
-Run CFR+ on a spot and write a solution artifact.
-
-```
+```sh
 zeta-solve solve --spot <spot.json> --iterations <n> --output <solution.json>
 ```
 
+Runs CFR+ and writes a solution artifact JSON file.
+
 | Flag | Required | Description |
 |---|---|---|
-| `--spot <path>` | Yes | Path to the spot description JSON file |
-| `--iterations <n>` | No | Number of CFR+ iterations (default: 1000) |
-| `--output <path>` | Yes | Path to write the solution artifact JSON |
-
-On success the tool prints a timing summary to stdout and exits 0.
-
-```
-solve:
-  graph_build        0.123ms
-  cfr_iterations     47.2ms
-  extraction         0.018ms
-  serialization      0.003ms
-
-total                47.344ms
-```
-
-On failure an error message is printed to stderr and the exit code is 2.
+| `--spot <path>` | Yes | Spot description JSON |
+| `--iterations <n>` | No | CFR+ iterations (default: `1000`) |
+| `--output <path>` | Yes | Output artifact JSON path |
 
 ### validate
 
-Parse and structurally validate a solution artifact.
-
-```
+```sh
 zeta-solve validate <solution.json>
 ```
 
-Checks performed:
-- `schema_version` equals 1
-- `game` is `"holdem"`, `street` is `"river"`
-- `board` contains exactly 5 distinct, parseable cards
-- Every strategy row references exactly one combo
-- Action frequencies in each row are in `[0, 1]` and sum to 1 (tolerance 1e-3)
-- All EV values are finite
-- No duplicate hands
-
-On success prints a timing summary and exits 0.  On failure prints the first
-error found to stderr and exits 2.
+Checks artifact structure and numeric validity.
 
 ### dump
 
-Print the strategy table from a solution artifact.
-
-```
+```sh
 zeta-solve dump <solution.json>
 ```
 
-Parses and validates the artifact (same checks as `validate`), then renders the
-OOP strategy as a fixed-width table:
+Prints a fixed-width strategy table.
 
-```
-Hand    check     bet 75%   EV
------------------------------
-AhKh    55%       45%       1.23
-AhQh    72%       28%       0.98
-...
-```
+## Spot JSON
 
-Columns are: `Hand`, one column per action labelled by action type and pot
-fraction, and `EV` (the expected value for OOP).
+`board` is always required. For **heads-up**, legacy fields like `oop_range`
+and `ip_range` are still accepted. For **multiway**, use the array fields.
 
-## Spot JSON format
-
-The spot file describes the game state and solver parameters.  `board` and
-`gross_pot` are required; all other fields are optional and fall back to the
-defaults shown below.
+### Multiway-capable format (2 to 6 players)
 
 ```json
 {
-  "board":            ["Ah", "Kd", "Qc", "Jh", "2s"],
-  "players":          ["BTN", "BB"],
-  "oop_range":        "AA",
-  "ip_range":         "AA",
-  "gross_pot":        100.0,
-  "rake":             0.0,
-  "oop_contribution": 50.0,
-  "ip_contribution":  50.0,
-  "oop_stack":        100.0,
-  "ip_stack":         100.0,
-  "bet_fraction":     0.75,
-  "max_history":      8,
-  "public_state_id":  0
+  "players": ["BTN", "BB", "CO", "HJ", "UTG"],
+  "board": ["Ah", "Kd", "Qc", "Jh", "2s"],
+  "ranges": [
+    "AA,AKs,AQo",
+    "AA,KK,QQ,AKo",
+    "QQ,JJ,TT,AKs",
+    "JJ,TT,99,AQs",
+    "TT,99,88,AJs"
+  ],
+  "gross_pot": 200.0,
+  "rake": 0.0,
+  "contributions": [40.0, 40.0, 40.0, 40.0, 40.0],
+  "stacks": [250.0, 250.0, 250.0, 250.0, 250.0],
+  "bet_fraction": 0.75,
+  "max_history": 8,
+  "public_state_id": 0,
+  "root_actor": 0,
+  "hero_seat": 0,
+  "samples_per_combo": 64
 }
 ```
 
-| Field | Type | Default | Description |
+### Heads-up direct format
+
+```json
+{
+  "players": ["BTN", "BB"],
+  "board": ["Ah", "Kd", "Qc", "Jh", "2s"],
+  "oop_range": "AA,AKs,AQo",
+  "ip_range": "AA,KK,QQ,AKo",
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "oop_contribution": 50.0,
+  "ip_contribution": 50.0,
+  "oop_stack": 200.0,
+  "ip_stack": 200.0,
+  "bet_fraction": 0.75
+}
+```
+
+### Fields
+
+| Field | Type | Default | Notes |
 |---|---|---|---|
-| `board` | string[5] | — | Five community cards; see [card syntax](#card-syntax) |
-| `players` | string[2] | `["BTN","BB"]` | Labels for OOP and IP players |
-| `oop_range` | string | `"AA"` | OOP range in PokerStove notation |
-| `ip_range` | string | `"AA"` | IP range in PokerStove notation |
-| `gross_pot` | number | — | Total pot before any river action (must be positive) |
-| `rake` | number | `0.0` | Rake taken from the pot; must be in `[0, gross_pot]` |
-| `oop_contribution` | number | `50.0` | Amount OOP has put into the pot |
-| `ip_contribution` | number | `50.0` | Amount IP has put into the pot |
-| `oop_stack` | number | `100.0` | OOP effective stack (non-negative) |
-| `ip_stack` | number | `100.0` | IP effective stack (non-negative) |
-| `bet_fraction` | number | `0.75` | Single bet size as a fraction of the gross pot (positive) |
-| `max_history` | integer | `8` | Maximum betting-action history length |
-| `public_state_id` | integer | `0` | Opaque public state identifier stored in the artifact |
+| `players` | string[] | `["BTN","BB"]` | 2..6 player labels |
+| `street` | string | `"river"` | One of `flop`, `turn`, `river` |
+| `board` | string[] | — | Exactly 3 cards on flop, 4 on turn, 5 on river |
+| `ranges` | string[] | `["AA","AA"]` | Must match player count |
+| `gross_pot` | number | `100.0` | Must be positive |
+| `rake` | number | `0.0` | Must be in `[0, gross_pot]` |
+| `contributions` | number[] | `[50.0,50.0]` | Must match player count |
+| `stacks` | number[] | `[100.0,100.0]` | Must match player count |
+| `bet_fraction` | number | `0.75` | Must be positive |
+| `max_history` | integer | `8` | Betting history cap |
+| `public_state_id` | integer | `0` | User-defined public-state id |
+| `root_actor` | integer | `0` | Acting seat at root |
+| `hero_seat` | integer | `0` | Seat used for artifact EV rows |
+| `samples_per_combo` | integer | `64` | Multiplayer showdown sampling budget |
 
-## Card syntax
+Heads-up direct fields: `oop_range`, `ip_range`, `oop_contribution`,
+`ip_contribution`, `oop_stack`, `ip_stack`.
 
-Cards use rank followed by suit, both case-insensitive for the rank, lowercase
-for the suit:
-
-```
-2s  3h  4d  5c  6s  7h  8d  9c  Ts  Jh  Qd  Kc  As
-```
-
-Ranks: `2 3 4 5 6 7 8 9 T J Q K A`  
-Suits: `s` (spades)  `h` (hearts)  `d` (diamonds)  `c` (clubs)
-
-All five board cards must be distinct.
-
-## Range syntax
-
-Ranges follow PokerStove preflop notation.  See [range_parser.md](range_parser.md)
-for the full grammar.  Common forms:
-
-| Example | Meaning |
-|---|---|
-| `AA` | Pocket aces (all 6 combos) |
-| `AKs` | Ace-king suited (4 combos) |
-| `AKo` | Ace-king offsuit (12 combos) |
-| `AK` | Ace-king any suitedness (16 combos) |
-| `TT+` | Tens through aces |
-| `A5s+` | Suited aces from A5s to AKs |
-| `AA:0.5` | Pocket aces at 50% weight |
-| `AsKh` | Exact combo |
-
-## Environment variables
-
-| Variable | Description |
-|---|---|
-| `ZETA_GIT_REVISION` | Git revision string recorded in the `solver.git_revision` field of the artifact |
-
-## Solution artifact JSON schema (version 1)
+## Artifact JSON schema
 
 ```json
 {
   "schema_version": 1,
   "game": "holdem",
-  "street": "river",
-  "players": ["BTN", "BB"],
-  "board": ["Ah", "Kd", "Qc", "Jh", "2s"],
+  "street": "turn",
+  "players": ["BTN", "BB", "CO"],
+  "board": ["Ah", "Kd", "Qc", "Jh"],
+  "hero_seat": 0,
   "solver": {
     "algorithm": "cfr+",
-    "iterations": 1000,
-    "timestamp": "2024-01-15T10:30:00Z",
+    "iterations": 5000,
+    "timestamp": "2026-08-02T10:00:00Z",
     "git_revision": "abc1234"
   },
   "strategy": [
     {
       "hand": "AsKs",
       "strategy": [
-        {"action": "check",   "frequency": 0.55},
-        {"action": "bet 75%", "frequency": 0.45}
+        {"action": "check", "frequency": 0.42},
+        {"action": "bet_75", "frequency": 0.58}
       ],
       "ev": 1.234567
     }
@@ -189,78 +135,102 @@ for the full grammar.  Common forms:
 }
 ```
 
-| Field | Description |
-|---|---|
-| `schema_version` | Always `1` |
-| `game` | Always `"holdem"` |
-| `street` | Always `"river"` |
-| `players` | Two player labels, OOP first |
-| `board` | Five community cards |
-| `solver.algorithm` | Always `"cfr+"` |
-| `solver.iterations` | Number of CFR+ iterations run |
-| `solver.timestamp` | ISO 8601 UTC solve timestamp |
-| `solver.git_revision` | Value of `ZETA_GIT_REVISION` at solve time |
-| `strategy` | One row per live OOP combo |
-| `strategy[].hand` | Exact two-card combo label, e.g. `"AsKs"` |
-| `strategy[].strategy` | Action frequencies summing to 1 |
-| `strategy[].ev` | OOP expected value for this combo |
+Validation checks include:
+1. Schema/game/street fields
+2. Street-consistent unique board (3/4/5 cards)
+3. 2..6 players and valid `hero_seat`
+4. Unique hand rows with exactly one combo per row
+5. Action frequencies in `[0,1]` summing to `1` (tolerance `1e-3`)
+6. Finite EV values
 
 ## Examples
 
-### Solve a river spot
+### Solve heads-up
 
-`spot.json`:
+```sh
+zeta-solve solve --spot hu_spot.json --iterations 2000 --output hu_solution.json
+```
+
+### Solve 4-way turn
+
+```sh
+zeta-solve solve --spot spot_4way_turn.json --iterations 50000 --output solution_4way_turn.json
+```
+
+`spot_4way_turn.json`:
 
 ```json
 {
-  "board": ["Ah", "Kd", "Qc", "Jh", "2s"],
-  "oop_range": "AA,KK,QQ,JJ,AKs,AKo",
-  "ip_range":  "AA,KK,QQ,JJ,AKs,AKo",
-  "gross_pot": 100.0,
-  "oop_contribution": 50.0,
-  "ip_contribution":  50.0,
-  "oop_stack": 200.0,
-  "ip_stack":  200.0,
-  "bet_fraction": 0.75
+  "street": "turn",
+  "players": ["BTN", "BB", "CO", "HJ"],
+  "board": ["Ah", "Kd", "Qc", "Jh"],
+  "ranges": ["AA,AKs,AQo", "AA,KK,QQ,AKo", "QQ,JJ,TT,AKs", "JJ,TT,99,AQs"],
+  "gross_pot": 220.0,
+  "rake": 0.0,
+  "contributions": [55.0, 55.0, 55.0, 55.0],
+  "stacks": [300.0, 300.0, 300.0, 300.0],
+  "bet_fraction": 0.75,
+  "max_history": 8,
+  "public_state_id": 12,
+  "root_actor": 0,
+  "hero_seat": 0,
+  "samples_per_combo": 64
 }
 ```
 
-```sh
-zeta-solve solve --spot spot.json --iterations 2000 --output solution.json
-```
-
-### Validate an existing solution
+### Solve 3-way flop
 
 ```sh
-zeta-solve validate solution.json
+zeta-solve solve --spot spot_3way_flop.json --iterations 30000 --output solution_3way_flop.json
 ```
 
-Expected output on a valid file:
+`spot_3way_flop.json`:
 
+```json
+{
+  "street": "flop",
+  "players": ["BTN", "BB", "CO"],
+  "board": ["Ah", "Kd", "Qc"],
+  "ranges": ["AA,AKs,AQo", "AA,KK,QQ,AKo", "QQ,JJ,TT,AKs"],
+  "gross_pot": 180.0,
+  "rake": 0.0,
+  "contributions": [60.0, 60.0, 60.0],
+  "stacks": [260.0, 260.0, 260.0],
+  "bet_fraction": 0.75,
+  "max_history": 8,
+  "public_state_id": 9,
+  "root_actor": 0,
+  "hero_seat": 0,
+  "samples_per_combo": 64
+}
 ```
-validate:
-  structural         0.42ms
 
-total                0.42ms
-```
-
-### Inspect the strategy table
+### Solve 5-way
 
 ```sh
-zeta-solve dump solution.json
+zeta-solve solve --spot spot_5way.json --iterations 5000 --output solution_5way.json
 ```
 
-```
-Hand    check     bet 75%   EV
------------------------------
-AsAh    45%       55%       12.34
-AsAd    45%       55%       12.34
-...
-```
-
-### Record the git revision in the artifact
+### Validate and inspect
 
 ```sh
-ZETA_GIT_REVISION=$(git rev-parse --short HEAD) \
-  zeta-solve solve --spot spot.json --iterations 5000 --output solution.json
+zeta-solve validate solution_5way.json
+zeta-solve dump solution_5way.json
+```
+
+## Card and range syntax
+
+- Cards: rank + suit, e.g. `As`, `Td`, `7c`
+- Ranges: PokerStove-style text (see [range_parser.md](range_parser.md))
+
+## Environment variable
+
+| Variable | Purpose |
+|---|---|
+| `ZETA_GIT_REVISION` | Stored in `solver.git_revision` in the output artifact |
+
+## Build (optional)
+
+```sh
+cmake --build cmake-build-release-wsl-clang
 ```
