@@ -1,8 +1,52 @@
 cmake_minimum_required(VERSION 3.28)
 
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
+
 project(zeta)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(ZETA_BUILD_TESTS "Build Zeta test targets" ON)
+option(ZETA_BUILD_TOOLS "Build Zeta tool targets" ON)
+option(ZETA_BUILD_UI "Build Zeta UI targets" ON)
+option(ZETA_BUILD_BENCHMARKS "Build Zeta benchmark targets" ON)
+
+set(_zeta_boost_components json)
+if(ZETA_BUILD_TESTS)
+    list(APPEND _zeta_boost_components unit_test_framework)
+endif()
+find_package(Boost 1.88 REQUIRED COMPONENTS ${_zeta_boost_components})
+if(NOT Boost_FOUND)
+    message(FATAL_ERROR "Boost not found.")
+endif()
+
+if(ZETA_BUILD_UI)
+    find_package(Qt6 CONFIG REQUIRED COMPONENTS Widgets)
+endif()
+
+if(ZETA_BUILD_BENCHMARKS)
+    find_package(benchmark 1.9.5 CONFIG QUIET)
+    if(NOT benchmark_FOUND)
+        include(FetchContent)
+        set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+        set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+        set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+        set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
+        if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+            set(HAVE_STD_REGEX TRUE CACHE BOOL "" FORCE)
+            set(HAVE_STEADY_CLOCK TRUE CACHE BOOL "" FORCE)
+        endif()
+        FetchContent_Declare(
+            google_benchmark
+            GIT_REPOSITORY https://github.com/google/benchmark.git
+            GIT_TAG v1.9.5
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(google_benchmark)
+    endif()
+endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(CMAKE_CXX_STANDARD 23)
@@ -10,7 +54,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     set(CMAKE_CXX_EXTENSIONS OFF)
 elseif(MSVC)
     set(CMAKE_CXX_STANDARD 23)
-    set(CMAKE_CXX_STANDARD_REQUIRED ON) 
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
 
@@ -51,7 +95,6 @@ elseif(ZETA_NATIVE_OPTIMIZATIONS AND MSVC)
     )
 endif()
 
-option(ZETA_BUILD_TESTS "Build Zeta test targets" ON)
 if(ZETA_BUILD_TESTS)
     enable_testing()
 endif()

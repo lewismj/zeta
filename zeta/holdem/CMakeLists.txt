@@ -37,6 +37,8 @@ add_library(zeta-holdem STATIC
     src/cfr/scheduler/dfs_partitioner.cpp
     src/cfr/scheduler/scheduler.h
     src/cfr/scheduler/scheduler.cpp
+    src/cli/solve_cli.h
+    src/cli/solve_cli.cpp
 )
 add_library(zeta_holdem ALIAS zeta-holdem)
 
@@ -46,6 +48,7 @@ target_include_directories(zeta-holdem
 
 target_link_libraries(zeta-holdem
     PUBLIC zeta-core
+    PRIVATE Boost::json
 )
 
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

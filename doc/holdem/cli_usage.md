@@ -101,10 +101,15 @@ and `ip_range` are still accepted. For **multiway**, use the array fields.
 | `public_state_id` | integer | `0` | User-defined public-state id |
 | `root_actor` | integer | `0` | Acting seat at root |
 | `hero_seat` | integer | `0` | Seat used for artifact EV rows |
-| `samples_per_combo` | integer | `64` | Multiplayer showdown sampling budget |
+| `samples_per_combo` | integer | `64` | Multiplayer/pre-river sampling budget (higher = lower variance, slower) |
 
 Heads-up direct fields: `oop_range`, `ip_range`, `oop_contribution`,
 `ip_contribution`, `oop_stack`, `ip_stack`.
+
+Recommended `samples_per_combo` ranges:
+- Sanity checks: `1000` to `4000`
+- Regular analysis: `8000` to `32000`
+- Higher-confidence runs: `64000+` (sometimes `128000+`)
 
 ## Artifact JSON schema
 
@@ -211,6 +216,33 @@ zeta-solve solve --spot spot_3way_flop.json --iterations 30000 --output solution
 zeta-solve solve --spot spot_5way.json --iterations 5000 --output solution_5way.json
 ```
 
+### Solve 4-way with exact combo ranges
+
+```sh
+zeta-solve solve --spot spot_4way_exact_combos.json --iterations 20000 --output solution_4way_exact_combos.json
+```
+
+`spot_4way_exact_combos.json`:
+
+```json
+{
+  "street": "turn",
+  "players": ["BTN", "BB", "CO", "HJ"],
+  "board": ["Ah", "Kd", "Qc", "Jh"],
+  "ranges": ["AsKh", "QdJd", "Tc9c", "8s8h"],
+  "gross_pot": 160.0,
+  "rake": 0.0,
+  "contributions": [40.0, 40.0, 40.0, 40.0],
+  "stacks": [220.0, 220.0, 220.0, 220.0],
+  "bet_fraction": 0.75,
+  "max_history": 8,
+  "public_state_id": 21,
+  "root_actor": 0,
+  "hero_seat": 0,
+  "samples_per_combo": 64
+}
+```
+
 ### Validate and inspect
 
 ```sh
@@ -229,7 +261,7 @@ zeta-solve dump solution_5way.json
 |---|---|
 | `ZETA_GIT_REVISION` | Stored in `solver.git_revision` in the output artifact |
 
-## Build (optional)
+## Building from source
 
 ```sh
 cmake --build cmake-build-release-wsl-clang

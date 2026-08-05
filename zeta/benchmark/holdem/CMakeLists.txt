@@ -1,24 +1,5 @@
 project(zeta_benchmark_holdem LANGUAGES CXX)
 
-find_package(benchmark 1.9.5 CONFIG QUIET)
-if(NOT benchmark_FOUND)
-    include(FetchContent)
-    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
-    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-    if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        set(HAVE_STD_REGEX TRUE CACHE BOOL "" FORCE)
-        set(HAVE_STEADY_CLOCK TRUE CACHE BOOL "" FORCE)
-    endif()
-    FetchContent_Declare(
-        google_benchmark
-        GIT_REPOSITORY https://github.com/google/benchmark.git
-        GIT_TAG v1.9.5
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(google_benchmark)
-endif()
-
 if(NOT TARGET benchmark::benchmark)
     message(FATAL_ERROR "Google Benchmark 1.9.5 is required but benchmark::benchmark was not provided.")
 endif()
