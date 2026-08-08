@@ -7,7 +7,6 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
-#include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -37,19 +36,15 @@
 #include "viewmodels/spot_view_model.h"
 #include "widgets/range_editor.h"
 #include "widgets/spot_builder.h"
+#include "widgets/strategy_explorer.h"
 #include "widgets/table_state_view.h"
 
 #include <algorithm>
-#include <array>
-#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <future>
-#include <functional>
 #include <filesystem>
-#include <sstream>
 #include <utility>
-#include <unordered_map>
 #include <vector>
 
 namespace zeta::holdem::ui {
@@ -137,52 +132,6 @@ namespace zeta::holdem::ui {
             return button;
         }
 
-        [[nodiscard]] std::vector<std::pair<QString, double>> aggregate_action_frequencies(const solve_artifact& artifact)
-        {
-            std::unordered_map<std::string, double> totals;
-            for (const auto& hand : artifact.strategy) {
-                for (const auto& action : hand.strategy) {
-                    totals[action.action] += action.frequency;
-                }
-            }
-
-            std::vector<std::pair<QString, double>> actions;
-            actions.reserve(totals.size());
-            const auto divisor = artifact.strategy.empty() ? 1.0 : static_cast<double>(artifact.strategy.size());
-            for (const auto& [action, total] : totals) {
-                actions.emplace_back(QString::fromStdString(action), total / divisor);
-            }
-            std::ranges::sort(actions, std::greater{}, &std::pair<QString, double>::second);
-            return actions;
-        }
-
-        [[nodiscard]] QString hand_class_from_cards(const std::string& hand)
-        {
-            if (hand.size() < 4) {
-                return QString::fromStdString(hand);
-            }
-
-            const auto rank_index = [](const char rank) {
-                constexpr std::string_view ranks = "AKQJT98765432";
-                const auto pos = ranks.find(static_cast<char>(std::toupper(static_cast<unsigned char>(rank))));
-                return pos == std::string_view::npos ? ranks.size() : pos;
-            };
-
-            const char rank_a = hand[0];
-            const char suit_a = hand[1];
-            const char rank_b = hand[2];
-            const char suit_b = hand[3];
-            if (rank_a == rank_b) {
-                return QStringLiteral("%1%1").arg(QChar{rank_a});
-            }
-
-            const bool first_high = rank_index(rank_a) < rank_index(rank_b);
-            const char high = first_high ? rank_a : rank_b;
-            const char low = first_high ? rank_b : rank_a;
-            const char suited = suit_a == suit_b ? 's' : 'o';
-            return QStringLiteral("%1%2%3").arg(QChar{high}).arg(QChar{low}).arg(QChar{suited});
-        }
-
         [[nodiscard]] std::vector<std::string> range_tokens(const std::string& range)
         {
             std::vector<std::string> tokens;
@@ -198,155 +147,12 @@ namespace zeta::holdem::ui {
             return tokens;
         }
 
-        [[nodiscard]] bool range_contains_exact_hand(const std::string& range, const QString& hand)
-        {
-            const auto hand_text = hand.toStdString();
-            for (const auto& token : range_tokens(range)) {
-                if (token == hand_text) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        void set_range_contains_exact_hand(spot& spot, const QString& hand, const bool enabled)
-        {
-            if (spot.ranges.empty()) {
-                spot.ranges.resize(spot.players.size(), "");
-            }
-            const auto index = editable_range_index(spot);
-            if (index >= spot.ranges.size()) {
-                spot.ranges.resize(index + 1u);
-            }
-
-            const auto hand_text = hand.toStdString();
-            auto tokens = range_tokens(spot.ranges[index]);
-            const auto existing = std::ranges::find(tokens, hand_text);
-            if (enabled && existing == tokens.end()) {
-                tokens.push_back(hand_text);
-            } else if (!enabled && existing != tokens.end()) {
-                tokens.erase(existing);
-            }
-
-            std::ostringstream out;
-            for (std::size_t i = 0; i < tokens.size(); ++i) {
-                if (i != 0u) {
-                    out << ", ";
-                }
-                out << tokens[i];
-            }
-            spot.ranges[index] = out.str();
-        }
-
-        [[nodiscard]] std::unordered_map<std::string, const cli::hand_strategy*> strategy_by_hand_class(const solve_artifact& artifact)
-        {
-            std::unordered_map<std::string, const cli::hand_strategy*> rows;
-            for (const auto& row : artifact.strategy) {
-                rows.emplace(hand_class_from_cards(row.hand).toStdString(), &row);
-            }
-            return rows;
-        }
-
-        [[nodiscard]] QString primary_action_text(const cli::hand_strategy& row)
-        {
-            if (row.strategy.empty()) {
-                return QStringLiteral("EV %1").arg(row.ev, 0, 'f', 2);
-            }
-
-            const auto best = std::ranges::max_element(row.strategy, {}, &cli::action_strategy::frequency);
-            return QStringLiteral("%1 %2%\nEV %3")
-                .arg(QString::fromStdString(best->action))
-                .arg(best->frequency * 100.0, 0, 'f', 1)
-                .arg(row.ev, 0, 'f', 2);
-        }
-
-        [[nodiscard]] QWidget* create_strategy_grid(
-            const spot_document& document,
-            const std::function<void(const QString&, bool)>& range_toggled,
-            const theme::density_metrics& metrics)
-        {
-            constexpr std::array ranks{"A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"};
-            auto* container = make_panel();
-            auto* layout = new QGridLayout{container};
-            layout->setContentsMargins(metrics.panel_spacing, metrics.panel_spacing, metrics.panel_spacing, metrics.panel_spacing);
-            layout->setSpacing(metrics.panel_spacing / 2);
-            const auto& spot = document.current_spot();
-            const auto* artifact = document.artifact() ? &*document.artifact() : nullptr;
-            const auto artifact_rows = artifact == nullptr ? std::unordered_map<std::string, const cli::hand_strategy*>{} : strategy_by_hand_class(*artifact);
-            const auto range_index = editable_range_index(spot);
-            const std::string range = range_index < spot.ranges.size() ? spot.ranges[range_index] : std::string{};
-
-            for (int row = 0; row < static_cast<int>(ranks.size()); ++row) {
-                for (int column = 0; column < static_cast<int>(ranks.size()); ++column) {
-                    QString hand;
-                    if (row == column) {
-                        hand = QStringLiteral("%1%1").arg(ranks[row]);
-                    } else if (row < column) {
-                        hand = QStringLiteral("%1%2s").arg(ranks[row], ranks[column]);
-                    } else {
-                        hand = QStringLiteral("%1%2o").arg(ranks[column], ranks[row]);
-                    }
-
-                    QString text = hand;
-                    QString object_name = QStringLiteral("rangeCellMuted");
-                    bool checked = false;
-                    if (artifact != nullptr) {
-                        if (const auto found = artifact_rows.find(hand.toStdString()); found != artifact_rows.end()) {
-                            text += QStringLiteral("\n") + primary_action_text(*found->second);
-                            object_name = QStringLiteral("rangeCellPrimary");
-                        }
-                    } else {
-                        checked = range_contains_exact_hand(range, hand);
-                        text += checked ? QStringLiteral("\nIn range") : QStringLiteral("\nClick to add");
-                        object_name = checked ? QStringLiteral("rangeCellSelected") : QStringLiteral("rangeCellMuted");
-                    }
-
-                    auto* cell = new QPushButton{text};
-                    cell->setCheckable(artifact == nullptr);
-                    cell->setChecked(checked);
-                    cell->setEnabled(artifact == nullptr);
-                    cell->setFlat(true);
-                    cell->setObjectName(object_name);
-                    cell->setProperty("handClass", hand);
-                    cell->setProperty("selected", checked);
-                    cell->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-                    if (artifact == nullptr) {
-                        QObject::connect(cell, &QPushButton::toggled, cell, [cell, range_toggled](const bool enabled) {
-                            cell->setText(cell->property("handClass").toString() + (enabled ? QStringLiteral("\nIn range") : QStringLiteral("\nClick to add")));
-                            cell->setObjectName(enabled ? "rangeCellSelected" : "rangeCellMuted");
-                            cell->style()->unpolish(cell);
-                            cell->style()->polish(cell);
-                            range_toggled(cell->property("handClass").toString(), enabled);
-                        });
-                    }
-                    cell->setMinimumSize(metrics.range_cell_min_width, metrics.range_cell_min_height);
-                    layout->addWidget(cell, row, column);
-                }
-            }
-            return container;
-        }
-
         [[nodiscard]] QWidget* create_actions_panel(const spot_document& document, const theme::density_metrics& metrics)
         {
             auto* panel = make_panel();
             auto* layout = new QHBoxLayout{panel};
             layout->setContentsMargins(metrics.panel_margin, metrics.panel_margin, metrics.panel_margin, metrics.panel_margin);
             layout->setSpacing(metrics.panel_spacing);
-
-            if (document.artifact()) {
-                const auto actions = aggregate_action_frequencies(*document.artifact());
-                for (std::size_t i = 0; i < std::min<std::size_t>(actions.size(), 2u); ++i) {
-                    layout->addWidget(make_action_button(
-                        actions[i].first,
-                        QStringLiteral("%1%").arg(actions[i].second * 100.0, 0, 'f', 1),
-                        i == 0u ? QStringLiteral("callButton") : QStringLiteral("foldButton"),
-                        metrics));
-                }
-                if (actions.empty()) {
-                    layout->addWidget(make_action_button(QStringLiteral("No strategy"), QStringLiteral("0.0%"), QStringLiteral("foldButton"), metrics));
-                }
-                return panel;
-            }
 
             const auto& spot = document.current_spot();
             layout->addWidget(make_action_button(
@@ -364,31 +170,18 @@ namespace zeta::holdem::ui {
 
         [[nodiscard]] QWidget* create_hands_panel(const spot_document& document)
         {
-            const auto* artifact = document.artifact() ? &*document.artifact() : nullptr;
-            const int rows = artifact == nullptr ? 1 : static_cast<int>(artifact->strategy.size());
-            auto* table = new QTableWidget{rows, artifact == nullptr ? 2 : 3};
+            auto* table = new QTableWidget{1, 2};
             table->setObjectName("handsTable");
-            table->setHorizontalHeaderLabels(artifact == nullptr
-                ? QStringList{QStringLiteral("Input"), QStringLiteral("Value")}
-                : QStringList{QStringLiteral("Hand"), QStringLiteral("Best action"), QStringLiteral("EV")});
+            table->setHorizontalHeaderLabels({QStringLiteral("Input"), QStringLiteral("Value")});
             table->verticalHeader()->setVisible(false);
             table->horizontalHeader()->setStretchLastSection(true);
             table->setEditTriggers(QAbstractItemView::NoEditTriggers);
             table->setSelectionMode(QAbstractItemView::NoSelection);
 
-            if (artifact == nullptr) {
-                const auto& spot = document.current_spot();
-                const auto range_index = editable_range_index(spot);
-                table->setItem(0, 0, new QTableWidgetItem{QStringLiteral("%1 range").arg(actor_label(spot))});
-                table->setItem(0, 1, new QTableWidgetItem{range_index < spot.ranges.size() ? QString::fromStdString(spot.ranges[range_index]) : QString{}});
-            } else {
-                for (int row = 0; row < rows; ++row) {
-                    const auto& strategy = artifact->strategy[static_cast<std::size_t>(row)];
-                    table->setItem(row, 0, new QTableWidgetItem{QString::fromStdString(strategy.hand)});
-                    table->setItem(row, 1, new QTableWidgetItem{strategy.strategy.empty() ? QStringLiteral("-") : primary_action_text(strategy).section('\n', 0, 0)});
-                    table->setItem(row, 2, new QTableWidgetItem{QString::number(strategy.ev, 'f', 4)});
-                }
-            }
+            const auto& spot = document.current_spot();
+            const auto range_index = editable_range_index(spot);
+            table->setItem(0, 0, new QTableWidgetItem{QStringLiteral("%1 range").arg(actor_label(spot))});
+            table->setItem(0, 1, new QTableWidgetItem{range_index < spot.ranges.size() ? QString::fromStdString(spot.ranges[range_index]) : QString{}});
             return table;
         }
 
@@ -981,7 +774,11 @@ namespace zeta::holdem::ui {
             left_tabs};
         left_tabs->addTab(builder, tr("Spot Builder"));
         if (entry.document.artifact()) {
-            left_tabs->addTab(create_strategy_grid(entry.document, {}, metrics), tr("Strategy + EV"));
+            left_tabs->addTab(new widgets::strategy_explorer{
+                entry.document.current_spot(),
+                *entry.document.artifact(),
+                metrics,
+                left_tabs}, tr("Strategy Explorer"));
         } else {
             auto* range_editor = new widgets::range_editor{
                 entry.document.current_spot(),
@@ -998,8 +795,12 @@ namespace zeta::holdem::ui {
         }
         left_tabs->addTab(raw_editor, tr("Spot JSON"));
 
-        right_layout->addWidget(create_actions_panel(entry.document, metrics));
-        right_layout->addWidget(create_hands_panel(entry.document), 1);
+        if (!entry.document.artifact()) {
+            right_layout->addWidget(create_actions_panel(entry.document, metrics));
+            right_layout->addWidget(create_hands_panel(entry.document), 1);
+        } else {
+            right_layout->addStretch(1);
+        }
 
         workspace->addWidget(left_tabs);
         workspace->addWidget(right_column);

@@ -10,8 +10,10 @@
 #include "theme/theme_styles.h"
 #include "viewmodels/range_view_model.h"
 #include "viewmodels/spot_view_model.h"
+#include "viewmodels/strategy_view_model.h"
 #include "widgets/range_editor.h"
 #include "widgets/spot_builder.h"
+#include "widgets/strategy_explorer.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -49,6 +51,76 @@ namespace {
 })");
         BOOST_REQUIRE(spot.has_value());
         return *spot;
+    }
+
+    [[nodiscard]] zeta::holdem::ui::spot sample_three_way_river_spot()
+    {
+        zeta::holdem::ui::spot spot;
+        spot.players = {"BTN", "BB", "CO"};
+        spot.street = "river";
+        spot.board = {"2s", "3h", "4d", "5c", "9d"};
+        spot.ranges = {"AsKs", "QhQd", "JcTc"};
+        spot.gross_pot = 150.0;
+        spot.rake = 0.0;
+        spot.contributions = {50.0, 50.0, 50.0};
+        spot.stacks = {200.0, 200.0, 200.0};
+        spot.bet_fraction = 0.5;
+        spot.max_history = 8;
+        spot.public_state_id = 11;
+        spot.root_actor = 0;
+        spot.hero_seat = 0;
+        spot.samples_per_combo = 8;
+        return spot;
+    }
+
+    [[nodiscard]] zeta::holdem::cli::solve_artifact sample_strategy_artifact()
+    {
+        zeta::holdem::cli::solve_artifact artifact;
+        artifact.players = {"BTN", "BB"};
+        artifact.street = "river";
+        artifact.board = {"2s", "3d", "4c", "5h", "6s"};
+        artifact.hero_seat = 0;
+        artifact.solver.algorithm = "cfr+";
+        artifact.solver.iterations = 25;
+        artifact.solver.timestamp = "2026-08-03T20:00:00Z";
+        artifact.solver.git_revision = "abc1234";
+        artifact.strategy = {
+            zeta::holdem::cli::hand_strategy{
+                .hand = "AhAd",
+                .strategy = {
+                    zeta::holdem::cli::action_strategy{.action = "check", .frequency = 0.75},
+                    zeta::holdem::cli::action_strategy{.action = "bet_50", .frequency = 0.25}
+                },
+                .ev = 2.0
+            },
+            zeta::holdem::cli::hand_strategy{
+                .hand = "AcAs",
+                .strategy = {
+                    zeta::holdem::cli::action_strategy{.action = "check", .frequency = 0.25},
+                    zeta::holdem::cli::action_strategy{.action = "bet_50", .frequency = 0.75}
+                },
+                .ev = 4.0
+            },
+            zeta::holdem::cli::hand_strategy{
+                .hand = "KdKh",
+                .strategy = {
+                    zeta::holdem::cli::action_strategy{.action = "fold", .frequency = 1.0}
+                },
+                .ev = -1.0
+            }
+        };
+        return artifact;
+    }
+
+    [[nodiscard]] zeta::holdem::ui::spot sample_strategy_spot()
+    {
+        auto spot = sample_heads_up_spot();
+        spot.street = "river";
+        spot.board = {"2s", "3d", "4c", "5h", "6s"};
+        spot.ranges = {"AhAd:0.5, AcAs, KdKh:0.25", "QcQh"};
+        spot.root_actor = 1;
+        spot.hero_seat = 0;
+        return spot;
     }
 
     [[nodiscard]] QApplication& qt_app()
@@ -100,6 +172,16 @@ namespace {
         return std::ranges::any_of(issues, [&field](const auto& issue) {
             return issue.field == field;
         });
+    }
+
+    [[nodiscard]] const zeta::holdem::ui::viewmodels::strategy_matrix_cell* strategy_cell(
+        const zeta::holdem::ui::viewmodels::strategy_view_model& model,
+        const std::string& hand_class)
+    {
+        const auto found = std::ranges::find_if(model.matrix, [&hand_class](const auto& cell) {
+            return cell.hand_class == hand_class;
+        });
+        return found == model.matrix.end() ? nullptr : &*found;
     }
 
 }
@@ -321,6 +403,27 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_completes_and_carries_timing_artif
     BOOST_CHECK_GE(result.timing.graph_build_ms, 0.0);
     BOOST_CHECK_GE(result.timing.cfr_iterations_ms, 0.0);
     BOOST_CHECK_GE(result.timing.extraction_ms, 0.0);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_completes_three_way_spot) {
+    zeta::holdem::ui::solver::solver_session session{
+        zeta::holdem::ui::solver::solver_session_request{
+            .spot_snapshot = sample_three_way_river_spot(),
+            .iterations = 1,
+            .runtime = zeta::holdem::cli::solve_runtime_options{
+                .timestamp_utc = "2026-08-03T20:00:00Z",
+                .git_revision = "abc1234"
+            }
+        }
+    };
+
+    const auto result = session.run();
+
+    BOOST_CHECK(result.terminal_state == zeta::holdem::ui::solver::solver_session_terminal_state::completed);
+    BOOST_REQUIRE(result.artifact.has_value());
+    BOOST_CHECK_EQUAL(result.artifact->players.size(), 3u);
+    BOOST_CHECK_EQUAL(result.artifact->hero_seat, 0u);
+    BOOST_CHECK(!result.artifact->strategy.empty());
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_reports_failed_and_cancelled_before_start_states) {
@@ -599,6 +702,111 @@ BOOST_AUTO_TEST_CASE(holdem_ui_range_editor_authors_all_seat_ranges_without_raw_
     }
 
     BOOST_CHECK_EQUAL(combo_table->rowCount(), 4);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_aggregates_matrix_table_cards_and_metadata_consistently) {
+    const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(
+        sample_strategy_spot(),
+        sample_strategy_artifact());
+
+    const auto* aa = strategy_cell(model, "AA");
+    BOOST_REQUIRE(aa != nullptr);
+    BOOST_CHECK(aa->available);
+    BOOST_REQUIRE_EQUAL(aa->exact_combos.size(), 2u);
+    BOOST_CHECK_EQUAL(aa->best_action, "bet_50");
+    BOOST_CHECK_CLOSE(aa->ev, 3.3333333333, 0.001);
+    BOOST_CHECK_CLOSE(aa->range_weight, 1.5, 0.001);
+    BOOST_REQUIRE_EQUAL(aa->actions.size(), 2u);
+    BOOST_CHECK_EQUAL(aa->actions[0].action, "bet_50");
+    BOOST_CHECK_CLOSE(aa->actions[0].frequency, 0.5833333333, 0.001);
+
+    const auto* kk = strategy_cell(model, "KK");
+    BOOST_REQUIRE(kk != nullptr);
+    BOOST_CHECK(kk->available);
+    BOOST_CHECK_EQUAL(kk->best_action, "fold");
+    BOOST_CHECK_CLOSE(kk->ev, -1.0, 0.001);
+
+    BOOST_REQUIRE_EQUAL(model.hands.size(), 3u);
+    BOOST_CHECK_CLOSE(model.average_ev, 2.7142857142, 0.001);
+    BOOST_REQUIRE_EQUAL(model.action_cards.size(), 3u);
+    BOOST_CHECK_EQUAL(model.action_cards[0].action, "bet_50");
+    BOOST_CHECK_CLOSE(model.action_cards[0].frequency, 0.5, 0.001);
+    BOOST_CHECK_GT(model.mix_indicator, 0.0);
+
+    BOOST_CHECK_EQUAL(model.metadata.algorithm, "cfr+");
+    BOOST_CHECK_EQUAL(model.metadata.iterations, 25u);
+    BOOST_CHECK_EQUAL(model.metadata.player_count, 2u);
+    BOOST_CHECK_EQUAL(model.metadata.hero_label, "BTN");
+    BOOST_CHECK_EQUAL(model.metadata.root_actor_label, "BB");
+    BOOST_REQUIRE_EQUAL(model.metadata.seat_ranges.size(), 2u);
+    BOOST_CHECK(model.metadata.seat_ranges[0].find("AhAd:0.5") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_filters_hands_and_formats_ev) {
+    const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(
+        sample_strategy_spot(),
+        sample_strategy_artifact());
+
+    const auto bet_rows = zeta::holdem::ui::viewmodels::filtered_strategy_hands(
+        model,
+        zeta::holdem::ui::viewmodels::strategy_action_filter::bet_raise);
+    BOOST_REQUIRE_EQUAL(bet_rows.size(), 2u);
+    BOOST_CHECK(std::ranges::all_of(bet_rows, [](const auto& row) {
+        return row.hand_class == "AA";
+    }));
+
+    const auto fold_rows = zeta::holdem::ui::viewmodels::filtered_strategy_hands(
+        model,
+        zeta::holdem::ui::viewmodels::strategy_action_filter::fold);
+    BOOST_REQUIRE_EQUAL(fold_rows.size(), 1u);
+    BOOST_CHECK_EQUAL(fold_rows[0].hand_class, "KK");
+
+    const auto* aa = strategy_cell(model, "AA");
+    const auto* kk = strategy_cell(model, "KK");
+    BOOST_REQUIRE(aa != nullptr);
+    BOOST_REQUIRE(kk != nullptr);
+    BOOST_CHECK(zeta::holdem::ui::viewmodels::strategy_cell_matches_filter(
+        *aa,
+        zeta::holdem::ui::viewmodels::strategy_action_filter::check_call));
+    BOOST_CHECK(!zeta::holdem::ui::viewmodels::strategy_cell_matches_filter(
+        *kk,
+        zeta::holdem::ui::viewmodels::strategy_action_filter::bet_raise));
+
+    BOOST_CHECK_EQUAL(zeta::holdem::ui::viewmodels::format_strategy_ev(1.25), "+1.25");
+    BOOST_CHECK_EQUAL(zeta::holdem::ui::viewmodels::format_strategy_ev(-0.5), "-0.50");
+    BOOST_CHECK_EQUAL(zeta::holdem::ui::viewmodels::format_strategy_ev(0.0), "0.00");
+    BOOST_CHECK_EQUAL(zeta::holdem::ui::viewmodels::format_strategy_percent(0.625), "62.5%");
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_artifact_and_action_filter) {
+    auto& app = qt_app();
+
+    zeta::holdem::ui::widgets::strategy_explorer explorer{
+        sample_strategy_spot(),
+        sample_strategy_artifact(),
+        zeta::holdem::ui::theme::metrics_for_density(zeta::holdem::ui::theme::density_mode::comfortable),
+        nullptr};
+    explorer.resize(900, 700);
+    explorer.show();
+    app.processEvents();
+
+    auto* filter = explorer.findChild<QComboBox*>("strategyActionFilter");
+    auto* hand_table = explorer.findChild<QTableWidget*>("strategyHandTable");
+    auto* detail_table = explorer.findChild<QTableWidget*>("strategyDetailTable");
+    auto* metadata = explorer.findChild<QLabel*>("artifactMetadataSummary");
+
+    BOOST_REQUIRE(filter != nullptr);
+    BOOST_REQUIRE(hand_table != nullptr);
+    BOOST_REQUIRE(detail_table != nullptr);
+    BOOST_REQUIRE(metadata != nullptr);
+    BOOST_CHECK(metadata->text().contains(QStringLiteral("players 2")));
+    BOOST_CHECK_EQUAL(hand_table->rowCount(), 3);
+
+    filter->setCurrentIndex(1);
+    app.processEvents();
+
+    BOOST_CHECK_EQUAL(hand_table->rowCount(), 1);
+    BOOST_CHECK(detail_table->rowCount() <= 1);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_theme_registry_exposes_required_stage2_themes_and_tokens) {

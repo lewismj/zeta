@@ -25,10 +25,14 @@ add_executable(zeta-ui-holdem
     src/viewmodels/range_view_model.cpp
     src/viewmodels/spot_view_model.h
     src/viewmodels/spot_view_model.cpp
+    src/viewmodels/strategy_view_model.h
+    src/viewmodels/strategy_view_model.cpp
     src/widgets/range_editor.h
     src/widgets/range_editor.cpp
     src/widgets/spot_builder.h
     src/widgets/spot_builder.cpp
+    src/widgets/strategy_explorer.h
+    src/widgets/strategy_explorer.cpp
     src/widgets/table_state_view.h
     src/widgets/table_state_view.cpp
 )
