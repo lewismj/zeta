@@ -20,6 +20,7 @@ namespace zeta::holdem::ui::document {
                 case cli::cli_error_kind::invalid_spot:
                 case cli::cli_error_kind::invalid_artifact:
                 case cli::cli_error_kind::solver:
+                case cli::cli_error_kind::cancelled:
                     return document_error{document_error_kind::invalid_document, error.message};
             }
             return document_error{document_error_kind::invalid_document, error.message};
@@ -118,6 +119,7 @@ namespace zeta::holdem::ui::document {
             auto created = optional_string(object, "created_utc", metadata.created_utc);
             auto updated = optional_string(object, "updated_utc", metadata.updated_utc);
             auto summary = optional_string(object, "last_solve_summary", metadata.last_solve_summary);
+            auto notes = optional_string(object, "study_notes", metadata.study_notes);
             auto tags = optional_string_array(object, "tags");
             if (!created) {
                 return std::unexpected(created.error());
@@ -128,12 +130,16 @@ namespace zeta::holdem::ui::document {
             if (!summary) {
                 return std::unexpected(summary.error());
             }
+            if (!notes) {
+                return std::unexpected(notes.error());
+            }
             if (!tags) {
                 return std::unexpected(tags.error());
             }
             metadata.created_utc = std::move(*created);
             metadata.updated_utc = std::move(*updated);
             metadata.last_solve_summary = std::move(*summary);
+            metadata.study_notes = std::move(*notes);
             metadata.tags = std::move(*tags);
             return metadata;
         }
@@ -296,6 +302,7 @@ namespace zeta::holdem::ui::document {
         metadata["created_utc"] = metadata_source.created_utc;
         metadata["updated_utc"] = metadata_source.updated_utc;
         metadata["last_solve_summary"] = metadata_source.last_solve_summary;
+        metadata["study_notes"] = metadata_source.study_notes;
         metadata["tags"] = string_array_json(metadata_source.tags);
 
         json::array history;

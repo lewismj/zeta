@@ -4,15 +4,18 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QCloseEvent>
+#include <QComboBox>
+#include <QDialog>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QFrame>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
-#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -20,15 +23,15 @@
 #include <QSplitter>
 #include <QSpinBox>
 #include <QStatusBar>
-#include <QStringList>
 #include <QStyle>
+#include <QStringList>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextCursor>
 #include <QTimer>
 #include <QToolBar>
-#include <QToolButton>
+#include <QVariant>
 #include <QVBoxLayout>
 
 #include "theme/theme_registry.h"
@@ -44,12 +47,27 @@
 #include <cstdlib>
 #include <future>
 #include <filesystem>
+#include <thread>
 #include <utility>
 #include <vector>
 
 namespace zeta::holdem::ui {
 
     namespace {
+
+        constexpr int min_solver_iterations = 1;
+        constexpr int max_solver_iterations = 1'000'000;
+        constexpr int min_worker_threads = 1;
+        constexpr int max_worker_threads = 64;
+
+        [[nodiscard]] int available_worker_threads() noexcept
+        {
+            const auto hardware_threads = std::thread::hardware_concurrency();
+            if (hardware_threads == 0) {
+                return max_worker_threads;
+            }
+            return std::clamp(static_cast<int>(hardware_threads), min_worker_threads, max_worker_threads);
+        }
 
         [[nodiscard]] QString error_text(const document_error& error)
         {
@@ -106,6 +124,117 @@ namespace zeta::holdem::ui {
                 lines.push_back(QString::fromStdString(issue.message));
             }
             return lines.join(QStringLiteral("\n"));
+        }
+
+        enum class dialog_kind {
+            info,
+            warning,
+            error
+        };
+
+        [[nodiscard]] QString dialog_icon_path(const dialog_kind kind)
+        {
+            switch (kind) {
+                case dialog_kind::info:
+                    return QStringLiteral(":/icons/info.svg");
+                case dialog_kind::warning:
+                    return QStringLiteral(":/icons/triangle-alert.svg");
+                case dialog_kind::error:
+                    return QStringLiteral(":/icons/circle-x.svg");
+            }
+            return QStringLiteral(":/icons/info.svg");
+        }
+
+        [[nodiscard]] const theme::registered_theme& theme_for_widget(QWidget* widget)
+        {
+            if (widget == nullptr || widget->window() == nullptr) {
+                return theme::default_theme();
+            }
+            const auto theme_value = widget->window()->property("zetaThemeId");
+            if (!theme_value.isValid()) {
+                return theme::default_theme();
+            }
+            switch (theme_value.toInt()) {
+                case static_cast<int>(theme::theme_id::light_pro):
+                    return theme::find_theme(theme::theme_id::light_pro);
+                case static_cast<int>(theme::theme_id::high_contrast):
+                    return theme::find_theme(theme::theme_id::high_contrast);
+                case static_cast<int>(theme::theme_id::dark_pro):
+                default:
+                    return theme::default_theme();
+            }
+        }
+
+        [[nodiscard]] int show_themed_dialog(
+            QWidget* parent,
+            const dialog_kind kind,
+            const QString& title,
+            const QString& message,
+            const std::vector<std::pair<int, QString>>& buttons,
+            const int default_result)
+        {
+            QDialog dialog{parent};
+            dialog.setWindowTitle(title);
+            dialog.setModal(true);
+            if (parent != nullptr && parent->window() != nullptr) {
+                dialog.setStyleSheet(parent->window()->styleSheet());
+            }
+            (void) dialog.winId();
+            theme::apply_native_title_bar(&dialog, theme_for_widget(parent));
+
+            auto* root = new QVBoxLayout{&dialog};
+            root->setContentsMargins(18, 16, 18, 16);
+            root->setSpacing(14);
+
+            auto* content = new QHBoxLayout;
+            content->setSpacing(12);
+            auto* icon = new QLabel{&dialog};
+            icon->setObjectName("dialogIcon");
+            icon->setPixmap(QIcon{dialog_icon_path(kind)}.pixmap(QSize{28, 28}));
+            icon->setFixedSize(32, 32);
+            icon->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+            content->addWidget(icon);
+
+            auto* label = new QLabel{message, &dialog};
+            label->setObjectName("dialogMessage");
+            label->setWordWrap(true);
+            label->setMinimumWidth(360);
+            content->addWidget(label, 1);
+            root->addLayout(content);
+
+            auto* button_row = new QHBoxLayout;
+            button_row->addStretch(1);
+            for (const auto& [result, text] : buttons) {
+                auto* button = new QPushButton{text, &dialog};
+                button->setDefault(result == default_result);
+                QObject::connect(button, &QPushButton::clicked, &dialog, [&dialog, result] {
+                    dialog.done(result);
+                });
+                button_row->addWidget(button);
+            }
+            root->addLayout(button_row);
+
+            return dialog.exec();
+        }
+
+        void show_themed_message(QWidget* parent, const dialog_kind kind, const QString& title, const QString& message)
+        {
+            (void) show_themed_dialog(parent, kind, title, message, {{QDialog::Accepted, QObject::tr("OK")}}, QDialog::Accepted);
+        }
+
+        [[nodiscard]] QString selected_file(QFileDialog& dialog)
+        {
+            if (dialog.exec() != QDialog::Accepted) {
+                return {};
+            }
+            const auto files = dialog.selectedFiles();
+            return files.isEmpty() ? QString{} : files.front();
+        }
+
+        void polish(QWidget* widget)
+        {
+            widget->style()->unpolish(widget);
+            widget->style()->polish(widget);
         }
 
         [[nodiscard]] std::size_t editable_range_index(const spot& spot)
@@ -192,6 +321,9 @@ namespace zeta::holdem::ui {
     {
         active_theme_ = settings_.active_theme();
         density_mode_ = settings_.density();
+        solver_iterations_ = settings_.solver_iterations();
+        progress_batch_iterations_ = settings_.solver_progress_batch_iterations();
+        worker_threads_ = std::clamp(settings_.solver_worker_threads(), min_worker_threads, available_worker_threads());
         workspace_splitter_sizes_ = settings_.workspace_splitter_sizes();
         create_actions();
         create_layout();
@@ -203,8 +335,9 @@ namespace zeta::holdem::ui {
     {
         finish_solver_if_ready();
         if (has_active_solve()) {
-            QMessageBox::information(
+            show_themed_message(
                 this,
+                dialog_kind::info,
                 tr("Solve in progress"),
                 tr("A solve is still running for %1. Close the window after the solve finishes.")
                     .arg(active_solver_document_index_ >= 0 && active_solver_document_index_ < static_cast<int>(documents_.size())
@@ -233,13 +366,15 @@ namespace zeta::holdem::ui {
         validate_action_ = new QAction{tr("&Validate"), this};
         solve_action_ = new QAction{tr("S&olve"), this};
         cancel_action_ = new QAction{tr("&Cancel"), this};
+        configuration_action_ = new QAction{tr("&Configuration"), this};
 
-        new_action_->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
-        open_action_->setIcon(style()->standardIcon(QStyle::SP_DialogOpenButton));
-        save_action_->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
-        validate_action_->setIcon(style()->standardIcon(QStyle::SP_DialogApplyButton));
-        solve_action_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-        cancel_action_->setIcon(style()->standardIcon(QStyle::SP_DialogCancelButton));
+        new_action_->setIcon(QIcon{QStringLiteral(":/icons/file-plus.svg")});
+        open_action_->setIcon(QIcon{QStringLiteral(":/icons/folder-open.svg")});
+        save_action_->setIcon(QIcon{QStringLiteral(":/icons/save.svg")});
+        validate_action_->setIcon(QIcon{QStringLiteral(":/icons/check-circle.svg")});
+        solve_action_->setIcon(QIcon{QStringLiteral(":/icons/play.svg")});
+        cancel_action_->setIcon(QIcon{QStringLiteral(":/icons/square.svg")});
+        configuration_action_->setIcon(QIcon{QStringLiteral(":/icons/settings.svg")});
 
         connect(new_action_, &QAction::triggered, this, [this] { new_document(); });
         connect(open_action_, &QAction::triggered, this, [this] { open_document(); });
@@ -248,54 +383,20 @@ namespace zeta::holdem::ui {
         connect(validate_action_, &QAction::triggered, this, [this] { validate_active_document(); });
         connect(solve_action_, &QAction::triggered, this, [this] { solve_active_document(); });
         connect(cancel_action_, &QAction::triggered, this, [this] { cancel_solver(); });
+        connect(configuration_action_, &QAction::triggered, this, [this] { show_configuration_settings(); });
     }
 
     void main_window::create_layout()
     {
         apply_active_theme();
 
-        auto* file_menu = menuBar()->addMenu(tr("&File"));
-        file_menu->addAction(new_action_);
-        file_menu->addAction(open_action_);
-        recent_files_menu_ = file_menu->addMenu(tr("Open &Recent"));
-        file_menu->addAction(save_action_);
-        file_menu->addAction(save_as_action_);
-
-        auto* solve_menu = menuBar()->addMenu(tr("&Solve"));
-        solve_menu->addAction(validate_action_);
-        solve_menu->addAction(solve_action_);
-        solve_menu->addAction(cancel_action_);
-
-        auto* view_menu = menuBar()->addMenu(tr("&View"));
-        auto* theme_menu = view_menu->addMenu(tr("&Theme"));
-        theme_actions_ = new QActionGroup{this};
-        for (const auto& theme : theme::registered_themes()) {
-            auto* action = theme_menu->addAction(QString::fromStdString(theme.display_name));
-            action->setCheckable(true);
-            action->setChecked(theme.id == active_theme_);
-            action->setData(static_cast<int>(theme.id));
-            theme_actions_->addAction(action);
-            connect(action, &QAction::triggered, this, [this, id = theme.id] {
-                set_active_theme(id);
-            });
-        }
-
-        auto* density_menu = view_menu->addMenu(tr("&Density"));
-        density_actions_ = new QActionGroup{this};
-        for (const auto density : {theme::density_mode::compact, theme::density_mode::comfortable}) {
-            auto* action = density_menu->addAction(QString::fromStdString(std::string{theme::density_mode_label(density)}));
-            action->setCheckable(true);
-            action->setChecked(density == density_mode_);
-            action->setData(static_cast<int>(density));
-            density_actions_->addAction(action);
-            connect(action, &QAction::triggered, this, [this, density] {
-                set_density_mode(density);
-            });
-        }
+        menuBar()->hide();
 
         auto* toolbar = addToolBar(tr("Hold'em Solver"));
         toolbar->setObjectName("commandBar");
         toolbar->setMovable(false);
+        toolbar->setIconSize(QSize{22, 22});
+        toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         toolbar->addAction(new_action_);
         toolbar->addAction(open_action_);
         toolbar->addAction(save_action_);
@@ -304,25 +405,7 @@ namespace zeta::holdem::ui {
         toolbar->addAction(solve_action_);
         toolbar->addAction(cancel_action_);
         toolbar->addSeparator();
-        auto* iterations_label = new QLabel{tr("Iterations"), toolbar};
-        toolbar->addWidget(iterations_label);
-        iterations_spin_ = new QSpinBox{toolbar};
-        iterations_spin_->setRange(1, 1'000'000);
-        iterations_spin_->setValue(100);
-        iterations_spin_->setSingleStep(50);
-        iterations_spin_->setMaximumWidth(96);
-        iterations_spin_->setToolTip(tr("CFR iterations for the next solve."));
-        toolbar->addWidget(iterations_spin_);
-        auto* output_label = new QLabel{tr(" Output: document artifact"), toolbar};
-        output_label->setObjectName("mutedLabel");
-        toolbar->addWidget(output_label);
-        toolbar->addSeparator();
-        auto* theme_button = new QToolButton{toolbar};
-        theme_button->setText(tr("Theme"));
-        theme_button->setToolTip(tr("Change the active application theme."));
-        theme_button->setPopupMode(QToolButton::InstantPopup);
-        theme_button->setMenu(theme_menu);
-        toolbar->addWidget(theme_button);
+        toolbar->addAction(configuration_action_);
 
         shell_splitter_ = new QSplitter{Qt::Horizontal, this};
         shell_splitter_->setObjectName("appShellSplitter");
@@ -382,7 +465,9 @@ namespace zeta::holdem::ui {
         });
 
         state_label_ = new QLabel{this};
+        state_label_->setObjectName("solverStateLabel");
         status_label_ = new QLabel{this};
+        status_label_->setObjectName("solverStatusLabel");
         statusBar()->addPermanentWidget(state_label_);
         statusBar()->addWidget(status_label_, 1);
         resize(1180, 760);
@@ -397,7 +482,14 @@ namespace zeta::holdem::ui {
 
     void main_window::open_document()
     {
-        const auto path = QFileDialog::getOpenFileName(this, tr("Open Hold'em spot"), {}, tr("JSON documents (*.json);;All files (*)"));
+        QFileDialog dialog{this, tr("Open Hold'em spot")};
+        dialog.setAcceptMode(QFileDialog::AcceptOpen);
+        dialog.setNameFilters({tr("JSON documents (*.json)"), tr("All files (*)")});
+        dialog.setOption(QFileDialog::DontUseNativeDialog);
+        dialog.setStyleSheet(styleSheet());
+        (void) dialog.winId();
+        apply_native_title_bar_theme(&dialog);
+        const auto path = selected_file(dialog);
         if (path.isEmpty()) {
             return;
         }
@@ -408,7 +500,7 @@ namespace zeta::holdem::ui {
     {
         auto document = spot_document::load(path);
         if (!document) {
-            QMessageBox::critical(this, tr("Open failed"), error_text(document.error()));
+            show_themed_message(this, dialog_kind::error, tr("Open failed"), error_text(document.error()));
             return;
         }
         add_document_tab(std::move(*document));
@@ -429,7 +521,7 @@ namespace zeta::holdem::ui {
         }
         auto result = entry->document.save();
         if (!result) {
-            QMessageBox::critical(this, tr("Save failed"), error_text(result.error()));
+            show_themed_message(this, dialog_kind::error, tr("Save failed"), error_text(result.error()));
             return false;
         }
         entry->document.clear_dirty();
@@ -445,7 +537,15 @@ namespace zeta::holdem::ui {
         if (entry == nullptr) {
             return false;
         }
-        const auto path = QFileDialog::getSaveFileName(this, tr("Save Hold'em spot"), {}, tr("JSON documents (*.json);;All files (*)"));
+        QFileDialog dialog{this, tr("Save Hold'em spot")};
+        dialog.setAcceptMode(QFileDialog::AcceptSave);
+        dialog.setNameFilters({tr("JSON documents (*.json)"), tr("All files (*)")});
+        dialog.setDefaultSuffix(QStringLiteral("json"));
+        dialog.setOption(QFileDialog::DontUseNativeDialog);
+        dialog.setStyleSheet(styleSheet());
+        (void) dialog.winId();
+        apply_native_title_bar_theme(&dialog);
+        const auto path = selected_file(dialog);
         if (path.isEmpty()) {
             return false;
         }
@@ -454,7 +554,7 @@ namespace zeta::holdem::ui {
         }
         auto result = entry->document.save_as(std::filesystem::path{path.toStdWString()});
         if (!result) {
-            QMessageBox::critical(this, tr("Save failed"), error_text(result.error()));
+            show_themed_message(this, dialog_kind::error, tr("Save failed"), error_text(result.error()));
             return false;
         }
         add_recent_file(entry->document.file_path());
@@ -470,7 +570,7 @@ namespace zeta::holdem::ui {
             return;
         }
         if (auto transition = solver_state_.transition_to(solver_state::validating); !transition) {
-            QMessageBox::warning(this, tr("Invalid solver state"), QString::fromStdString(transition.error()));
+            show_themed_message(this, dialog_kind::warning, tr("Invalid solver state"), QString::fromStdString(transition.error()));
             return;
         }
         update_solver_controls();
@@ -486,7 +586,7 @@ namespace zeta::holdem::ui {
     void main_window::solve_active_document()
     {
         if (has_active_solve()) {
-            QMessageBox::warning(this, tr("Solve in progress"), tr("Wait for the active solve to finish before starting another one."));
+            show_themed_message(this, dialog_kind::warning, tr("Solve in progress"), tr("Wait for the active solve to finish before starting another one."));
             return;
         }
         auto* entry = active_entry();
@@ -495,14 +595,16 @@ namespace zeta::holdem::ui {
         }
         const int document_index = tabs_->currentIndex();
         if (auto transition = solver_state_.transition_to(solver_state::starting); !transition) {
-            QMessageBox::warning(this, tr("Invalid solver state"), QString::fromStdString(transition.error()));
+            show_themed_message(this, dialog_kind::warning, tr("Invalid solver state"), QString::fromStdString(transition.error()));
             return;
         }
 
         solver::solver_session_request request{
             .spot_snapshot = entry->document.current_spot(),
-            .iterations = static_cast<uint64_t>(iterations_spin_->value())
+            .iterations = static_cast<uint64_t>(solver_iterations_)
         };
+        request.runtime.progress_batch_iterations = static_cast<uint64_t>(progress_batch_iterations_);
+        request.runtime.worker_threads = static_cast<uint32_t>(worker_threads_);
         if (const char* revision = std::getenv("ZETA_GIT_REVISION")) {
             request.runtime.git_revision = revision;
         }
@@ -510,9 +612,11 @@ namespace zeta::holdem::ui {
         active_session_ = std::make_shared<solver::solver_session>(std::move(request));
         active_solver_document_index_ = document_index;
         const auto& session_request = active_session_->request();
-        set_solve_console(*entry, tr("Started %1\nIterations: %2\nOutput: store artifact in active document\nPlayers: %3\nStatus: running")
+        set_solve_console(*entry, tr("Started %1\nIterations: %2\nProgress batch: %3\nWorker threads: %4\nOutput: store artifact in active document\nPlayers: %5\nStatus: running")
             .arg(QString::fromStdString(cli::detail::now_utc_iso8601()))
             .arg(static_cast<qulonglong>(session_request.iterations))
+            .arg(static_cast<qulonglong>(session_request.runtime.progress_batch_iterations))
+            .arg(static_cast<qulonglong>(session_request.runtime.worker_threads))
             .arg(static_cast<qulonglong>(session_request.spot_snapshot.players.size())));
         entry->editor->setReadOnly(true);
         status_label_->setText(tr("Solving %1 with %2 iterations.")
@@ -525,6 +629,95 @@ namespace zeta::holdem::ui {
         (void) solver_state_.transition_to(solver_state::running);
         solver_poll_timer_->start();
         update_solver_controls();
+    }
+
+    void main_window::show_configuration_settings()
+    {
+        QDialog dialog{this};
+        dialog.setWindowTitle(tr("Configuration Settings"));
+        dialog.setObjectName("configurationDialog");
+        dialog.setStyleSheet(styleSheet());
+        dialog.setMinimumWidth(460);
+        (void) dialog.winId();
+        apply_native_title_bar_theme(&dialog);
+
+        auto* root = new QVBoxLayout{&dialog};
+        root->setContentsMargins(18, 16, 18, 16);
+        root->setSpacing(12);
+
+        auto* title = make_panel_title(tr("Configuration"));
+        root->addWidget(title);
+
+        auto* panel = make_panel();
+        auto* layout = new QFormLayout{panel};
+        layout->setContentsMargins(14, 12, 14, 12);
+        layout->setSpacing(10);
+
+        auto* theme_combo = new QComboBox{panel};
+        for (const auto& registered_theme : theme::registered_themes()) {
+            theme_combo->addItem(
+                QString::fromStdString(registered_theme.display_name),
+                static_cast<int>(registered_theme.id));
+        }
+        theme_combo->setCurrentIndex(theme_combo->findData(static_cast<int>(active_theme_)));
+        layout->addRow(tr("Theme"), theme_combo);
+
+        auto* density_combo = new QComboBox{panel};
+        density_combo->addItem(tr("Comfortable"), static_cast<int>(theme::density_mode::comfortable));
+        density_combo->addItem(tr("Compact"), static_cast<int>(theme::density_mode::compact));
+        density_combo->setCurrentIndex(density_combo->findData(static_cast<int>(density_mode_)));
+        layout->addRow(tr("Density"), density_combo);
+
+        auto* iterations = new QSpinBox{panel};
+        iterations->setRange(min_solver_iterations, max_solver_iterations);
+        iterations->setSingleStep(50);
+        iterations->setValue(solver_iterations_);
+        iterations->setToolTip(tr("CFR iterations for the next solve."));
+        layout->addRow(tr("Iterations"), iterations);
+
+        auto* progress_batch = new QSpinBox{panel};
+        progress_batch->setRange(min_solver_iterations, max_solver_iterations);
+        progress_batch->setSingleStep(10);
+        progress_batch->setValue(progress_batch_iterations_);
+        progress_batch->setToolTip(tr("Number of CFR iterations between progress updates."));
+        layout->addRow(tr("Progress batch iterations"), progress_batch);
+
+        auto* threads = new QSpinBox{panel};
+        threads->setObjectName("workerThreadsSpinBox");
+        threads->setRange(min_worker_threads, available_worker_threads());
+        threads->setValue(std::clamp(worker_threads_, min_worker_threads, available_worker_threads()));
+        threads->setToolTip(tr("CFR worker threads for the next solve."));
+        layout->addRow(tr("Worker threads"), threads);
+
+        root->addWidget(panel);
+
+        auto* buttons = new QHBoxLayout;
+        buttons->addStretch(1);
+        auto* ok = new QPushButton{tr("OK"), &dialog};
+        auto* cancel = new QPushButton{tr("Cancel"), &dialog};
+        ok->setDefault(true);
+        buttons->addWidget(ok);
+        buttons->addWidget(cancel);
+        root->addLayout(buttons);
+        connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+        connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+
+        const auto selected_theme = static_cast<theme::theme_id>(theme_combo->currentData().toInt());
+        const auto selected_density = static_cast<theme::density_mode>(density_combo->currentData().toInt());
+        set_active_theme(selected_theme);
+        set_density_mode(selected_density);
+
+        solver_iterations_ = iterations->value();
+        progress_batch_iterations_ = progress_batch->value();
+        worker_threads_ = threads->value();
+        settings_.set_solver_iterations(solver_iterations_);
+        settings_.set_solver_progress_batch_iterations(progress_batch_iterations_);
+        settings_.set_solver_worker_threads(worker_threads_);
+        settings_.sync();
     }
 
     void main_window::cancel_solver()
@@ -640,16 +833,17 @@ namespace zeta::holdem::ui {
         if (!entry.document.is_dirty()) {
             return true;
         }
-        const auto choice = QMessageBox::warning(
+        const int choice = show_themed_dialog(
             this,
+            dialog_kind::warning,
             tr("Unsaved changes"),
             tr("Save changes to %1?").arg(display_name(entry)),
-            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-            QMessageBox::Save);
-        if (choice == QMessageBox::Cancel) {
+            {{1, tr("Save")}, {2, tr("Discard")}, {0, tr("Cancel")}},
+            1);
+        if (choice == 0) {
             return false;
         }
-        if (choice == QMessageBox::Discard) {
+        if (choice == 2) {
             return true;
         }
         return save_active_document();
@@ -660,8 +854,9 @@ namespace zeta::holdem::ui {
         if (!has_active_solve() || index != active_solver_document_index_) {
             return true;
         }
-        QMessageBox::information(
+        show_themed_message(
             this,
+            dialog_kind::info,
             tr("Solve in progress"),
             tr("A solve is still running for %1. Close this document after the solve finishes.")
                 .arg(display_name(documents_[index])));
@@ -673,14 +868,14 @@ namespace zeta::holdem::ui {
         auto parsed = cli::parse_spot_json(entry.editor->toPlainText().toStdString());
         if (!parsed) {
             if (show_error) {
-                QMessageBox::critical(this, tr("Invalid spot"), QString::fromStdString(parsed.error().message));
+                show_themed_message(this, dialog_kind::error, tr("Invalid spot"), QString::fromStdString(parsed.error().message));
             }
             return false;
         }
         const auto issues = viewmodels::validate_structured_spot(*parsed);
         if (!issues.empty()) {
             if (show_error) {
-                QMessageBox::critical(this, tr("Invalid spot"), validation_text(issues));
+                show_themed_message(this, dialog_kind::error, tr("Invalid spot"), validation_text(issues));
             }
             return false;
         }
@@ -793,7 +988,8 @@ namespace zeta::holdem::ui {
                     documents_[index].document.replace_spot(std::move(next_spot));
                     refresh_raw_editor();
                 },
-                left_tabs};
+                left_tabs,
+                active_theme_};
             left_tabs->addTab(range_editor, tr("Ranges"));
         }
         left_tabs->addTab(raw_editor, tr("Spot JSON"));
@@ -878,6 +1074,13 @@ namespace zeta::holdem::ui {
     void main_window::apply_active_theme()
     {
         setStyleSheet(theme::style_sheet(theme::find_theme(active_theme_), density_mode_));
+        setProperty("zetaThemeId", static_cast<int>(active_theme_));
+        apply_native_title_bar_theme(this);
+    }
+
+    void main_window::apply_native_title_bar_theme(QWidget* window)
+    {
+        theme::apply_native_title_bar(window, theme::find_theme(active_theme_));
     }
 
     void main_window::set_active_theme(const theme::theme_id theme)
@@ -1038,9 +1241,6 @@ namespace zeta::holdem::ui {
             return;
         }
         QString title = display_name(*entry);
-        if (entry->document.is_dirty()) {
-            title += "*";
-        }
         setWindowTitle(tr("%1 - Zeta Hold'em Solver").arg(title));
     }
 
@@ -1050,9 +1250,14 @@ namespace zeta::holdem::ui {
         validate_action_->setEnabled(controls.validate_enabled && active_entry() != nullptr);
         solve_action_->setEnabled(controls.solve_enabled && active_entry() != nullptr);
         cancel_action_->setEnabled(controls.cancel_enabled);
-        if (iterations_spin_ != nullptr) {
-            iterations_spin_->setEnabled(!has_active_solve());
+        if (configuration_action_ != nullptr) {
+            configuration_action_->setEnabled(!has_active_solve());
         }
+        const bool active = has_active_solve();
+        state_label_->setProperty("solverActive", active);
+        status_label_->setProperty("solverActive", active);
+        polish(state_label_);
+        polish(status_label_);
         state_label_->setText(tr("State: %1").arg(QString::fromLatin1(to_string(solver_state_.state()))));
     }
 

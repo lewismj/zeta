@@ -18,6 +18,7 @@ namespace zeta::holdem::ui {
                 case cli::cli_error_kind::invalid_spot:
                 case cli::cli_error_kind::invalid_artifact:
                 case cli::cli_error_kind::solver:
+                case cli::cli_error_kind::cancelled:
                     return document_error{document_error_kind::invalid_document, error.message};
             }
             return document_error{document_error_kind::invalid_document, error.message};

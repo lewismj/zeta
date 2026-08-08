@@ -16,6 +16,7 @@
 #include <expected>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <ios>
 #include <iterator>
@@ -28,14 +29,15 @@
 namespace zeta::holdem::cli {
 
     inline constexpr std::size_t cli_min_players = 2;
-    inline constexpr std::size_t cli_max_players = 6;
+    inline constexpr std::size_t cli_max_players = 7;
 
     enum class cli_error_kind : uint8_t {
         io,
         parse,
         invalid_spot,
         invalid_artifact,
-        solver
+        solver,
+        cancelled
     };
 
     struct cli_error {
@@ -89,9 +91,32 @@ namespace zeta::holdem::cli {
         uint16_t samples_per_combo = 64;
     };
 
+    enum class solve_progress_stage : uint8_t {
+        graph_build,
+        cfr,
+        extraction
+    };
+
+    struct solve_progress_event {
+        solve_progress_stage stage = solve_progress_stage::graph_build;
+        uint64_t iterations_completed = 0;
+        uint64_t total_iterations = 0;
+        uint8_t updating_player = 0;
+        uint8_t player_count = 0;
+        double elapsed_ms = 0.0;
+        std::string message;
+    };
+
+    using solve_progress_callback = std::function<void(const solve_progress_event&)>;
+    using solve_cancellation_callback = std::function<bool()>;
+
     struct solve_runtime_options {
         std::string timestamp_utc;
         std::string git_revision = "unknown";
+        uint64_t progress_batch_iterations = 1;
+        uint32_t worker_threads = 1;
+        solve_progress_callback progress_callback;
+        solve_cancellation_callback cancellation_requested;
     };
 
     struct solve_timing {
@@ -449,6 +474,40 @@ namespace zeta::holdem::cli {
             out = parsed.range;
             return {};
         }
+
+        [[nodiscard]] inline bool solve_cancel_requested(const solve_runtime_options& runtime)
+        {
+            return runtime.cancellation_requested && runtime.cancellation_requested();
+        }
+
+        [[nodiscard]] inline cli_error solve_cancelled_error()
+        {
+            return cli_error{cli_error_kind::cancelled, "Solve cancelled."};
+        }
+
+        inline void emit_progress(
+            const solve_runtime_options& runtime,
+            const solve_progress_stage stage,
+            const uint64_t iterations_completed,
+            const uint64_t total_iterations,
+            const uint8_t updating_player,
+            const uint8_t player_count,
+            const double elapsed_ms,
+            std::string message)
+        {
+            if (!runtime.progress_callback) {
+                return;
+            }
+            runtime.progress_callback(solve_progress_event{
+                .stage = stage,
+                .iterations_completed = iterations_completed,
+                .total_iterations = total_iterations,
+                .updating_player = updating_player,
+                .player_count = player_count,
+                .elapsed_ms = elapsed_ms,
+                .message = std::move(message)
+            });
+        }
     }
 
     [[nodiscard]] inline std::expected<std::string, cli_error> read_file_text(const std::filesystem::path& path)
@@ -510,7 +569,7 @@ namespace zeta::holdem::cli {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact, parsed_street.error().message});
         }
         if (artifact.players.size() < cli_min_players || artifact.players.size() > cli_max_players) {
-            return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "players must contain between 2 and 6 labels."});
+            return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "players must contain between 2 and 7 labels."});
         }
         if (artifact.hero_seat >= artifact.players.size()) {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "hero_seat is out of range."});
@@ -568,6 +627,9 @@ namespace zeta::holdem::cli {
             const uint64_t iterations,
             const solve_runtime_options& runtime)
         {
+            if (solve_cancel_requested(runtime)) {
+                return std::unexpected(solve_cancelled_error());
+            }
             auto parsed_street = parse_holdem_street(spot.street);
             if (!parsed_street) {
                 return std::unexpected(parsed_street.error());
@@ -743,11 +805,41 @@ namespace zeta::holdem::cli {
 
             output.timing.graph_build_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - graph_begin).count();
+            emit_progress(
+                runtime,
+                solve_progress_stage::graph_build,
+                0,
+                iterations,
+                0,
+                static_cast<uint8_t>(N),
+                output.timing.graph_build_ms,
+                "Graph built.");
+
+            if (solve_cancel_requested(runtime)) {
+                return std::unexpected(solve_cancelled_error());
+            }
 
             const auto iter_begin = std::chrono::steady_clock::now();
-            std::array<cfr::traversal::worker_context, 1> workers{};
+            std::vector<cfr::traversal::worker_context> workers{
+                std::clamp<uint32_t>(runtime.worker_threads, 1u, 64u)};
+            const auto progress_batch = std::max<uint64_t>(1, runtime.progress_batch_iterations);
             for (uint64_t i = 0; i < iterations; ++i) {
+                if (solve_cancel_requested(runtime)) {
+                    return std::unexpected(solve_cancelled_error());
+                }
                 for (uint8_t updating_player = 0; updating_player < N; ++updating_player) {
+                    if ((i % progress_batch) == 0) {
+                        emit_progress(
+                            runtime,
+                            solve_progress_stage::cfr,
+                            i,
+                            iterations,
+                            updating_player,
+                            static_cast<uint8_t>(N),
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - iter_begin).count(),
+                            "CFR player update.");
+                    }
                     context.terminal_provider = cfr::solver::make_fixed_terminal_provider<N>(
                         std::span<const float>{fixed_terminal_utility[updating_player]});
                     auto result = cfr::solver::run_cfr_iteration(
@@ -765,11 +857,36 @@ namespace zeta::holdem::cli {
                         });
                     }
                 }
+                if (((i + 1) % progress_batch) == 0 || (i + 1) == iterations) {
+                    emit_progress(
+                        runtime,
+                        solve_progress_stage::cfr,
+                        i + 1,
+                        iterations,
+                        static_cast<uint8_t>(N - 1),
+                        static_cast<uint8_t>(N),
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - iter_begin).count(),
+                        "CFR iteration batch complete.");
+                }
             }
             output.timing.cfr_iterations_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - iter_begin).count();
 
+            if (solve_cancel_requested(runtime)) {
+                return std::unexpected(solve_cancelled_error());
+            }
+
             const auto extraction_begin = std::chrono::steady_clock::now();
+            emit_progress(
+                runtime,
+                solve_progress_stage::extraction,
+                iterations,
+                iterations,
+                0,
+                static_cast<uint8_t>(N),
+                0.0,
+                "Extracting root strategy.");
             const auto root_infoset = lowered->graph.infoset_id[lowered->graph.root_node];
             const auto root_sums = strategy_sums.infoset_sums(root_infoset);
             if (root_sums.empty()) {
@@ -888,6 +1005,15 @@ namespace zeta::holdem::cli {
 
             output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - extraction_begin).count();
+            emit_progress(
+                runtime,
+                solve_progress_stage::extraction,
+                iterations,
+                iterations,
+                0,
+                static_cast<uint8_t>(N),
+                output.timing.extraction_ms,
+                "Extraction complete.");
 
             if (auto validation = validate_artifact(output.artifact); !validation) {
                 return std::unexpected(validation.error());
@@ -902,7 +1028,7 @@ namespace zeta::holdem::cli {
         const solve_runtime_options& runtime = {})
     {
         if (spot.players.size() < cli_min_players || spot.players.size() > cli_max_players) {
-            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Player count must be between 2 and 6."});
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Player count must be between 2 and 7."});
         }
         if (spot.ranges.size() != spot.players.size()) {
             return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Ranges array must match player count."});

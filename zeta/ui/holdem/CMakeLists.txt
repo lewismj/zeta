@@ -1,6 +1,7 @@
 project(zeta_ui_holdem LANGUAGES CXX)
 
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 add_executable(zeta-ui-holdem
     src/main.cpp
@@ -14,6 +15,8 @@ add_executable(zeta-ui-holdem
     src/solver/solution_store.cpp
     src/solver/solver_session.h
     src/solver/solver_session.cpp
+    src/study/study_workflow.h
+    src/study/study_workflow.cpp
     src/solver_state.h
     src/solver_state.cpp
     src/spot_document.h
@@ -37,6 +40,7 @@ add_executable(zeta-ui-holdem
     src/widgets/strategy_explorer.cpp
     src/widgets/table_state_view.h
     src/widgets/table_state_view.cpp
+    resources/holdem.qrc
 )
 
 target_link_libraries(zeta-ui-holdem
@@ -44,16 +48,27 @@ target_link_libraries(zeta-ui-holdem
     zeta-holdem
     Boost::json
     Qt6::Widgets
+    Qt6::Svg
 )
 
 target_include_directories(zeta-ui-holdem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(zeta-ui-holdem PRIVATE cxx_std_23)
+
+add_custom_command(TARGET zeta-ui-holdem POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/styles"
+        $<TARGET_FILE_DIR:zeta-ui-holdem>/styles
+    COMMENT "Deploying editable zeta-ui-holdem styles"
+    VERBATIM
+)
 
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta-ui-holdem PRIVATE m)
 endif()
 
 if(WIN32)
+    target_link_libraries(zeta-ui-holdem PRIVATE dwmapi)
+
     set(ZETA_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
     cmake_path(NORMAL_PATH ZETA_QT_RUNTIME_BIN)
 
@@ -62,6 +77,20 @@ if(WIN32)
         HINTS
             "${Qt6_DIR}/../../Qt6/plugins/platforms"
             "${Qt6_DIR}/../../../Qt6/plugins/platforms"
+        REQUIRED
+    )
+    find_file(ZETA_QSVGICON_PLUGIN
+        NAMES qsvgicon.dll qsvgicond.dll
+        HINTS
+            "${Qt6_DIR}/../../Qt6/plugins/iconengines"
+            "${Qt6_DIR}/../../../Qt6/plugins/iconengines"
+        REQUIRED
+    )
+    find_file(ZETA_QSVG_PLUGIN
+        NAMES qsvg.dll qsvgd.dll
+        HINTS
+            "${Qt6_DIR}/../../Qt6/plugins/imageformats"
+            "${Qt6_DIR}/../../../Qt6/plugins/imageformats"
         REQUIRED
     )
 
@@ -80,6 +109,7 @@ if(WIN32)
         pcre2-16.dll
         Qt6Core.dll
         Qt6Gui.dll
+        Qt6Svg.dll
         Qt6Widgets.dll
         zlib1.dll
         zstd.dll
@@ -101,9 +131,19 @@ if(WIN32)
             $<TARGET_FILE_DIR:zeta-ui-holdem>
         COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:zeta-ui-holdem>/platforms
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:zeta-ui-holdem>/iconengines
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:zeta-ui-holdem>/imageformats
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ZETA_QWINDOWS_PLUGIN}"
             $<TARGET_FILE_DIR:zeta-ui-holdem>/platforms
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ZETA_QSVGICON_PLUGIN}"
+            $<TARGET_FILE_DIR:zeta-ui-holdem>/iconengines
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ZETA_QSVG_PLUGIN}"
+            $<TARGET_FILE_DIR:zeta-ui-holdem>/imageformats
         COMMENT "Deploying Qt runtime dependencies for zeta-ui-holdem"
         COMMAND_EXPAND_LISTS
         VERBATIM

@@ -1,3 +1,5 @@
+set(CMAKE_AUTORCC ON)
+
 add_executable(zeta_tests
     src/test_main.cpp
     src/test_repr.cpp
@@ -6,8 +8,10 @@ add_executable(zeta_tests
     src/test_holdem_ui.cpp
     ../ui/holdem/src/app/app_settings.cpp
     ../ui/holdem/src/document/document_json.cpp
+    ../ui/holdem/src/main_window.cpp
     ../ui/holdem/src/solver/solution_store.cpp
     ../ui/holdem/src/solver/solver_session.cpp
+    ../ui/holdem/src/study/study_workflow.cpp
     ../ui/holdem/src/solver_state.cpp
     ../ui/holdem/src/spot_document.cpp
     ../ui/holdem/src/theme/theme_registry.cpp
@@ -19,10 +23,11 @@ add_executable(zeta_tests
     ../ui/holdem/src/widgets/spot_builder.cpp
     ../ui/holdem/src/widgets/strategy_explorer.cpp
     ../ui/holdem/src/widgets/table_state_view.cpp
+    ../ui/holdem/resources/holdem.qrc
     src/test_cfr_graph.cpp
 )
 target_include_directories(zeta_tests PRIVATE ${CMAKE_SOURCE_DIR}/zeta/ui/holdem/src)
-target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json Qt6::Widgets)
+target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json Qt6::Widgets Qt6::Svg)
 target_compile_definitions(zeta_tests PRIVATE BOOST_TEST_DYN_LINK)
 target_compile_features(zeta_tests PRIVATE cxx_std_23)
 
@@ -51,6 +56,8 @@ if(TARGET zeta-check-holdem-tables)
 endif()
 
 if(WIN32)
+    target_link_libraries(zeta_tests PRIVATE dwmapi)
+
     set(ZETA_TEST_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
     cmake_path(NORMAL_PATH ZETA_TEST_QT_RUNTIME_BIN)
 
@@ -69,6 +76,7 @@ if(WIN32)
         pcre2-16.dll
         Qt6Core.dll
         Qt6Gui.dll
+        Qt6Svg.dll
         Qt6Widgets.dll
         zlib1.dll
         zstd.dll
@@ -90,6 +98,20 @@ if(WIN32)
             "${Qt6_DIR}/../../../Qt6/plugins/platforms"
         REQUIRED
     )
+    find_file(ZETA_TEST_QSVGICON_PLUGIN
+        NAMES qsvgicon.dll qsvgicond.dll
+        HINTS
+            "${Qt6_DIR}/../../Qt6/plugins/iconengines"
+            "${Qt6_DIR}/../../../Qt6/plugins/iconengines"
+        REQUIRED
+    )
+    find_file(ZETA_TEST_QSVG_PLUGIN
+        NAMES qsvg.dll qsvgd.dll
+        HINTS
+            "${Qt6_DIR}/../../Qt6/plugins/imageformats"
+            "${Qt6_DIR}/../../../Qt6/plugins/imageformats"
+        REQUIRED
+    )
 
     add_custom_command(TARGET zeta_tests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -98,9 +120,19 @@ if(WIN32)
             $<TARGET_FILE_DIR:zeta_tests>
         COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:zeta_tests>/platforms
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:zeta_tests>/iconengines
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:zeta_tests>/imageformats
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ZETA_QOFFSCREEN_PLUGIN}"
             $<TARGET_FILE_DIR:zeta_tests>/platforms
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ZETA_TEST_QSVGICON_PLUGIN}"
+            $<TARGET_FILE_DIR:zeta_tests>/iconengines
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ZETA_TEST_QSVG_PLUGIN}"
+            $<TARGET_FILE_DIR:zeta_tests>/imageformats
         COMMAND_EXPAND_LISTS
         COMMENT "Copying Qt runtime dependencies for zeta_tests"
     )

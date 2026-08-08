@@ -3,10 +3,12 @@
 #include "cli/solve_cli.h"
 #include "app/app_settings.h"
 #include "document/document_json.h"
+#include "main_window.h"
 #include "solver/solution_store.h"
 #include "solver/solver_session.h"
 #include "solver_state.h"
 #include "spot_document.h"
+#include "study/study_workflow.h"
 #include "theme/theme_registry.h"
 #include "theme/theme_styles.h"
 #include "viewmodels/range_view_model.h"
@@ -16,16 +18,23 @@
 #include "widgets/spot_builder.h"
 #include "widgets/strategy_explorer.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QDialog>
+#include <QFile>
+#include <QFontDatabase>
+#include <QIcon>
 #include <QImage>
 #include <QLabel>
+#include <QListWidget>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -162,6 +171,7 @@ namespace {
         colors.insert(tokens.error);
         colors.insert(tokens.success);
         colors.insert(tokens.selection);
+        colors.insert(tokens.document_selection);
         for (const auto& color : tokens.range_heat) {
             colors.insert(color);
         }
@@ -356,6 +366,22 @@ BOOST_AUTO_TEST_CASE(holdem_ui_document_dirty_after_artifact_replacement_and_per
     BOOST_CHECK(!parsed->is_dirty());
 }
 
+BOOST_AUTO_TEST_CASE(holdem_ui_document_metadata_persists_tags_and_study_notes) {
+    auto document = zeta::holdem::ui::spot_document::create_new();
+    document.replace_spot(sample_heads_up_spot());
+    auto metadata = document.metadata();
+    metadata.study_notes = "Turn barrel candidate; compare low rake run.";
+    metadata.tags = {"river", "multiway", "review"};
+    document.update_metadata(metadata);
+
+    const auto reopened = zeta::holdem::ui::spot_document::parse_json(document.serialize_json());
+
+    BOOST_REQUIRE(reopened.has_value());
+    BOOST_CHECK_EQUAL(reopened->metadata().study_notes, metadata.study_notes);
+    BOOST_REQUIRE_EQUAL(reopened->metadata().tags.size(), 3u);
+    BOOST_CHECK_EQUAL(reopened->metadata().tags[1], "multiway");
+}
+
 BOOST_AUTO_TEST_CASE(holdem_ui_solver_state_machine_drives_controls) {
     zeta::holdem::ui::solver_state_machine machine;
     BOOST_CHECK(machine.controls().validate_enabled);
@@ -467,21 +493,21 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_builder_resizes_player_arrays_saf
     spot.root_actor = 1;
     spot.hero_seat = 1;
 
-    auto resized = zeta::holdem::ui::viewmodels::resize_player_count(std::move(spot), 6);
+    auto resized = zeta::holdem::ui::viewmodels::resize_player_count(std::move(spot), 7);
 
-    BOOST_REQUIRE_EQUAL(resized.players.size(), 6u);
-    BOOST_CHECK_EQUAL(resized.ranges.size(), 6u);
-    BOOST_CHECK_EQUAL(resized.stacks.size(), 6u);
-    BOOST_CHECK_EQUAL(resized.contributions.size(), 6u);
+    BOOST_REQUIRE_EQUAL(resized.players.size(), 7u);
+    BOOST_CHECK_EQUAL(resized.ranges.size(), 7u);
+    BOOST_CHECK_EQUAL(resized.stacks.size(), 7u);
+    BOOST_CHECK_EQUAL(resized.contributions.size(), 7u);
     BOOST_CHECK_EQUAL(resized.players[0], "Hero");
     BOOST_CHECK_EQUAL(resized.ranges[0], "AhAd");
     BOOST_CHECK_EQUAL(resized.stacks[0], 250.0);
     BOOST_CHECK_EQUAL(resized.contributions[0], 75.0);
-    BOOST_CHECK_EQUAL(resized.ranges[5], "AA");
-    BOOST_CHECK_EQUAL(resized.stacks[5], 100.0);
-    BOOST_CHECK_EQUAL(resized.contributions[5], 0.0);
+    BOOST_CHECK_EQUAL(resized.ranges[6], "AA");
+    BOOST_CHECK_EQUAL(resized.stacks[6], 100.0);
+    BOOST_CHECK_EQUAL(resized.contributions[6], 0.0);
 
-    resized.root_actor = 5;
+    resized.root_actor = 6;
     resized.hero_seat = 4;
     auto shrunk = zeta::holdem::ui::viewmodels::resize_player_count(std::move(resized), 3);
 
@@ -524,11 +550,14 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_validation_reports_board_actor_an
     BOOST_CHECK(has_issue(issues, "contributions"));
 }
 
-BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_templates_roundtrip_to_valid_json_for_two_to_six_players) {
+BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_templates_roundtrip_to_valid_json_for_two_to_seven_players) {
     for (const auto kind : {
              zeta::holdem::ui::viewmodels::spot_template_kind::heads_up_river,
              zeta::holdem::ui::viewmodels::spot_template_kind::three_way_flop,
-             zeta::holdem::ui::viewmodels::spot_template_kind::four_way_turn}) {
+             zeta::holdem::ui::viewmodels::spot_template_kind::four_way_turn,
+             zeta::holdem::ui::viewmodels::spot_template_kind::five_way_turn,
+             zeta::holdem::ui::viewmodels::spot_template_kind::six_way_turn,
+             zeta::holdem::ui::viewmodels::spot_template_kind::seven_way_turn}) {
         const auto templated = zeta::holdem::ui::viewmodels::make_template_spot(kind);
         BOOST_CHECK(zeta::holdem::ui::viewmodels::validate_structured_spot(templated).empty());
         const auto parsed = zeta::holdem::cli::parse_spot_json(zeta::holdem::cli::serialize_spot_json(templated));
@@ -539,7 +568,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_templates_roundtrip_to_valid_json
 
     auto resizable = zeta::holdem::ui::viewmodels::make_template_spot(
         zeta::holdem::ui::viewmodels::spot_template_kind::heads_up_river);
-    for (std::size_t count = 2; count <= 6; ++count) {
+    for (std::size_t count = 2; count <= 7; ++count) {
         auto spot = zeta::holdem::ui::viewmodels::resize_player_count(resizable, count);
         spot.root_actor = static_cast<uint8_t>(count - 1u);
         spot.hero_seat = 0;
@@ -551,6 +580,14 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_templates_roundtrip_to_valid_json
         BOOST_CHECK_EQUAL(parsed->stacks.size(), count);
         BOOST_CHECK_EQUAL(parsed->contributions.size(), count);
     }
+
+    const auto seven_way = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::seven_way_turn);
+    BOOST_REQUIRE_EQUAL(seven_way.players.size(), 7u);
+    BOOST_CHECK_EQUAL(seven_way.players[3], "UTG");
+    BOOST_CHECK_EQUAL(seven_way.players[4], "LJ");
+    BOOST_CHECK_EQUAL(seven_way.players[5], "HJ");
+    BOOST_CHECK_EQUAL(seven_way.players[6], "CO");
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_reflects_validated_json_edits_in_structured_controls) {
@@ -948,17 +985,26 @@ BOOST_AUTO_TEST_CASE(holdem_ui_settings_persist_theme_density_recent_files_and_s
         zeta::holdem::ui::app::app_settings settings{settings_path};
         settings.set_active_theme(zeta::holdem::ui::theme::theme_id::high_contrast);
         settings.set_density(zeta::holdem::ui::theme::density_mode::compact);
+        settings.set_solver_iterations(250);
+        settings.set_solver_progress_batch_iterations(25);
+        settings.set_solver_worker_threads(4);
         settings.set_shell_splitter_sizes(QList<int>{180, 820});
         settings.set_workspace_splitter_sizes(QList<int>{620, 360});
         settings.add_recent_file(QStringLiteral("C:/tmp/a.json"));
         settings.add_recent_file(QStringLiteral("C:/tmp/b.json"));
         settings.add_recent_file(QStringLiteral("C:/tmp/a.json"));
+        settings.set_file_pinned(QStringLiteral("C:/tmp/b.json"), true);
+        settings.set_file_pinned(QStringLiteral("C:/tmp/c.json"), true);
+        settings.set_file_pinned(QStringLiteral("C:/tmp/b.json"), false);
         settings.sync();
     }
 
     zeta::holdem::ui::app::app_settings settings{settings_path};
     BOOST_CHECK(settings.active_theme() == zeta::holdem::ui::theme::theme_id::high_contrast);
     BOOST_CHECK(settings.density() == zeta::holdem::ui::theme::density_mode::compact);
+    BOOST_CHECK_EQUAL(settings.solver_iterations(), 250);
+    BOOST_CHECK_EQUAL(settings.solver_progress_batch_iterations(), 25);
+    BOOST_CHECK_EQUAL(settings.solver_worker_threads(), 4);
     BOOST_REQUIRE_EQUAL(settings.shell_splitter_sizes().size(), 2);
     BOOST_CHECK_EQUAL(settings.shell_splitter_sizes()[0], 180);
     BOOST_REQUIRE_EQUAL(settings.workspace_splitter_sizes().size(), 2);
@@ -966,6 +1012,8 @@ BOOST_AUTO_TEST_CASE(holdem_ui_settings_persist_theme_density_recent_files_and_s
     BOOST_REQUIRE_EQUAL(settings.recent_files().size(), 2);
     BOOST_CHECK_EQUAL(settings.recent_files()[0].toStdString(), "C:/tmp/a.json");
     BOOST_CHECK_EQUAL(settings.recent_files()[1].toStdString(), "C:/tmp/b.json");
+    BOOST_REQUIRE_EQUAL(settings.pinned_files().size(), 1);
+    BOOST_CHECK_EQUAL(settings.pinned_files()[0].toStdString(), "C:/tmp/c.json");
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_theme_styles_use_registered_tokens_only) {
@@ -977,8 +1025,18 @@ BOOST_AUTO_TEST_CASE(holdem_ui_theme_styles_use_registered_tokens_only) {
 
         const auto sheet = zeta::holdem::ui::theme::style_sheet(theme, zeta::holdem::ui::theme::density_mode::comfortable).toStdString();
         BOOST_CHECK(!sheet.empty());
+        BOOST_CHECK_EQUAL(sheet.find('%'), std::string::npos);
+        BOOST_CHECK_EQUAL(sheet.find("pxpx"), std::string::npos);
         for (std::sregex_iterator it{sheet.begin(), sheet.end(), color_pattern}, end; it != end; ++it) {
             BOOST_CHECK_MESSAGE(token_colors.contains(it->str()), "Theme stylesheet used non-token color " << it->str());
+        }
+
+        if (theme.id == zeta::holdem::ui::theme::theme_id::dark_pro) {
+            BOOST_CHECK(sheet.find("font-size: 14px;") != std::string::npos);
+            BOOST_CHECK(sheet.find("QPushButton#callButton {\n                background: #a8c8a8;") != std::string::npos);
+            BOOST_CHECK(sheet.find("QPushButton#foldButton {\n                background: #cf7c92;") != std::string::npos);
+            BOOST_CHECK(sheet.find("QPushButton#rangeCellHeat4 {\n                background: #B77F8C;") != std::string::npos);
+            BOOST_CHECK(sheet.find("QListWidget#documentRailList::item:selected {\n                background: #566f84;") != std::string::npos);
         }
     }
 }
@@ -1017,4 +1075,181 @@ BOOST_AUTO_TEST_CASE(holdem_ui_widget_render_smoke_covers_every_theme) {
 
         BOOST_CHECK_MESSAGE(sampled_colors.size() > 1u, "Theme render produced a flat image for " << theme.display_name);
     }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_study_filtering_prioritizes_pinned_recent_and_tags) {
+    const std::vector<zeta::holdem::ui::study::study_record> studies{
+        zeta::holdem::ui::study::study_record{
+            .path = "C:/study/river-a.json",
+            .title = "River A",
+            .tags = {"river", "btn"},
+            .pinned = false,
+            .updated_utc = "2026-08-03T20:00:00Z"
+        },
+        zeta::holdem::ui::study::study_record{
+            .path = "C:/study/flop-pinned.json",
+            .title = "Flop pinned",
+            .tags = {"flop", "multiway"},
+            .pinned = true,
+            .updated_utc = "2026-08-01T20:00:00Z"
+        },
+        zeta::holdem::ui::study::study_record{
+            .path = "C:/study/flop-new.json",
+            .title = "Flop new",
+            .tags = {"flop"},
+            .pinned = false,
+            .updated_utc = "2026-08-04T20:00:00Z"
+        }
+    };
+
+    const auto filtered = zeta::holdem::ui::study::filter_studies(studies, "flop", std::string_view{"flop"});
+
+    BOOST_REQUIRE_EQUAL(filtered.size(), 2u);
+    BOOST_CHECK(filtered[0].pinned);
+    BOOST_CHECK_EQUAL(filtered[0].title, "Flop pinned");
+    BOOST_CHECK_EQUAL(filtered[1].title, "Flop new");
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_exports_strategy_and_hand_tables_as_stable_csv) {
+    const auto artifact = sample_strategy_artifact();
+    const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(
+        sample_strategy_spot(),
+        artifact);
+
+    const auto strategy_csv = zeta::holdem::ui::study::export_strategy_csv(artifact);
+    const auto hand_csv = zeta::holdem::ui::study::export_hand_table_csv(model);
+
+    BOOST_CHECK(strategy_csv.starts_with("hand,ev,bet_50,check,fold"));
+    BOOST_CHECK(strategy_csv.find("AhAd,2.000000,0.250000,0.750000,0.000000") != std::string::npos);
+    BOOST_CHECK(hand_csv.starts_with("hand,hand_class,best_action,actions,ev,range_weight,live"));
+    BOOST_CHECK(hand_csv.find(",AA,bet_50") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_run_comparison_reports_deltas_and_rejects_incompatible_spots) {
+    auto before = sample_strategy_artifact();
+    auto after = before;
+    after.solver.iterations = 50;
+    after.strategy[0].strategy = {
+        zeta::holdem::cli::action_strategy{.action = "check", .frequency = 0.10},
+        zeta::holdem::cli::action_strategy{.action = "bet_50", .frequency = 0.90}
+    };
+    after.strategy[0].ev = 3.0;
+    auto spot = sample_strategy_spot();
+
+    auto comparison = zeta::holdem::ui::study::compare_strategy_runs(spot, before, spot, after);
+
+    BOOST_REQUIRE(comparison.has_value());
+    BOOST_CHECK_EQUAL(comparison->changed_best_action_count, 1u);
+    BOOST_REQUIRE(!comparison->settings_differences.empty());
+    BOOST_CHECK_EQUAL(comparison->settings_differences[0], "iterations");
+    BOOST_CHECK(std::ranges::any_of(comparison->action_deltas, [](const auto& delta) {
+        return delta.action == "bet_50" && delta.delta > 0.0;
+    }));
+    BOOST_CHECK(std::ranges::any_of(comparison->ev_deltas, [](const auto& delta) {
+        return delta.hand == "AhAd" && delta.delta > 0.0;
+    }));
+
+    auto incompatible = spot;
+    incompatible.board[0] = "Ac";
+    BOOST_CHECK(!zeta::holdem::ui::study::compare_strategy_runs(spot, before, incompatible, after).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_share_summary_and_screenshot_capture_current_widget) {
+    auto& app = qt_app();
+    const auto spot = sample_strategy_spot();
+    const auto artifact = sample_strategy_artifact();
+    const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(spot, artifact);
+
+    const auto summary = zeta::holdem::ui::study::make_share_summary(spot, artifact, model);
+
+    BOOST_CHECK(summary.find("Players: BTN, BB") != std::string::npos);
+    BOOST_CHECK(summary.find("Board: 2s 3d 4c 5h 6s") != std::string::npos);
+    BOOST_CHECK(summary.find("Iterations: 25") != std::string::npos);
+    BOOST_CHECK(summary.find("Top actions:") != std::string::npos);
+
+    QLabel label{QStringLiteral("Current strategy view")};
+    label.resize(240, 60);
+    label.show();
+    app.processEvents();
+    const auto image = zeta::holdem::ui::study::capture_widget_image(label);
+    BOOST_CHECK_EQUAL(image.width(), 240);
+    BOOST_CHECK_EQUAL(image.height(), 60);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_resources_expose_toolbar_icons_and_ddin_font) {
+    auto& app = qt_app();
+    (void) app;
+
+    for (const auto& icon : {
+             QStringLiteral(":/icons/file-plus.svg"),
+             QStringLiteral(":/icons/folder-open.svg"),
+             QStringLiteral(":/icons/save.svg"),
+             QStringLiteral(":/icons/check-circle.svg"),
+             QStringLiteral(":/icons/play.svg"),
+             QStringLiteral(":/icons/square.svg"),
+             QStringLiteral(":/icons/settings.svg")}) {
+        BOOST_CHECK(QFile::exists(icon));
+        BOOST_CHECK(!QIcon{icon}.pixmap(QSize{22, 22}).isNull());
+    }
+
+    for (const auto& font : {
+             QStringLiteral(":/fonts/D-DIN.ttf"),
+             QStringLiteral(":/fonts/D-DIN-Bold.ttf"),
+             QStringLiteral(":/fonts/D-DIN-Italic.ttf"),
+             QStringLiteral(":/fonts/D-DINCondensed.ttf"),
+             QStringLiteral(":/fonts/D-DINCondensed-Bold.ttf"),
+             QStringLiteral(":/fonts/D-DINExp.ttf"),
+             QStringLiteral(":/fonts/D-DINExp-Bold.ttf"),
+             QStringLiteral(":/fonts/D-DINExp-Italic.ttf")}) {
+        const int font_id = QFontDatabase::addApplicationFont(font);
+        BOOST_REQUIRE(font_id >= 0);
+        BOOST_CHECK(!QFontDatabase::applicationFontFamilies(font_id).empty());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_main_window_launch_smoke_has_command_shell) {
+    auto& app = qt_app();
+    zeta::holdem::ui::main_window window;
+    window.resize(900, 640);
+    window.show();
+    app.processEvents();
+
+    BOOST_CHECK(window.findChild<QTabWidget*>() != nullptr);
+    BOOST_CHECK(window.findChild<QListWidget*>("documentRailList") != nullptr);
+    BOOST_CHECK(window.findChild<QPlainTextEdit*>("solveConsole") != nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_configuration_dialog_allows_worker_thread_edits) {
+    auto& app = qt_app();
+    zeta::holdem::ui::main_window window;
+    window.show();
+    app.processEvents();
+
+    QAction* configuration = nullptr;
+    for (auto* action : window.findChildren<QAction*>()) {
+        const auto text = QString{action->text()}.remove('&');
+        if (text == QStringLiteral("Configuration")) {
+            configuration = action;
+            break;
+        }
+    }
+    BOOST_REQUIRE(configuration != nullptr);
+
+    bool inspected = false;
+    QTimer::singleShot(0, [&inspected] {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        auto* threads = dialog->findChild<QSpinBox*>(QStringLiteral("workerThreadsSpinBox"));
+        inspected = threads != nullptr && threads->isEnabled() && threads->maximum() >= threads->minimum();
+        if (threads != nullptr) {
+            threads->setValue(threads->maximum());
+        }
+        dialog->accept();
+    });
+
+    configuration->trigger();
+
+    BOOST_CHECK(inspected);
 }

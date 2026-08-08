@@ -41,6 +41,10 @@ namespace zeta::holdem::ui::theme {
         std::string error;
         std::string success;
         std::string selection;
+        std::string document_selection;
+        std::string active_surface;
+        std::string button_text;
+        std::string destructive_text;
     };
 
     struct registered_theme {
@@ -56,9 +60,9 @@ namespace zeta::holdem::ui::theme {
         int panel_spacing = 6;
         int toolbar_spacing = 6;
         int range_cell_min_width = 48;
-        int range_cell_min_height = 38;
+        int range_cell_min_height = 44;
         int action_button_height = 92;
-        int console_height = 92;
+        int console_height = 56;
     };
 
 }

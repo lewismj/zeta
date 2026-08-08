@@ -13,11 +13,36 @@ namespace zeta::holdem::ui::viewmodels {
 
         [[nodiscard]] std::string default_player_label(const std::size_t index)
         {
-            static constexpr std::array labels{"BTN", "BB", "CO", "HJ", "SB", "UTG"};
+            static constexpr std::array labels{"BTN", "SB", "BB", "LJ", "HJ", "CO", "UTG"};
             if (index < labels.size()) {
                 return labels[index];
             }
             return "Seat " + std::to_string(index + 1u);
+        }
+
+        [[nodiscard]] std::vector<std::string> default_player_labels(const std::size_t player_count)
+        {
+            switch (player_count) {
+                case 2:
+                    return {"BTN", "BB"};
+                case 3:
+                    return {"BTN", "SB", "BB"};
+                case 4:
+                    return {"BTN", "SB", "BB", "CO"};
+                case 5:
+                    return {"BTN", "SB", "BB", "HJ", "CO"};
+                case 6:
+                    return {"BTN", "SB", "BB", "LJ", "HJ", "CO"};
+                case 7:
+                    return {"BTN", "SB", "BB", "UTG", "LJ", "HJ", "CO"};
+                default:
+                    return {"BTN", "SB", "BB", "CO"};
+            }
+        }
+
+        [[nodiscard]] bool is_default_position_layout(const std::vector<std::string>& players)
+        {
+            return players == default_player_labels(players.size());
         }
 
         [[nodiscard]] bool is_valid_card_label(const std::string& label)
@@ -60,6 +85,17 @@ namespace zeta::holdem::ui::viewmodels {
             out.samples_per_combo = 64;
         }
 
+        void apply_turn_template(spot& out, const std::size_t player_count)
+        {
+            out.players = default_player_labels(player_count);
+            add_template_defaults(out);
+            out.street = "turn";
+            out.board = {"As", "Kd", "7c", "4h"};
+            out.contributions.assign(out.players.size(), 100.0 / static_cast<double>(out.players.size()));
+            out.root_actor = 2;
+            out.hero_seat = 0;
+        }
+
     }
 
     std::size_t board_card_count_for_street(const std::string_view street) noexcept
@@ -95,10 +131,15 @@ namespace zeta::holdem::ui::viewmodels {
     {
         const auto clamped_count = std::clamp(player_count, cli::cli_min_players, cli::cli_max_players);
         const auto old_count = source.players.size();
+        const bool had_default_position_layout = is_default_position_layout(source.players);
 
         source.players.resize(clamped_count);
-        for (std::size_t index = old_count; index < source.players.size(); ++index) {
-            source.players[index] = default_player_label(index);
+        if (had_default_position_layout) {
+            source.players = default_player_labels(clamped_count);
+        } else {
+            for (std::size_t index = old_count; index < source.players.size(); ++index) {
+                source.players[index] = default_player_label(index);
+            }
         }
 
         source.ranges.resize(clamped_count, "AA");
@@ -138,13 +179,16 @@ namespace zeta::holdem::ui::viewmodels {
                 out.hero_seat = 0;
                 break;
             case spot_template_kind::four_way_turn:
-                out.players = {"BTN", "SB", "BB", "CO"};
-                add_template_defaults(out);
-                out.street = "turn";
-                out.board = {"As", "Kd", "7c", "4h"};
-                out.contributions = {25.0, 25.0, 25.0, 25.0};
-                out.root_actor = 2;
-                out.hero_seat = 0;
+                apply_turn_template(out, 4);
+                break;
+            case spot_template_kind::five_way_turn:
+                apply_turn_template(out, 5);
+                break;
+            case spot_template_kind::six_way_turn:
+                apply_turn_template(out, 6);
+                break;
+            case spot_template_kind::seven_way_turn:
+                apply_turn_template(out, 7);
                 break;
         }
 
@@ -174,7 +218,7 @@ namespace zeta::holdem::ui::viewmodels {
         }
 
         if (source.players.size() < cli::cli_min_players || source.players.size() > cli::cli_max_players) {
-            issues.push_back({"players", "Player count must be between 2 and 6."});
+            issues.push_back({"players", "Player count must be between 2 and 7."});
         }
         if (source.ranges.size() != source.players.size()) {
             issues.push_back({"ranges", "Ranges array must match player count."});

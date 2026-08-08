@@ -21,7 +21,7 @@ if(NOT Boost_FOUND)
     message(FATAL_ERROR "Boost not found.")
 endif()
 
-find_package(Qt6 CONFIG REQUIRED COMPONENTS Widgets)
+find_package(Qt6 CONFIG REQUIRED COMPONENTS Widgets Svg)
 
 if(ZETA_BUILD_BENCHMARKS)
     find_package(benchmark 1.9.5 CONFIG QUIET)

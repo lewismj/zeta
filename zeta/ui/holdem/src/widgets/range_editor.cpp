@@ -1,5 +1,7 @@
 #include "widgets/range_editor.h"
 
+#include "theme/theme_registry.h"
+#include "theme/theme_styles.h"
 #include "viewmodels/range_view_model.h"
 
 #include <QApplication>
@@ -74,12 +76,24 @@ namespace zeta::holdem::ui::widgets {
             return parts.join(QStringLiteral(", "));
         }
 
-        [[nodiscard]] QString weight_text(const combo_weight weight)
+        [[nodiscard]] QFrame* make_separator(QWidget* parent)
         {
-            if (std::fabs(weight - 1.0f) <= 0.0001f) {
-                return {};
+            auto* line = new QFrame{parent};
+            line->setFrameShape(QFrame::VLine);
+            line->setObjectName("toolbarSeparator");
+            return line;
+        }
+
+        [[nodiscard]] QString range_cell_object_name(const double heat, const bool selected, const bool blocked)
+        {
+            if (!selected) {
+                return QStringLiteral("rangeCellMuted");
             }
-            return QStringLiteral("\nx%1").arg(static_cast<double>(weight), 0, 'f', 2);
+            if (blocked) {
+                return QStringLiteral("rangeCellBlocked");
+            }
+            const auto bucket = std::clamp(static_cast<int>(std::ceil(heat * 4.0)), 1, 4);
+            return QStringLiteral("rangeCellHeat%1").arg(bucket);
         }
 
         void polish(QWidget* widget)
@@ -88,16 +102,27 @@ namespace zeta::holdem::ui::widgets {
             widget->style()->polish(widget);
         }
 
+        [[nodiscard]] QString selected_file(QFileDialog& dialog)
+        {
+            if (dialog.exec() != QDialog::Accepted) {
+                return {};
+            }
+            const auto files = dialog.selectedFiles();
+            return files.isEmpty() ? QString{} : files.front();
+        }
+
     }
 
     range_editor::range_editor(
         const spot& source,
         const theme::density_metrics metrics,
         spot_changed_callback on_spot_changed,
-        QWidget* parent)
+        QWidget* parent,
+        const theme::theme_id active_theme)
         : QWidget(parent)
         , spot_(source)
         , metrics_(metrics)
+        , active_theme_(active_theme)
         , on_spot_changed_(std::move(on_spot_changed))
     {
         setObjectName("rangeEditor");
@@ -172,10 +197,13 @@ namespace zeta::holdem::ui::widgets {
         header->addWidget(suited);
         header->addWidget(offsuit);
         header->addWidget(broadways);
+        header->addWidget(make_separator(author_panel));
         header->addWidget(clear);
+        header->addWidget(make_separator(author_panel));
         header->addWidget(copy);
         header->addWidget(paste);
         header->addWidget(normalize);
+        header->addWidget(make_separator(author_panel));
         header->addWidget(import_text);
         header->addWidget(export_text);
         author_layout->addLayout(header);
@@ -210,6 +238,7 @@ namespace zeta::holdem::ui::widgets {
                 cell->setFlat(true);
                 cell->setProperty("handClass", QString::fromStdString(labels[index]));
                 cell->setMinimumSize(metrics_.range_cell_min_width, metrics_.range_cell_min_height);
+                cell->setIconSize(QSize{0, 0});
                 cell->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
                 cell->installEventFilter(this);
                 matrix_layout_->addWidget(cell, static_cast<int>(row), static_cast<int>(column));
@@ -334,11 +363,16 @@ namespace zeta::holdem::ui::widgets {
             const auto& model = analysis.matrix[index];
             const QSignalBlocker cell_blocker{cell};
             cell->setChecked(model.selected);
+            const auto heat = model.class_combos == 0u ? 0.0 : std::clamp(model.live_weight / static_cast<double>(model.class_combos), 0.0, 1.0);
             cell->setText(QString::fromStdString(model.hand_class)
-                + QStringLiteral("\n%1/%2").arg(static_cast<qulonglong>(model.live_combos)).arg(static_cast<qulonglong>(model.combos))
-                + weight_text(model.max_weight));
-            cell->setObjectName(model.selected && model.live_combos > 0u ? "rangeCellSelected" : "rangeCellMuted");
-            cell->setToolTip(model.selected && model.live_combos == 0u ? tr("All combos blocked by board cards") : QString{});
+                + QStringLiteral("\n%1 / %2").arg(static_cast<qulonglong>(model.live_combos)).arg(static_cast<qulonglong>(model.class_combos)));
+            cell->setObjectName(range_cell_object_name(heat, model.selected, model.selected && model.live_combos == 0u));
+            cell->setToolTip(model.selected
+                ? tr("%1% range weight. %2 of %3 combos live.")
+                    .arg(heat * 100.0, 0, 'f', 1)
+                    .arg(static_cast<qulonglong>(model.live_combos))
+                    .arg(static_cast<qulonglong>(model.class_combos))
+                : QString{});
             polish(cell);
         }
     }
@@ -375,7 +409,16 @@ namespace zeta::holdem::ui::widgets {
 
     void range_editor::import_range_text()
     {
-        const auto path = QFileDialog::getOpenFileName(this, tr("Import range"), {}, tr("Text files (*.txt);;All files (*)"));
+        QFileDialog dialog{this, tr("Import range")};
+        dialog.setAcceptMode(QFileDialog::AcceptOpen);
+        dialog.setNameFilters({tr("Text files (*.txt)"), tr("All files (*)")});
+        dialog.setOption(QFileDialog::DontUseNativeDialog);
+        if (auto* owner = window(); owner != nullptr) {
+            dialog.setStyleSheet(owner->styleSheet());
+        }
+        (void) dialog.winId();
+        theme::apply_native_title_bar(&dialog, theme::find_theme(active_theme_));
+        const auto path = selected_file(dialog);
         if (path.isEmpty()) {
             return;
         }
@@ -387,7 +430,17 @@ namespace zeta::holdem::ui::widgets {
 
     void range_editor::export_range_text()
     {
-        const auto path = QFileDialog::getSaveFileName(this, tr("Export range"), {}, tr("Text files (*.txt);;All files (*)"));
+        QFileDialog dialog{this, tr("Export range")};
+        dialog.setAcceptMode(QFileDialog::AcceptSave);
+        dialog.setNameFilters({tr("Text files (*.txt)"), tr("All files (*)")});
+        dialog.setDefaultSuffix(QStringLiteral("txt"));
+        dialog.setOption(QFileDialog::DontUseNativeDialog);
+        if (auto* owner = window(); owner != nullptr) {
+            dialog.setStyleSheet(owner->styleSheet());
+        }
+        (void) dialog.winId();
+        theme::apply_native_title_bar(&dialog, theme::find_theme(active_theme_));
+        const auto path = selected_file(dialog);
         if (path.isEmpty()) {
             return;
         }

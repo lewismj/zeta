@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -148,15 +149,24 @@ namespace zeta::holdem::ui::widgets {
         auto* heads_up = new QPushButton{tr("New heads-up river"), template_panel};
         auto* three_way = new QPushButton{tr("New 3-way flop"), template_panel};
         auto* four_way = new QPushButton{tr("New 4-way turn"), template_panel};
+        auto* five_way = new QPushButton{tr("New 5-way turn"), template_panel};
+        auto* six_way = new QPushButton{tr("New 6-way turn"), template_panel};
+        auto* seven_way = new QPushButton{tr("New 7-way turn"), template_panel};
         auto* duplicate = new QPushButton{tr("Duplicate current spot"), template_panel};
         template_layout->addWidget(heads_up);
         template_layout->addWidget(three_way);
         template_layout->addWidget(four_way);
+        template_layout->addWidget(five_way);
+        template_layout->addWidget(six_way);
+        template_layout->addWidget(seven_way);
         template_layout->addWidget(duplicate);
         template_layout->addStretch(1);
         connect(heads_up, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::heads_up_river); });
         connect(three_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::three_way_flop); });
         connect(four_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::four_way_turn); });
+        connect(five_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::five_way_turn); });
+        connect(six_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::six_way_turn); });
+        connect(seven_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::seven_way_turn); });
         connect(duplicate, &QPushButton::clicked, this, [this] {
             if (on_duplicate_) {
                 on_duplicate_(spot_from_controls());
@@ -253,6 +263,8 @@ namespace zeta::holdem::ui::widgets {
         seat_table_->setHorizontalHeaderLabels({tr("Label"), tr("Stack"), tr("Committed")});
         seat_table_->verticalHeader()->setVisible(false);
         seat_table_->horizontalHeader()->setStretchLastSection(true);
+        seat_table_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        seat_table_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
         seats_layout->addWidget(seat_table_);
         players_error_ = make_error_label();
         seats_layout->addWidget(players_error_);
@@ -337,6 +349,10 @@ namespace zeta::holdem::ui::widgets {
             seat_table_->setItem(row, 1, new QTableWidgetItem{QString::number(index < spot_.stacks.size() ? spot_.stacks[index] : 100.0, 'f', 2)});
             seat_table_->setItem(row, 2, new QTableWidgetItem{QString::number(index < spot_.contributions.size() ? spot_.contributions[index] : 0.0, 'f', 2)});
         }
+        const auto table_height = seat_table_->horizontalHeader()->height()
+            + (seat_table_->rowCount() * seat_table_->verticalHeader()->defaultSectionSize())
+            + (seat_table_->frameWidth() * 2);
+        seat_table_->setFixedHeight(table_height);
         refresh_board_controls();
         refresh_actor_selectors();
         updating_ = false;

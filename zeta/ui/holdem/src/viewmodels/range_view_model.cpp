@@ -118,6 +118,17 @@ namespace zeta::holdem::ui::viewmodels {
             return static_cast<std::size_t>(std::max(first, second) * 13 + std::min(first, second));
         }
 
+        [[nodiscard]] std::size_t hand_class_combo_count(const std::string& hand_class)
+        {
+            if (hand_class.size() == 2u) {
+                return 6u;
+            }
+            if (hand_class.size() == 3u && (hand_class[2] == 's' || hand_class[2] == 'S')) {
+                return 4u;
+            }
+            return 12u;
+        }
+
         [[nodiscard]] std::vector<std::pair<std::string, card_mask>> board_cards(const std::vector<std::string>& board)
         {
             std::vector<std::pair<std::string, card_mask>> cards;
@@ -251,6 +262,7 @@ namespace zeta::holdem::ui::viewmodels {
         const auto labels = hand_class_labels();
         for (std::size_t index = 0; index < labels.size(); ++index) {
             analysis.matrix[index].hand_class = labels[index];
+            analysis.matrix[index].class_combos = hand_class_combo_count(labels[index]);
         }
 
         const auto parsed = parse_range(text);
@@ -294,6 +306,7 @@ namespace zeta::holdem::ui::viewmodels {
             auto& cell = analysis.matrix[matrix_index_for_class(hand_class)];
             cell.combos += 1u;
             cell.live_combos += live ? 1u : 0u;
+            cell.live_weight += live ? static_cast<double>(weight) : 0.0;
             cell.max_weight = std::max(cell.max_weight, weight);
             cell.selected = true;
             cell.blocked = cell.live_combos == 0u;

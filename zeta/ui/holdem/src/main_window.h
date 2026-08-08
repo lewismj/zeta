@@ -58,6 +58,7 @@ namespace zeta::holdem::ui {
         void validate_active_document();
         void solve_active_document();
         void cancel_solver();
+        void show_configuration_settings();
         void finish_solver_if_ready();
         void finish_solver_session(solver::solver_session_result result);
         bool maybe_close_document(int index);
@@ -69,6 +70,7 @@ namespace zeta::holdem::ui {
         void append_solve_console(document_entry& entry, const QString& text);
         void set_solve_console(document_entry& entry, const QString& text);
         void apply_active_theme();
+        void apply_native_title_bar_theme(QWidget* window);
         void set_active_theme(theme::theme_id theme);
         void set_density_mode(theme::density_mode density);
         void refresh_all_document_tabs();
@@ -100,7 +102,7 @@ namespace zeta::holdem::ui {
         QAction* validate_action_ = nullptr;
         QAction* solve_action_ = nullptr;
         QAction* cancel_action_ = nullptr;
-        QSpinBox* iterations_spin_ = nullptr;
+        QAction* configuration_action_ = nullptr;
         QTimer* solver_poll_timer_ = nullptr;
         std::vector<document_entry> documents_;
         solver_state_machine solver_state_{};
@@ -108,6 +110,9 @@ namespace zeta::holdem::ui {
         std::future<solver::solver_session_result> active_solver_;
         theme::theme_id active_theme_ = theme::theme_id::dark_pro;
         theme::density_mode density_mode_ = theme::density_mode::comfortable;
+        int solver_iterations_ = 100;
+        int progress_batch_iterations_ = 1;
+        int worker_threads_ = 1;
         QList<int> workspace_splitter_sizes_;
         int active_solver_document_index_ = -1;
     };

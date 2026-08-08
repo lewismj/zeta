@@ -268,7 +268,7 @@ namespace zeta::holdem::cli {
                 return std::unexpected(cli_error{cli_error_kind::parse, "Board card count must match street."});
             }
             if (spot.players.size() < cli_min_players || spot.players.size() > cli_max_players) {
-                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Player count must be between 2 and 6."});
+                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Player count must be between 2 and 7."});
             }
             if (spot.ranges.size() != spot.players.size()) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Ranges array must match player count."});
@@ -443,7 +443,7 @@ namespace zeta::holdem::cli {
             }
             spot.players = std::move(*players);
             if (spot.players.size() < cli_min_players || spot.players.size() > cli_max_players) {
-                return std::unexpected(cli_error{cli_error_kind::parse, "Players array must contain between 2 and 6 labels."});
+                return std::unexpected(cli_error{cli_error_kind::parse, "Players array must contain between 2 and 7 labels."});
             }
             spot.ranges.assign(spot.players.size(), "AA");
             spot.contributions.assign(spot.players.size(), 0.0);
@@ -633,7 +633,7 @@ namespace zeta::holdem::cli {
             return std::unexpected(cli_error{cli_error_kind::parse, "Board card count must match artifact street."});
         }
         if (artifact.players.size() < cli_min_players || artifact.players.size() > cli_max_players) {
-            return std::unexpected(cli_error{cli_error_kind::parse, "Players array must have between 2 and 6 labels."});
+            return std::unexpected(cli_error{cli_error_kind::parse, "Players array must have between 2 and 7 labels."});
         }
 
         auto hero_seat = optional_uint<uint8_t>(*root, "hero_seat", artifact.hero_seat);

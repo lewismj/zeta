@@ -24,6 +24,15 @@ namespace zeta::holdem::ui::app {
         [[nodiscard]] theme::density_mode density() const;
         void set_density(theme::density_mode density);
 
+        [[nodiscard]] int solver_iterations() const;
+        void set_solver_iterations(int iterations);
+
+        [[nodiscard]] int solver_progress_batch_iterations() const;
+        void set_solver_progress_batch_iterations(int iterations);
+
+        [[nodiscard]] int solver_worker_threads() const;
+        void set_solver_worker_threads(int threads);
+
         [[nodiscard]] QByteArray window_geometry() const;
         void set_window_geometry(const QByteArray& geometry);
 
@@ -36,6 +45,10 @@ namespace zeta::holdem::ui::app {
         [[nodiscard]] QStringList recent_files() const;
         void set_recent_files(const QStringList& files);
         void add_recent_file(const QString& file_path);
+
+        [[nodiscard]] QStringList pinned_files() const;
+        void set_pinned_files(const QStringList& files);
+        void set_file_pinned(const QString& file_path, bool pinned);
 
         void sync();
 

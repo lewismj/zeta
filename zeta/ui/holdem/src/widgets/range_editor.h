@@ -29,7 +29,8 @@ namespace zeta::holdem::ui::widgets {
             const spot& source,
             theme::density_metrics metrics,
             spot_changed_callback on_spot_changed,
-            QWidget* parent = nullptr);
+            QWidget* parent = nullptr,
+            theme::theme_id active_theme = theme::theme_id::dark_pro);
 
         void set_spot(const spot& source);
 
@@ -52,6 +53,7 @@ namespace zeta::holdem::ui::widgets {
 
         spot spot_;
         theme::density_metrics metrics_;
+        theme::theme_id active_theme_;
         spot_changed_callback on_spot_changed_;
         bool updating_ = false;
         bool drag_active_ = false;

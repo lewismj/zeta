@@ -1,0 +1,29 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="file-plus.svg">icons/file-plus.svg</file>
+        <file alias="folder-open.svg">icons/folder-open.svg</file>
+        <file alias="save.svg">icons/save.svg</file>
+        <file alias="check-circle.svg">icons/check-circle.svg</file>
+        <file alias="play.svg">icons/play.svg</file>
+        <file alias="square.svg">icons/square.svg</file>
+        <file alias="settings.svg">icons/settings.svg</file>
+        <file alias="sun.svg">icons/sun.svg</file>
+        <file alias="moon.svg">icons/moon.svg</file>
+        <file alias="info.svg">icons/info.svg</file>
+        <file alias="triangle-alert.svg">icons/triangle-alert.svg</file>
+        <file alias="circle-x.svg">icons/circle-x.svg</file>
+    </qresource>
+    <qresource prefix="/fonts">
+        <file alias="D-DIN.ttf">fonts/D-DIN.ttf</file>
+        <file alias="D-DIN-Bold.ttf">fonts/D-DIN-Bold.ttf</file>
+        <file alias="D-DIN-Italic.ttf">fonts/D-DIN-Italic.ttf</file>
+        <file alias="D-DINCondensed.ttf">fonts/D-DINCondensed.ttf</file>
+        <file alias="D-DINCondensed-Bold.ttf">fonts/D-DINCondensed-Bold.ttf</file>
+        <file alias="D-DINExp.ttf">fonts/D-DINExp.ttf</file>
+        <file alias="D-DINExp-Bold.ttf">fonts/D-DINExp-Bold.ttf</file>
+        <file alias="D-DINExp-Italic.ttf">fonts/D-DINExp-Italic.ttf</file>
+    </qresource>
+    <qresource prefix="/styles">
+        <file alias="holdem.qss">styles/holdem.qss</file>
+    </qresource>
+</RCC>

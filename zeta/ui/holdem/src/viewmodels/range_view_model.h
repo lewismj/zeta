@@ -30,6 +30,8 @@ namespace zeta::holdem::ui::viewmodels {
     struct range_matrix_cell {
         std::string hand_class;
         combo_weight max_weight = 0.0f;
+        double live_weight = 0.0;
+        std::size_t class_combos = 0;
         std::size_t combos = 0;
         std::size_t live_combos = 0;
         bool selected = false;

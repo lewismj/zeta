@@ -1,0 +1,303 @@
+* {
+    font-family: "D-DIN";
+    font-size: %28px;
+}
+QMainWindow, QDialog, QWidget#documentRoot, QTabWidget::pane {
+    background: %1;
+    color: %7;
+}
+QFileDialog QWidget {
+    background: %1;
+    color: %7;
+}
+QMenuBar, QMenu, QToolBar#commandBar, QStatusBar {
+    background: %3;
+    color: %7;
+    border-color: %5;
+}
+QLabel {
+    color: %7;
+    background: transparent;
+}
+QMenuBar::item:selected, QMenu::item:selected, QToolButton:hover {
+    background: %16;
+}
+QToolBar#commandBar {
+    spacing: %22px;
+    border-bottom: 1px solid %5;
+}
+QToolBar#commandBar QToolButton {
+    background: transparent;
+    color: %8;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: %23px %24px;
+    min-height: %32px;
+}
+QToolBar#commandBar QToolButton:hover {
+    background: %16;
+    color: %7;
+    border-color: %5;
+}
+QToolBar#commandBar QToolButton:pressed {
+    background: %5;
+    color: %7;
+}
+QToolBar#commandBar QToolButton:disabled {
+    background: transparent;
+    color: %9;
+    border-color: transparent;
+}
+QToolButton, QPushButton {
+    background: %3;
+    color: %8;
+    border: 1px solid %5;
+    border-radius: 4px;
+    padding: %23px %24px;
+    font-weight: 600;
+}
+QPushButton {
+    background: %12;
+    color: %36;
+    border-color: %12;
+}
+QToolButton:hover {
+    background: %16;
+    color: %7;
+    border-color: %10;
+}
+QPushButton:hover {
+    background: %13;
+    color: %36;
+    border-color: %13;
+}
+QToolButton:focus, QPushButton:focus {
+    border-color: %10;
+}
+QToolButton:disabled, QPushButton:disabled {
+    background: %3;
+    color: %9;
+    border-color: %5;
+}
+QTabBar::tab {
+    background: %3;
+    color: %9;
+    padding: %23px %24px;
+    border-right: 1px solid %5;
+    border-top: 2px solid transparent;
+}
+QTabBar::tab:selected {
+    background: %16;
+    color: %7;
+    border-top-color: %10;
+}
+QSplitter::handle {
+    background: %5;
+}
+QFrame#solverPanel, QFrame#positionCard, QFrame#activePositionCard, QFrame#tableStatePanel, QWidget#documentRail, QWidget#inspectorPanel {
+    background: %2;
+    border: 1px solid %5;
+    border-radius: 4px;
+}
+QWidget#documentRail {
+    border-left: 0;
+    border-top: 0;
+    border-bottom: 0;
+    border-radius: 0;
+}
+QLabel#panelTitle, QLabel#positionName, QLabel#railTitle, QLabel#spotSummaryHeader {
+    color: %7;
+    font-weight: 600;
+    font-size: %29px;
+}
+QLabel#errorLabel, QLabel#rangeParseError {
+    color: %27;
+    font-weight: 600;
+}
+QLabel#dialogIcon {
+    background: transparent;
+    border: 0;
+}
+QLabel#dialogMessage {
+    color: %7;
+    background: transparent;
+    border: 0;
+}
+QLabel#mutedLabel, QLabel#actionText {
+    color: %9;
+    font-size: %28px;
+}
+QFrame#toolbarSeparator {
+    color: %5;
+    background: %5;
+    max-width: 1px;
+}
+QLabel#activeActionText {
+    color: %21;
+    font-weight: 600;
+}
+QLabel#evPositive {
+    color: %15;
+}
+QLabel#evWarning {
+    color: %20;
+}
+QListWidget#documentRailList {
+    background: %3;
+    color: %8;
+    border: 1px solid %5;
+    outline: 0;
+}
+QListWidget#documentRailList::item {
+    padding: %23px %24px;
+    border-bottom: 1px solid %5;
+}
+QListWidget#documentRailList::item:selected {
+    background: %34;
+    color: %7;
+    border-left: 2px solid %10;
+}
+QPlainTextEdit, QLineEdit, QTableWidget, QTreeWidget, QListView, QTreeView, QSpinBox, QDoubleSpinBox, QComboBox {
+    background: %4;
+    color: %7;
+    border: 1px solid %5;
+    selection-background-color: %16;
+    selection-color: %7;
+}
+QPlainTextEdit:focus, QLineEdit:focus, QTableWidget:focus, QTreeWidget:focus, QListView:focus, QTreeView:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
+    border-color: %10;
+}
+QComboBox::drop-down {
+    background: %3;
+    border-left: 1px solid %5;
+    width: 22px;
+}
+QComboBox QAbstractItemView {
+    background: %4;
+    color: %7;
+    border: 1px solid %10;
+    selection-background-color: %16;
+    selection-color: %7;
+}
+QAbstractItemView::item:selected {
+    background: %16;
+    color: %7;
+}
+QTableWidget::item, QTreeWidget::item, QListView::item, QTreeView::item {
+    padding: %33px %23px;
+}
+QFileDialog QFrame, QFileDialog QStackedWidget {
+    background: %2;
+    border: 1px solid %5;
+}
+QPlainTextEdit#solveConsole {
+    background: %3;
+    color: %8;
+    border-top: 1px solid %5;
+}
+QHeaderView::section {
+    background: %3;
+    color: %8;
+    border: 0;
+    border-bottom: 1px solid %5;
+    padding: %23px;
+}
+QHeaderView::up-arrow, QHeaderView::down-arrow {
+    width: 8px;
+    height: 8px;
+}
+QPushButton#rangeCellPrimary, QPushButton#rangeCellSelected,
+QPushButton#rangeCellHeat1, QPushButton#rangeCellHeat2,
+QPushButton#rangeCellHeat3, QPushButton#rangeCellHeat4,
+QPushButton#rangeCellBlocked {
+    background: %17;
+    color: %7;
+    border: 1px solid %5;
+    border-radius: 2px;
+    padding: 3px 5px;
+    text-align: left top;
+    font-size: %30px;
+    font-weight: 700;
+}
+QPushButton#rangeCellHeat1 {
+    background: %17;
+}
+QPushButton#rangeCellHeat2 {
+    background: %31;
+}
+QPushButton#rangeCellHeat3 {
+    background: %18;
+}
+QPushButton#rangeCellHeat4 {
+    background: %19;
+    border-color: %10;
+    color: %36;
+}
+QPushButton#rangeCellBlocked {
+    background: %17;
+    border-color: %20;
+    color: %9;
+}
+QPushButton#rangeCellMuted {
+    background: %17;
+    color: %9;
+    border: 1px solid %5;
+    border-radius: 2px;
+    padding: 3px 5px;
+    text-align: left top;
+    font-size: %30px;
+    font-weight: 600;
+}
+QLabel#tableFelt {
+    background: %3;
+    border: 1px solid %6;
+    border-radius: 70px;
+    color: %7;
+}
+QLabel#seatCard, QLabel#heroSeatCard, QLabel#activeSeatCard, QLabel#activeHeroSeatCard {
+    background: %3;
+    color: %8;
+    border: 1px solid %5;
+    border-radius: 4px;
+    padding: %23px;
+}
+QLabel#heroSeatCard {
+    border-color: %11;
+    color: %7;
+}
+QLabel#activeSeatCard, QLabel#activeHeroSeatCard {
+    background: %35;
+    border-color: %10;
+    color: %7;
+    font-weight: 600;
+}
+QPushButton#callButton {
+    background: %21;
+    color: %36;
+    border-color: %21;
+    font-size: %25px;
+    text-align: left;
+    padding: %26px;
+}
+QPushButton#callButton:hover {
+    background: %21;
+    color: %36;
+    border-color: %21;
+}
+QPushButton#foldButton {
+    background: %14;
+    color: %37;
+    border-color: %14;
+    font-size: %25px;
+    text-align: left;
+    padding: %26px;
+}
+QPushButton#foldButton:hover {
+    background: %14;
+    color: %37;
+    border-color: %14;
+}
+QLabel#solverStateLabel[solverActive="true"], QLabel#solverStatusLabel[solverActive="true"] {
+    color: %10;
+    font-weight: 600;
+}

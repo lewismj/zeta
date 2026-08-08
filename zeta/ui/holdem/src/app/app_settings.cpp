@@ -10,6 +10,13 @@ namespace zeta::holdem::ui::app {
     namespace {
 
         constexpr int max_recent_files = 10;
+        constexpr int default_solver_iterations = 100;
+        constexpr int min_solver_iterations = 1;
+        constexpr int max_solver_iterations = 1'000'000;
+        constexpr int default_progress_batch_iterations = 1;
+        constexpr int max_progress_batch_iterations = 1'000'000;
+        constexpr int default_worker_threads = 1;
+        constexpr int max_worker_threads = 64;
 
     }
 
@@ -46,6 +53,60 @@ namespace zeta::holdem::ui::app {
     void app_settings::set_density(const theme::density_mode density)
     {
         settings_.setValue(QStringLiteral("appearance/density"), QString::fromStdString(std::string{theme::density_mode_key(density)}));
+    }
+
+    int app_settings::solver_iterations() const
+    {
+        bool ok = false;
+        const int iterations = settings_.value(QStringLiteral("solver/iterations"), default_solver_iterations).toInt(&ok);
+        if (!ok || iterations < min_solver_iterations || iterations > max_solver_iterations) {
+            return default_solver_iterations;
+        }
+        return iterations;
+    }
+
+    void app_settings::set_solver_iterations(const int iterations)
+    {
+        if (iterations < min_solver_iterations || iterations > max_solver_iterations) {
+            return;
+        }
+        settings_.setValue(QStringLiteral("solver/iterations"), iterations);
+    }
+
+    int app_settings::solver_progress_batch_iterations() const
+    {
+        bool ok = false;
+        const int iterations = settings_.value(QStringLiteral("solver/progress_batch_iterations"), default_progress_batch_iterations).toInt(&ok);
+        if (!ok || iterations < min_solver_iterations || iterations > max_progress_batch_iterations) {
+            return default_progress_batch_iterations;
+        }
+        return iterations;
+    }
+
+    void app_settings::set_solver_progress_batch_iterations(const int iterations)
+    {
+        if (iterations < min_solver_iterations || iterations > max_progress_batch_iterations) {
+            return;
+        }
+        settings_.setValue(QStringLiteral("solver/progress_batch_iterations"), iterations);
+    }
+
+    int app_settings::solver_worker_threads() const
+    {
+        bool ok = false;
+        const int threads = settings_.value(QStringLiteral("solver/worker_threads"), default_worker_threads).toInt(&ok);
+        if (!ok || threads < default_worker_threads || threads > max_worker_threads) {
+            return default_worker_threads;
+        }
+        return threads;
+    }
+
+    void app_settings::set_solver_worker_threads(const int threads)
+    {
+        if (threads < default_worker_threads || threads > max_worker_threads) {
+            return;
+        }
+        settings_.setValue(QStringLiteral("solver/worker_threads"), threads);
     }
 
     QByteArray app_settings::window_geometry() const
@@ -109,6 +170,35 @@ namespace zeta::holdem::ui::app {
             files.removeLast();
         }
         settings_.setValue(QStringLiteral("files/recent"), files);
+    }
+
+    QStringList app_settings::pinned_files() const
+    {
+        return settings_.value(QStringLiteral("files/pinned")).toStringList();
+    }
+
+    void app_settings::set_pinned_files(const QStringList& files)
+    {
+        QStringList normalized;
+        for (const auto& file : files) {
+            if (!file.isEmpty() && !normalized.contains(file)) {
+                normalized.push_back(file);
+            }
+        }
+        settings_.setValue(QStringLiteral("files/pinned"), normalized);
+    }
+
+    void app_settings::set_file_pinned(const QString& file_path, const bool pinned)
+    {
+        if (file_path.isEmpty()) {
+            return;
+        }
+        auto files = pinned_files();
+        files.removeAll(file_path);
+        if (pinned) {
+            files.push_front(file_path);
+        }
+        set_pinned_files(files);
     }
 
     void app_settings::sync()

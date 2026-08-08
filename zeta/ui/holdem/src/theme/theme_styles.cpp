@@ -2,6 +2,19 @@
 
 #include "theme/theme_registry.h"
 
+#if defined(Q_OS_WIN)
+#include <dwmapi.h>
+#include <windows.h>
+#endif
+
+#include <QCoreApplication>
+#include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QWidget>
+
+#include <cstdlib>
+
 namespace zeta::holdem::ui::theme {
 
     namespace {
@@ -11,213 +24,122 @@ namespace zeta::holdem::ui::theme {
             return QString::fromStdString(value);
         }
 
+        [[nodiscard]] QString read_text_file(const QString& path)
+        {
+            QFile file{path};
+            if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                qWarning() << "Failed to load stylesheet:" << path << file.errorString();
+                return {};
+            }
+            return QString::fromUtf8(file.readAll());
+        }
+
+        [[nodiscard]] QString style_sheet_template()
+        {
+            const auto external_path = QDir{QCoreApplication::applicationDirPath()}
+                                           .filePath(QStringLiteral("styles/holdem.qss"));
+            if (QFile::exists(external_path)) {
+                auto sheet = read_text_file(external_path);
+                if (!sheet.isEmpty()) {
+                    return sheet;
+                }
+            }
+
+            auto sheet = read_text_file(QStringLiteral(":/styles/holdem.qss"));
+            if (sheet.isEmpty()) {
+                qWarning() << "Using empty stylesheet because no stylesheet template could be loaded.";
+            }
+            return sheet;
+        }
+
+#if defined(Q_OS_WIN)
+        [[nodiscard]] COLORREF color_ref_from_hex(const std::string& hex)
+        {
+            if (hex.size() != 7 || hex[0] != '#') {
+                return RGB(0, 0, 0);
+            }
+            const auto component = [&hex](const std::size_t offset) {
+                return static_cast<BYTE>(std::strtoul(hex.substr(offset, 2).c_str(), nullptr, 16));
+            };
+            return RGB(component(1), component(3), component(5));
+        }
+#endif
+
     }
 
     QString style_sheet(const registered_theme& theme, const density_mode density)
     {
         const auto& t = theme.tokens;
         const auto metrics = metrics_for_density(density);
-        return QStringLiteral(R"(
-            QMainWindow, QWidget#documentRoot, QTabWidget::pane {
-                background: %1;
-                color: %7;
-            }
-            QMenuBar, QMenu, QToolBar#commandBar, QStatusBar {
-                background: %3;
-                color: %7;
-                border-color: %5;
-            }
-            QMenuBar::item:selected, QMenu::item:selected, QToolButton:hover {
-                background: %16;
-            }
-            QToolBar#commandBar {
-                spacing: %22px;
-                border-bottom: 1px solid %5;
-            }
-            QToolButton, QPushButton {
-                background: %12;
-                color: %1;
-                border: 1px solid %12;
-                border-radius: 4px;
-                padding: %23px %24px;
-                font-weight: 600;
-            }
-            QToolButton:hover, QPushButton:hover {
-                background: %13;
-                border-color: %13;
-            }
-            QToolButton:disabled, QPushButton:disabled {
-                background: %3;
-                color: %9;
-                border-color: %5;
-            }
-            QTabBar::tab {
-                background: %3;
-                color: %9;
-                padding: %23px %24px;
-                border-right: 1px solid %5;
-                border-top: 2px solid transparent;
-            }
-            QTabBar::tab:selected {
-                background: %1;
-                color: %7;
-                border-top-color: %10;
-            }
-            QSplitter::handle {
-                background: %5;
-            }
-            QFrame#solverPanel, QFrame#positionCard, QFrame#activePositionCard, QFrame#tableStatePanel, QWidget#documentRail, QWidget#inspectorPanel {
-                background: %2;
-                border: 1px solid %5;
-                border-radius: 4px;
-            }
-            QWidget#documentRail {
-                border-left: 0;
-                border-top: 0;
-                border-bottom: 0;
-                border-radius: 0;
-            }
-            QLabel#panelTitle, QLabel#positionName, QLabel#railTitle, QLabel#spotSummaryHeader {
-                color: %7;
-                font-weight: 600;
-            }
-            QLabel#errorLabel, QLabel#rangeParseError {
-                color: %27;
-                font-weight: 600;
-            }
-            QLabel#mutedLabel, QLabel#actionText {
-                color: %9;
-            }
-            QLabel#activeActionText {
-                color: %21;
-                font-weight: 600;
-            }
-            QLabel#evPositive {
-                color: %15;
-            }
-            QLabel#evWarning {
-                color: %20;
-            }
-            QListWidget#documentRailList {
-                background: %3;
-                color: %8;
-                border: 1px solid %5;
-                outline: 0;
-            }
-            QListWidget#documentRailList::item {
-                padding: %23px %24px;
-                border-bottom: 1px solid %5;
-            }
-            QListWidget#documentRailList::item:selected {
-                background: %16;
-                color: %7;
-                border-left: 2px solid %10;
-            }
-            QPlainTextEdit, QTableWidget, QSpinBox, QDoubleSpinBox, QComboBox {
-                background: %4;
-                color: %7;
-                border: 1px solid %5;
-                selection-background-color: %16;
-                selection-color: %7;
-            }
-            QPlainTextEdit#solveConsole {
-                background: %3;
-                color: %8;
-                border-top: 1px solid %5;
-            }
-            QHeaderView::section {
-                background: %3;
-                color: %8;
-                border: 0;
-                border-bottom: 1px solid %5;
-                padding: %23px;
-            }
-            QPushButton#rangeCellPrimary, QPushButton#rangeCellSelected {
-                background: %18;
-                color: %1;
-                border: 1px solid %11;
-                border-radius: 2px;
-                padding: 3px;
-                text-align: left top;
-            }
-            QPushButton#rangeCellSelected {
-                background: %19;
-                border-color: %21;
-            }
-            QPushButton#rangeCellMuted {
-                background: %17;
-                color: %9;
-                border: 1px solid %5;
-                border-radius: 2px;
-                padding: 3px;
-                text-align: left top;
-            }
-            QLabel#tableFelt {
-                background: %3;
-                border: 1px solid %6;
-                border-radius: 70px;
-                color: %7;
-            }
-            QLabel#seatCard, QLabel#heroSeatCard, QLabel#activeSeatCard, QLabel#activeHeroSeatCard {
-                background: %3;
-                color: %8;
-                border: 1px solid %5;
-                border-radius: 4px;
-                padding: %23px;
-            }
-            QLabel#heroSeatCard {
-                border-color: %11;
-                color: %7;
-            }
-            QLabel#activeSeatCard, QLabel#activeHeroSeatCard {
-                border-color: %21;
-                color: %21;
-                font-weight: 600;
-            }
-            QPushButton#callButton {
-                background: %21;
-                color: %1;
-                border-color: %21;
-                font-size: %25px;
-                text-align: left;
-                padding: %26px;
-            }
-            QPushButton#foldButton {
-                background: %14;
-                color: %1;
-                border-color: %14;
-                font-size: %25px;
-                text-align: left;
-                padding: %26px;
-            }
-        )")
-            .arg(q(t.background_base))
-            .arg(q(t.background_raised))
-            .arg(q(t.background_sunken))
-            .arg(q(t.background_input))
-            .arg(q(t.border_subtle))
-            .arg(q(t.border_strong))
-            .arg(q(t.text_primary))
-            .arg(q(t.text_secondary))
-            .arg(q(t.text_muted))
-            .arg(q(t.accent_primary))
-            .arg(q(t.accent_secondary))
-            .arg(q(t.action_primary))
-            .arg(q(t.action_primary_hover))
-            .arg(q(t.action_negative))
-            .arg(q(t.ev_positive))
-            .arg(q(t.selection))
-            .arg(q(t.range_heat[0]))
-            .arg(q(t.range_heat[2]))
-            .arg(q(t.range_heat[3]))
-            .arg(q(t.warning))
-            .arg(q(t.success))
-            .arg(metrics.toolbar_spacing)
-            .arg(density == density_mode::compact ? 4 : 6)
-            .arg(density == density_mode::compact ? 8 : 10)
-            .arg(density == density_mode::compact ? 18 : 22)
-            .arg(density == density_mode::compact ? 8 : 10)
-            .arg(q(t.error));
+        auto sheet = style_sheet_template();
+
+        const auto replace_placeholder = [&sheet](const int index, const QString& value) {
+            sheet.replace(QStringLiteral("%") + QString::number(index), value);
+        };
+
+        replace_placeholder(33, QString::number(density == density_mode::compact ? 3 : 4));
+        replace_placeholder(37, q(t.destructive_text));
+        replace_placeholder(36, q(t.button_text));
+        replace_placeholder(35, q(t.active_surface));
+        replace_placeholder(34, q(t.document_selection));
+        replace_placeholder(32, QString::number(density == density_mode::compact ? 32 : 36));
+        replace_placeholder(31, q(t.range_heat[1]));
+        replace_placeholder(30, QString::number(density == density_mode::compact ? 12 : 14));
+        replace_placeholder(29, QString::number(density == density_mode::compact ? 15 : 17));
+        replace_placeholder(28, QString::number(density == density_mode::compact ? 12 : 14));
+        replace_placeholder(27, q(t.error));
+        replace_placeholder(26, QString::number(density == density_mode::compact ? 10 : 12));
+        replace_placeholder(25, QString::number(density == density_mode::compact ? 22 : 26));
+        replace_placeholder(24, QString::number(density == density_mode::compact ? 10 : 12));
+        replace_placeholder(23, QString::number(density == density_mode::compact ? 6 : 8));
+        replace_placeholder(22, QString::number(metrics.toolbar_spacing));
+        replace_placeholder(21, q(t.action_positive));
+        replace_placeholder(20, q(t.warning));
+        replace_placeholder(19, q(t.range_heat[3]));
+        replace_placeholder(18, q(t.range_heat[2]));
+        replace_placeholder(17, q(t.range_heat[0]));
+        replace_placeholder(16, q(t.selection));
+        replace_placeholder(15, q(t.ev_positive));
+        replace_placeholder(14, q(t.action_negative));
+        replace_placeholder(13, q(t.action_primary_hover));
+        replace_placeholder(12, q(t.action_primary));
+        replace_placeholder(11, q(t.accent_secondary));
+        replace_placeholder(10, q(t.accent_primary));
+        replace_placeholder(9, q(t.text_muted));
+        replace_placeholder(8, q(t.text_secondary));
+        replace_placeholder(7, q(t.text_primary));
+        replace_placeholder(6, q(t.border_strong));
+        replace_placeholder(5, q(t.border_subtle));
+        replace_placeholder(4, q(t.background_input));
+        replace_placeholder(3, q(t.background_sunken));
+        replace_placeholder(2, q(t.background_raised));
+        replace_placeholder(1, q(t.background_base));
+        return sheet;
+    }
+
+    void apply_native_title_bar(QWidget* window, const registered_theme& theme)
+    {
+#if defined(Q_OS_WIN)
+        if (window == nullptr) {
+            return;
+        }
+
+        const BOOL dark_title_bar = theme.id != theme_id::light_pro;
+        auto hwnd = reinterpret_cast<HWND>(window->winId());
+
+        constexpr DWORD dwmwa_use_immersive_dark_mode = 20;
+        constexpr DWORD dwmwa_caption_color = 35;
+        constexpr DWORD dwmwa_text_color = 36;
+        (void) DwmSetWindowAttribute(hwnd, dwmwa_use_immersive_dark_mode, &dark_title_bar, sizeof(dark_title_bar));
+
+        const COLORREF caption_color = color_ref_from_hex(theme.tokens.background_sunken);
+        const COLORREF text_color = color_ref_from_hex(theme.tokens.text_primary);
+        (void) DwmSetWindowAttribute(hwnd, dwmwa_caption_color, &caption_color, sizeof(caption_color));
+        (void) DwmSetWindowAttribute(hwnd, dwmwa_text_color, &text_color, sizeof(text_color));
+#else
+        (void) window;
+        (void) theme;
+#endif
     }
 
 }
