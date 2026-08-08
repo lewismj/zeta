@@ -48,7 +48,6 @@ target_link_libraries(zeta-ui-holdem
     zeta-holdem
     Boost::json
     Qt6::Widgets
-    Qt6::Svg
 )
 
 target_include_directories(zeta-ui-holdem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -69,60 +68,56 @@ endif()
 if(WIN32)
     target_link_libraries(zeta-ui-holdem PRIVATE dwmapi)
 
-    set(ZETA_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(ZETA_QT_RUNTIME_BIN "${Qt6_DIR}/../../debug/bin")
+        set(ZETA_QWINDOWS_PLUGIN_NAMES qwindowsd.dll qwindows.dll)
+        set(ZETA_QSVGICON_PLUGIN_NAMES qsvgicond.dll qsvgicon.dll)
+        set(ZETA_QSVG_PLUGIN_NAMES qsvgd.dll qsvg.dll)
+        set(ZETA_QT_PLUGIN_HINT_ROOTS
+            "${Qt6_DIR}/../../debug/Qt6/plugins"
+            "${Qt6_DIR}/../../../debug/Qt6/plugins"
+        )
+    else()
+        set(ZETA_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
+        set(ZETA_QWINDOWS_PLUGIN_NAMES qwindows.dll qwindowsd.dll)
+        set(ZETA_QSVGICON_PLUGIN_NAMES qsvgicon.dll qsvgicond.dll)
+        set(ZETA_QSVG_PLUGIN_NAMES qsvg.dll qsvgd.dll)
+        set(ZETA_QT_PLUGIN_HINT_ROOTS
+            "${Qt6_DIR}/../../Qt6/plugins"
+            "${Qt6_DIR}/../../../Qt6/plugins"
+        )
+    endif()
     cmake_path(NORMAL_PATH ZETA_QT_RUNTIME_BIN)
+    foreach(_zeta_qt_plugin_hint_root IN LISTS ZETA_QT_PLUGIN_HINT_ROOTS)
+        cmake_path(NORMAL_PATH _zeta_qt_plugin_hint_root)
+        list(APPEND ZETA_QT_PLATFORM_PLUGIN_HINTS "${_zeta_qt_plugin_hint_root}/platforms")
+        list(APPEND ZETA_QT_ICON_PLUGIN_HINTS "${_zeta_qt_plugin_hint_root}/iconengines")
+        list(APPEND ZETA_QT_IMAGE_PLUGIN_HINTS "${_zeta_qt_plugin_hint_root}/imageformats")
+    endforeach()
 
+    unset(ZETA_QWINDOWS_PLUGIN CACHE)
+    unset(ZETA_QSVGICON_PLUGIN CACHE)
+    unset(ZETA_QSVG_PLUGIN CACHE)
     find_file(ZETA_QWINDOWS_PLUGIN
-        NAMES qwindows.dll qwindowsd.dll
-        HINTS
-            "${Qt6_DIR}/../../Qt6/plugins/platforms"
-            "${Qt6_DIR}/../../../Qt6/plugins/platforms"
+        NAMES ${ZETA_QWINDOWS_PLUGIN_NAMES}
+        HINTS ${ZETA_QT_PLATFORM_PLUGIN_HINTS}
         REQUIRED
     )
     find_file(ZETA_QSVGICON_PLUGIN
-        NAMES qsvgicon.dll qsvgicond.dll
-        HINTS
-            "${Qt6_DIR}/../../Qt6/plugins/iconengines"
-            "${Qt6_DIR}/../../../Qt6/plugins/iconengines"
+        NAMES ${ZETA_QSVGICON_PLUGIN_NAMES}
+        HINTS ${ZETA_QT_ICON_PLUGIN_HINTS}
         REQUIRED
     )
     find_file(ZETA_QSVG_PLUGIN
-        NAMES qsvg.dll qsvgd.dll
-        HINTS
-            "${Qt6_DIR}/../../Qt6/plugins/imageformats"
-            "${Qt6_DIR}/../../../Qt6/plugins/imageformats"
+        NAMES ${ZETA_QSVG_PLUGIN_NAMES}
+        HINTS ${ZETA_QT_IMAGE_PLUGIN_HINTS}
         REQUIRED
     )
 
-    set(ZETA_HOLDEM_RUNTIME_DLLS
-        brotlicommon.dll
-        brotlidec.dll
-        bz2.dll
-        double-conversion.dll
-        freetype.dll
-        harfbuzz.dll
-        icudt78.dll
-        icuin78.dll
-        icuuc78.dll
-        libpng16.dll
-        md4c.dll
-        pcre2-16.dll
-        Qt6Core.dll
-        Qt6Gui.dll
-        Qt6Svg.dll
-        Qt6Widgets.dll
-        zlib1.dll
-        zstd.dll
-    )
-
-    set(ZETA_HOLDEM_RUNTIME_DLL_PATHS "")
-    foreach(_zeta_runtime_dll IN LISTS ZETA_HOLDEM_RUNTIME_DLLS)
-        set(_zeta_runtime_dll_path "${ZETA_QT_RUNTIME_BIN}/${_zeta_runtime_dll}")
-        if(NOT EXISTS "${_zeta_runtime_dll_path}")
-            message(FATAL_ERROR "Required runtime dependency not found: ${_zeta_runtime_dll_path}")
-        endif()
-        list(APPEND ZETA_HOLDEM_RUNTIME_DLL_PATHS "${_zeta_runtime_dll_path}")
-    endforeach()
+    file(GLOB ZETA_HOLDEM_RUNTIME_DLL_PATHS "${ZETA_QT_RUNTIME_BIN}/*.dll")
+    if(NOT ZETA_HOLDEM_RUNTIME_DLL_PATHS)
+        message(FATAL_ERROR "No Qt runtime dependencies found in: ${ZETA_QT_RUNTIME_BIN}")
+    endif()
 
     add_custom_command(TARGET zeta-ui-holdem POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different

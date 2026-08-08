@@ -685,48 +685,59 @@ namespace zeta::holdem::ui {
         auto* title = make_panel_title(tr("Configuration"));
         root->addWidget(title);
 
-        auto* panel = make_panel();
-        auto* layout = new QFormLayout{panel};
-        layout->setContentsMargins(14, 12, 14, 12);
-        layout->setSpacing(10);
+        auto* tabs = new QTabWidget{&dialog};
 
-        auto* theme_combo = new QComboBox{panel};
+        auto* ui_panel = make_panel();
+        auto* ui_layout = new QFormLayout{ui_panel};
+        ui_layout->setContentsMargins(14, 12, 14, 12);
+        ui_layout->setSpacing(10);
+
+        auto* theme_combo = new QComboBox{ui_panel};
         for (const auto& registered_theme : theme::registered_themes()) {
             theme_combo->addItem(
                 QString::fromStdString(registered_theme.display_name),
                 static_cast<int>(registered_theme.id));
         }
         theme_combo->setCurrentIndex(theme_combo->findData(static_cast<int>(active_theme_)));
-        layout->addRow(tr("Theme"), theme_combo);
+        ui_layout->addRow(tr("Theme"), theme_combo);
 
-        auto* density_combo = new QComboBox{panel};
+        auto* density_combo = new QComboBox{ui_panel};
         density_combo->addItem(tr("Comfortable"), static_cast<int>(theme::density_mode::comfortable));
         density_combo->addItem(tr("Compact"), static_cast<int>(theme::density_mode::compact));
         density_combo->setCurrentIndex(density_combo->findData(static_cast<int>(density_mode_)));
-        layout->addRow(tr("Density"), density_combo);
+        ui_layout->addRow(tr("Density"), density_combo);
 
-        auto* iterations = new QSpinBox{panel};
+        tabs->addTab(ui_panel, tr("UI"));
+
+        auto* solver_panel = make_panel();
+        auto* solver_layout = new QFormLayout{solver_panel};
+        solver_layout->setContentsMargins(14, 12, 14, 12);
+        solver_layout->setSpacing(10);
+
+        auto* iterations = new QSpinBox{solver_panel};
         iterations->setRange(min_solver_iterations, max_solver_iterations);
         iterations->setSingleStep(50);
         iterations->setValue(solver_iterations_);
         iterations->setToolTip(tr("CFR iterations for the next solve."));
-        layout->addRow(tr("Iterations"), iterations);
+        solver_layout->addRow(tr("Iterations"), iterations);
 
-        auto* progress_batch = new QSpinBox{panel};
+        auto* progress_batch = new QSpinBox{solver_panel};
         progress_batch->setRange(min_solver_iterations, max_solver_iterations);
         progress_batch->setSingleStep(10);
         progress_batch->setValue(progress_batch_iterations_);
         progress_batch->setToolTip(tr("Number of CFR iterations between progress updates."));
-        layout->addRow(tr("Progress batch iterations"), progress_batch);
+        solver_layout->addRow(tr("Progress batch iterations"), progress_batch);
 
-        auto* threads = new QSpinBox{panel};
+        auto* threads = new QSpinBox{solver_panel};
         threads->setObjectName("workerThreadsSpinBox");
         threads->setRange(min_worker_threads, available_worker_threads());
         threads->setValue(std::clamp(worker_threads_, min_worker_threads, available_worker_threads()));
         threads->setToolTip(tr("CFR worker threads for the next solve."));
-        layout->addRow(tr("Worker threads"), threads);
+        solver_layout->addRow(tr("Worker threads"), threads);
 
-        root->addWidget(panel);
+        tabs->addTab(solver_panel, tr("Solver"));
+
+        root->addWidget(tabs);
 
         auto* buttons = new QHBoxLayout;
         buttons->addStretch(1);

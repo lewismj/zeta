@@ -27,7 +27,7 @@ add_executable(zeta_tests
     src/test_cfr_graph.cpp
 )
 target_include_directories(zeta_tests PRIVATE ${CMAKE_SOURCE_DIR}/zeta/ui/holdem/src)
-target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json Qt6::Widgets Qt6::Svg)
+target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json Qt6::Widgets)
 target_compile_definitions(zeta_tests PRIVATE BOOST_TEST_DYN_LINK)
 target_compile_features(zeta_tests PRIVATE cxx_std_23)
 
@@ -58,58 +58,54 @@ endif()
 if(WIN32)
     target_link_libraries(zeta_tests PRIVATE dwmapi)
 
-    set(ZETA_TEST_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(ZETA_TEST_QT_RUNTIME_BIN "${Qt6_DIR}/../../debug/bin")
+        set(ZETA_QOFFSCREEN_PLUGIN_NAMES qoffscreend.dll qoffscreen.dll)
+        set(ZETA_TEST_QSVGICON_PLUGIN_NAMES qsvgicond.dll qsvgicon.dll)
+        set(ZETA_TEST_QSVG_PLUGIN_NAMES qsvgd.dll qsvg.dll)
+        set(ZETA_TEST_QT_PLUGIN_HINT_ROOTS
+            "${Qt6_DIR}/../../debug/Qt6/plugins"
+            "${Qt6_DIR}/../../../debug/Qt6/plugins"
+        )
+    else()
+        set(ZETA_TEST_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
+        set(ZETA_QOFFSCREEN_PLUGIN_NAMES qoffscreen.dll qoffscreend.dll)
+        set(ZETA_TEST_QSVGICON_PLUGIN_NAMES qsvgicon.dll qsvgicond.dll)
+        set(ZETA_TEST_QSVG_PLUGIN_NAMES qsvg.dll qsvgd.dll)
+        set(ZETA_TEST_QT_PLUGIN_HINT_ROOTS
+            "${Qt6_DIR}/../../Qt6/plugins"
+            "${Qt6_DIR}/../../../Qt6/plugins"
+        )
+    endif()
     cmake_path(NORMAL_PATH ZETA_TEST_QT_RUNTIME_BIN)
-
-    set(ZETA_TEST_QT_RUNTIME_DLLS
-        brotlicommon.dll
-        brotlidec.dll
-        bz2.dll
-        double-conversion.dll
-        freetype.dll
-        harfbuzz.dll
-        icudt78.dll
-        icuin78.dll
-        icuuc78.dll
-        libpng16.dll
-        md4c.dll
-        pcre2-16.dll
-        Qt6Core.dll
-        Qt6Gui.dll
-        Qt6Svg.dll
-        Qt6Widgets.dll
-        zlib1.dll
-        zstd.dll
-    )
-
-    set(ZETA_TEST_QT_RUNTIME_DLL_PATHS "")
-    foreach(_zeta_test_runtime_dll IN LISTS ZETA_TEST_QT_RUNTIME_DLLS)
-        set(_zeta_test_runtime_dll_path "${ZETA_TEST_QT_RUNTIME_BIN}/${_zeta_test_runtime_dll}")
-        if(NOT EXISTS "${_zeta_test_runtime_dll_path}")
-            message(FATAL_ERROR "Required test runtime dependency not found: ${_zeta_test_runtime_dll_path}")
-        endif()
-        list(APPEND ZETA_TEST_QT_RUNTIME_DLL_PATHS "${_zeta_test_runtime_dll_path}")
+    foreach(_zeta_test_qt_plugin_hint_root IN LISTS ZETA_TEST_QT_PLUGIN_HINT_ROOTS)
+        cmake_path(NORMAL_PATH _zeta_test_qt_plugin_hint_root)
+        list(APPEND ZETA_TEST_QT_PLATFORM_PLUGIN_HINTS "${_zeta_test_qt_plugin_hint_root}/platforms")
+        list(APPEND ZETA_TEST_QT_ICON_PLUGIN_HINTS "${_zeta_test_qt_plugin_hint_root}/iconengines")
+        list(APPEND ZETA_TEST_QT_IMAGE_PLUGIN_HINTS "${_zeta_test_qt_plugin_hint_root}/imageformats")
     endforeach()
 
+    file(GLOB ZETA_TEST_QT_RUNTIME_DLL_PATHS "${ZETA_TEST_QT_RUNTIME_BIN}/*.dll")
+    if(NOT ZETA_TEST_QT_RUNTIME_DLL_PATHS)
+        message(FATAL_ERROR "No Qt test runtime dependencies found in: ${ZETA_TEST_QT_RUNTIME_BIN}")
+    endif()
+
+    unset(ZETA_QOFFSCREEN_PLUGIN CACHE)
+    unset(ZETA_TEST_QSVGICON_PLUGIN CACHE)
+    unset(ZETA_TEST_QSVG_PLUGIN CACHE)
     find_file(ZETA_QOFFSCREEN_PLUGIN
-        NAMES qoffscreen.dll
-        HINTS
-            "${Qt6_DIR}/../../Qt6/plugins/platforms"
-            "${Qt6_DIR}/../../../Qt6/plugins/platforms"
+        NAMES ${ZETA_QOFFSCREEN_PLUGIN_NAMES}
+        HINTS ${ZETA_TEST_QT_PLATFORM_PLUGIN_HINTS}
         REQUIRED
     )
     find_file(ZETA_TEST_QSVGICON_PLUGIN
-        NAMES qsvgicon.dll qsvgicond.dll
-        HINTS
-            "${Qt6_DIR}/../../Qt6/plugins/iconengines"
-            "${Qt6_DIR}/../../../Qt6/plugins/iconengines"
+        NAMES ${ZETA_TEST_QSVGICON_PLUGIN_NAMES}
+        HINTS ${ZETA_TEST_QT_ICON_PLUGIN_HINTS}
         REQUIRED
     )
     find_file(ZETA_TEST_QSVG_PLUGIN
-        NAMES qsvg.dll qsvgd.dll
-        HINTS
-            "${Qt6_DIR}/../../Qt6/plugins/imageformats"
-            "${Qt6_DIR}/../../../Qt6/plugins/imageformats"
+        NAMES ${ZETA_TEST_QSVG_PLUGIN_NAMES}
+        HINTS ${ZETA_TEST_QT_IMAGE_PLUGIN_HINTS}
         REQUIRED
     )
 
