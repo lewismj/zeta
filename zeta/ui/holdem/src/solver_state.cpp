@@ -16,7 +16,7 @@ namespace zeta::holdem::ui {
                 case solver_state::running:
                     return to == solver_state::cancelling || to == solver_state::completed || to == solver_state::failed;
                 case solver_state::cancelling:
-                    return to == solver_state::idle || to == solver_state::failed;
+                    return to == solver_state::idle || to == solver_state::completed || to == solver_state::failed;
                 case solver_state::completed:
                 case solver_state::failed:
                     return to == solver_state::idle || to == solver_state::validating || to == solver_state::starting;

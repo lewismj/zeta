@@ -2,31 +2,45 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QActionGroup>
 #include <QCloseEvent>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSplitter>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QStringList>
 #include <QStyle>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextCursor>
+#include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
+
+#include "theme/theme_registry.h"
+#include "theme/theme_styles.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
+#include <cstdlib>
+#include <future>
 #include <functional>
 #include <filesystem>
 #include <sstream>
@@ -97,14 +111,19 @@ namespace zeta::holdem::ui {
             return 0;
         }
 
-        [[nodiscard]] QFrame* make_position_card(const QString& position, const QString& action, const QString& stack, const bool active)
+        [[nodiscard]] QFrame* make_position_card(
+            const QString& position,
+            const QString& action,
+            const QString& stack,
+            const bool active,
+            const theme::density_metrics& metrics)
         {
             auto* card = make_panel();
             card->setObjectName(active ? "activePositionCard" : "positionCard");
             card->setMinimumWidth(92);
             auto* layout = new QVBoxLayout{card};
-            layout->setContentsMargins(8, 6, 8, 6);
-            layout->setSpacing(2);
+            layout->setContentsMargins(metrics.panel_margin, metrics.panel_margin, metrics.panel_margin, metrics.panel_margin);
+            layout->setSpacing(metrics.panel_spacing / 2);
 
             auto* name = new QLabel{position};
             name->setObjectName("positionName");
@@ -117,11 +136,15 @@ namespace zeta::holdem::ui {
             return card;
         }
 
-        [[nodiscard]] QPushButton* make_action_button(const QString& action, const QString& percent, const QString& object_name)
+        [[nodiscard]] QPushButton* make_action_button(
+            const QString& action,
+            const QString& percent,
+            const QString& object_name,
+            const theme::density_metrics& metrics)
         {
             auto* button = new QPushButton{action + QStringLiteral("\n") + percent};
             button->setObjectName(object_name);
-            button->setMinimumHeight(92);
+            button->setMinimumHeight(metrics.action_button_height);
             button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
             return button;
         }
@@ -251,13 +274,14 @@ namespace zeta::holdem::ui {
 
         [[nodiscard]] QWidget* create_strategy_grid(
             const spot_document& document,
-            const std::function<void(const QString&, bool)>& range_toggled)
+            const std::function<void(const QString&, bool)>& range_toggled,
+            const theme::density_metrics& metrics)
         {
             constexpr std::array ranks{"A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"};
             auto* container = make_panel();
             auto* layout = new QGridLayout{container};
-            layout->setContentsMargins(6, 6, 6, 6);
-            layout->setSpacing(2);
+            layout->setContentsMargins(metrics.panel_spacing, metrics.panel_spacing, metrics.panel_spacing, metrics.panel_spacing);
+            layout->setSpacing(metrics.panel_spacing / 2);
             const auto& spot = document.current_spot();
             const auto* artifact = document.artifact() ? &*document.artifact() : nullptr;
             const auto artifact_rows = artifact == nullptr ? std::unordered_map<std::string, const cli::hand_strategy*>{} : strategy_by_hand_class(*artifact);
@@ -307,20 +331,20 @@ namespace zeta::holdem::ui {
                             range_toggled(cell->property("handClass").toString(), enabled);
                         });
                     }
-                    cell->setMinimumSize(48, 38);
+                    cell->setMinimumSize(metrics.range_cell_min_width, metrics.range_cell_min_height);
                     layout->addWidget(cell, row, column);
                 }
             }
             return container;
         }
 
-        [[nodiscard]] QWidget* create_table_overview(const spot_document& document)
+        [[nodiscard]] QWidget* create_table_overview(const spot_document& document, const theme::density_metrics& metrics)
         {
             const auto& spot = document.current_spot();
             auto* panel = make_panel();
             auto* layout = new QVBoxLayout{panel};
-            layout->setContentsMargins(10, 8, 10, 8);
-            layout->setSpacing(8);
+            layout->setContentsMargins(metrics.panel_margin, metrics.panel_margin, metrics.panel_margin, metrics.panel_margin);
+            layout->setSpacing(metrics.panel_spacing);
             layout->addWidget(make_panel_title(QStringLiteral("Overview")));
 
             QString table_text;
@@ -366,12 +390,12 @@ namespace zeta::holdem::ui {
             return panel;
         }
 
-        [[nodiscard]] QWidget* create_actions_panel(const spot_document& document)
+        [[nodiscard]] QWidget* create_actions_panel(const spot_document& document, const theme::density_metrics& metrics)
         {
             auto* panel = make_panel();
             auto* layout = new QHBoxLayout{panel};
-            layout->setContentsMargins(8, 8, 8, 8);
-            layout->setSpacing(8);
+            layout->setContentsMargins(metrics.panel_margin, metrics.panel_margin, metrics.panel_margin, metrics.panel_margin);
+            layout->setSpacing(metrics.panel_spacing);
 
             if (document.artifact()) {
                 const auto actions = aggregate_action_frequencies(*document.artifact());
@@ -379,10 +403,11 @@ namespace zeta::holdem::ui {
                     layout->addWidget(make_action_button(
                         actions[i].first,
                         QStringLiteral("%1%").arg(actions[i].second * 100.0, 0, 'f', 1),
-                        i == 0u ? QStringLiteral("callButton") : QStringLiteral("foldButton")));
+                        i == 0u ? QStringLiteral("callButton") : QStringLiteral("foldButton"),
+                        metrics));
                 }
                 if (actions.empty()) {
-                    layout->addWidget(make_action_button(QStringLiteral("No strategy"), QStringLiteral("0.0%"), QStringLiteral("foldButton")));
+                    layout->addWidget(make_action_button(QStringLiteral("No strategy"), QStringLiteral("0.0%"), QStringLiteral("foldButton"), metrics));
                 }
                 return panel;
             }
@@ -391,11 +416,13 @@ namespace zeta::holdem::ui {
             layout->addWidget(make_action_button(
                 QStringLiteral("%1 range").arg(actor_label(spot)),
                 QStringLiteral("%1 hands").arg(range_tokens(editable_range_index(spot) < spot.ranges.size() ? spot.ranges[editable_range_index(spot)] : std::string{}).size()),
-                QStringLiteral("callButton")));
+                QStringLiteral("callButton"),
+                metrics));
             layout->addWidget(make_action_button(
                 QStringLiteral("Bet size"),
                 QStringLiteral("%1% pot").arg(spot.bet_fraction * 100.0, 0, 'f', 1),
-                QStringLiteral("foldButton")));
+                QStringLiteral("foldButton"),
+                metrics));
             return panel;
         }
 
@@ -429,109 +456,14 @@ namespace zeta::holdem::ui {
             return table;
         }
 
-        void apply_dark_solver_style(QWidget& widget)
-        {
-            widget.setStyleSheet(QStringLiteral(R"(
-                QMainWindow, QMenuBar, QToolBar, QStatusBar, QTabWidget::pane {
-                    background: #111315;
-                    color: #d7dde3;
-                }
-                QMenuBar::item:selected, QToolBar {
-                    background: #1b2025;
-                }
-                QTabBar::tab {
-                    background: #1a1f24;
-                    color: #aeb7c0;
-                    padding: 5px 10px;
-                    border-right: 1px solid #303840;
-                }
-                QTabBar::tab:selected {
-                    background: #242b31;
-                    color: #f3f7fa;
-                }
-                QFrame#solverPanel, QFrame#positionCard, QFrame#activePositionCard {
-                    background: #1a1f24;
-                    border: 1px solid #303840;
-                    border-radius: 4px;
-                }
-                QFrame#activePositionCard {
-                    border: 1px solid #17b68f;
-                }
-                QLabel#panelTitle, QLabel#positionName {
-                    color: #f2f6fa;
-                    font-weight: 600;
-                }
-                QLabel#mutedLabel, QLabel#actionText {
-                    color: #89949d;
-                }
-                QLabel#activeActionText {
-                    color: #47d7b0;
-                    font-weight: 600;
-                }
-                QPushButton#rangeCellPrimary, QPushButton#rangeCellSelected {
-                    background: #347fb8;
-                    color: #f5fbff;
-                    border: 1px solid #4aa0dc;
-                    border-radius: 2px;
-                    padding: 3px;
-                    text-align: left top;
-                }
-                QPushButton#rangeCellSelected {
-                    background: #4fba68;
-                    border: 1px solid #69d781;
-                }
-                QPushButton#rangeCellMuted {
-                    background: #20252a;
-                    color: #56616a;
-                    border: 1px solid #252c32;
-                    border-radius: 2px;
-                    padding: 3px;
-                    text-align: left top;
-                }
-                QLabel#tableFelt {
-                    background: #121619;
-                    border: 1px solid #303840;
-                    border-radius: 70px;
-                    color: #d7dde3;
-                }
-                QPushButton#callButton {
-                    background: #58bd68;
-                    color: white;
-                    border: 0;
-                    border-radius: 3px;
-                    font-size: 22px;
-                    text-align: left;
-                    padding: 10px;
-                }
-                QPushButton#foldButton {
-                    background: #3f86bd;
-                    color: white;
-                    border: 0;
-                    border-radius: 3px;
-                    font-size: 22px;
-                    text-align: left;
-                    padding: 10px;
-                }
-                QPlainTextEdit, QTableWidget {
-                    background: #15191d;
-                    color: #d7dde3;
-                    border: 1px solid #303840;
-                    selection-background-color: #2d6f9f;
-                }
-                QHeaderView::section {
-                    background: #242b31;
-                    color: #d7dde3;
-                    border: 0;
-                    padding: 4px;
-                }
-            )"));
-        }
-
     }
 
     main_window::main_window(QWidget* parent)
         : QMainWindow(parent)
     {
+        active_theme_ = settings_.active_theme();
+        density_mode_ = settings_.density();
+        workspace_splitter_sizes_ = settings_.workspace_splitter_sizes();
         create_actions();
         create_layout();
         new_document();
@@ -540,12 +472,26 @@ namespace zeta::holdem::ui {
 
     void main_window::closeEvent(QCloseEvent* event)
     {
+        finish_solver_if_ready();
+        if (has_active_solve()) {
+            QMessageBox::information(
+                this,
+                tr("Solve in progress"),
+                tr("A solve is still running for %1. Close the window after the solve finishes.")
+                    .arg(active_solver_document_index_ >= 0 && active_solver_document_index_ < static_cast<int>(documents_.size())
+                        ? display_name(documents_[active_solver_document_index_])
+                        : tr("the active document")));
+            event->ignore();
+            return;
+        }
+
         for (int i = static_cast<int>(documents_.size()) - 1; i >= 0; --i) {
             if (!maybe_close_document(i)) {
                 event->ignore();
                 return;
             }
         }
+        save_window_settings();
         event->accept();
     }
 
@@ -559,6 +505,13 @@ namespace zeta::holdem::ui {
         solve_action_ = new QAction{tr("S&olve"), this};
         cancel_action_ = new QAction{tr("&Cancel"), this};
 
+        new_action_->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
+        open_action_->setIcon(style()->standardIcon(QStyle::SP_DialogOpenButton));
+        save_action_->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
+        validate_action_->setIcon(style()->standardIcon(QStyle::SP_DialogApplyButton));
+        solve_action_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+        cancel_action_->setIcon(style()->standardIcon(QStyle::SP_DialogCancelButton));
+
         connect(new_action_, &QAction::triggered, this, [this] { new_document(); });
         connect(open_action_, &QAction::triggered, this, [this] { open_document(); });
         connect(save_action_, &QAction::triggered, this, [this] { save_active_document(); });
@@ -570,11 +523,12 @@ namespace zeta::holdem::ui {
 
     void main_window::create_layout()
     {
-        apply_dark_solver_style(*this);
+        apply_active_theme();
 
         auto* file_menu = menuBar()->addMenu(tr("&File"));
         file_menu->addAction(new_action_);
         file_menu->addAction(open_action_);
+        recent_files_menu_ = file_menu->addMenu(tr("Open &Recent"));
         file_menu->addAction(save_action_);
         file_menu->addAction(save_as_action_);
 
@@ -583,7 +537,36 @@ namespace zeta::holdem::ui {
         solve_menu->addAction(solve_action_);
         solve_menu->addAction(cancel_action_);
 
+        auto* view_menu = menuBar()->addMenu(tr("&View"));
+        auto* theme_menu = view_menu->addMenu(tr("&Theme"));
+        theme_actions_ = new QActionGroup{this};
+        for (const auto& theme : theme::registered_themes()) {
+            auto* action = theme_menu->addAction(QString::fromStdString(theme.display_name));
+            action->setCheckable(true);
+            action->setChecked(theme.id == active_theme_);
+            action->setData(static_cast<int>(theme.id));
+            theme_actions_->addAction(action);
+            connect(action, &QAction::triggered, this, [this, id = theme.id] {
+                set_active_theme(id);
+            });
+        }
+
+        auto* density_menu = view_menu->addMenu(tr("&Density"));
+        density_actions_ = new QActionGroup{this};
+        for (const auto density : {theme::density_mode::compact, theme::density_mode::comfortable}) {
+            auto* action = density_menu->addAction(QString::fromStdString(std::string{theme::density_mode_label(density)}));
+            action->setCheckable(true);
+            action->setChecked(density == density_mode_);
+            action->setData(static_cast<int>(density));
+            density_actions_->addAction(action);
+            connect(action, &QAction::triggered, this, [this, density] {
+                set_density_mode(density);
+            });
+        }
+
         auto* toolbar = addToolBar(tr("Hold'em Solver"));
+        toolbar->setObjectName("commandBar");
+        toolbar->setMovable(false);
         toolbar->addAction(new_action_);
         toolbar->addAction(open_action_);
         toolbar->addAction(save_action_);
@@ -591,27 +574,91 @@ namespace zeta::holdem::ui {
         toolbar->addAction(validate_action_);
         toolbar->addAction(solve_action_);
         toolbar->addAction(cancel_action_);
+        toolbar->addSeparator();
+        auto* iterations_label = new QLabel{tr("Iterations"), toolbar};
+        toolbar->addWidget(iterations_label);
+        iterations_spin_ = new QSpinBox{toolbar};
+        iterations_spin_->setRange(1, 1'000'000);
+        iterations_spin_->setValue(100);
+        iterations_spin_->setSingleStep(50);
+        iterations_spin_->setMaximumWidth(96);
+        iterations_spin_->setToolTip(tr("CFR iterations for the next solve."));
+        toolbar->addWidget(iterations_spin_);
+        auto* output_label = new QLabel{tr(" Output: document artifact"), toolbar};
+        output_label->setObjectName("mutedLabel");
+        toolbar->addWidget(output_label);
+        toolbar->addSeparator();
+        auto* theme_button = new QToolButton{toolbar};
+        theme_button->setText(tr("Theme"));
+        theme_button->setToolTip(tr("Change the active application theme."));
+        theme_button->setPopupMode(QToolButton::InstantPopup);
+        theme_button->setMenu(theme_menu);
+        toolbar->addWidget(theme_button);
 
-        tabs_ = new QTabWidget{this};
+        shell_splitter_ = new QSplitter{Qt::Horizontal, this};
+        shell_splitter_->setObjectName("appShellSplitter");
+
+        auto* rail = new QWidget{shell_splitter_};
+        rail->setObjectName("documentRail");
+        auto* rail_layout = new QVBoxLayout{rail};
+        rail_layout->setContentsMargins(8, 8, 8, 8);
+        rail_layout->setSpacing(6);
+        auto* rail_title = new QLabel{tr("Documents"), rail};
+        rail_title->setObjectName("railTitle");
+        rail_layout->addWidget(rail_title);
+        document_rail_ = new QListWidget{rail};
+        document_rail_->setObjectName("documentRailList");
+        document_rail_->setSelectionMode(QAbstractItemView::SingleSelection);
+        rail_layout->addWidget(document_rail_, 1);
+
+        tabs_ = new QTabWidget{shell_splitter_};
         tabs_->setTabsClosable(true);
-        setCentralWidget(tabs_);
+        shell_splitter_->addWidget(rail);
+        shell_splitter_->addWidget(tabs_);
+        shell_splitter_->setStretchFactor(0, 0);
+        shell_splitter_->setStretchFactor(1, 1);
+        setCentralWidget(shell_splitter_);
+
+        connect(document_rail_, &QListWidget::currentRowChanged, this, [this](const int row) {
+            if (row >= 0 && row < tabs_->count() && tabs_->currentIndex() != row) {
+                tabs_->setCurrentIndex(row);
+            }
+        });
         connect(tabs_, &QTabWidget::currentChanged, this, [this] {
+            if (document_rail_ != nullptr) {
+                QSignalBlocker blocker{document_rail_};
+                document_rail_->setCurrentRow(tabs_->currentIndex());
+            }
             update_window_title();
             update_solver_controls();
         });
         connect(tabs_, &QTabWidget::tabCloseRequested, this, [this](const int index) {
             if (maybe_close_document(index)) {
                 documents_.erase(documents_.begin() + index);
-                delete tabs_->widget(index);
+                if (active_solver_document_index_ > index) {
+                    --active_solver_document_index_;
+                }
+                auto* widget = tabs_->widget(index);
+                tabs_->removeTab(index);
+                delete widget;
+                update_document_rail();
                 update_window_title();
             }
+        });
+
+        solver_poll_timer_ = new QTimer{this};
+        solver_poll_timer_->setInterval(100);
+        connect(solver_poll_timer_, &QTimer::timeout, this, [this] {
+            finish_solver_if_ready();
         });
 
         state_label_ = new QLabel{this};
         status_label_ = new QLabel{this};
         statusBar()->addPermanentWidget(state_label_);
         statusBar()->addWidget(status_label_, 1);
-        resize(1100, 720);
+        resize(1180, 760);
+        update_recent_files_menu();
+        restore_window_settings();
     }
 
     void main_window::new_document()
@@ -625,12 +672,18 @@ namespace zeta::holdem::ui {
         if (path.isEmpty()) {
             return;
         }
-        auto document = spot_document::load(std::filesystem::path{path.toStdWString()});
+        open_document_path(std::filesystem::path{path.toStdWString()});
+    }
+
+    void main_window::open_document_path(const std::filesystem::path& path)
+    {
+        auto document = spot_document::load(path);
         if (!document) {
             QMessageBox::critical(this, tr("Open failed"), error_text(document.error()));
             return;
         }
         add_document_tab(std::move(*document));
+        add_recent_file(path);
     }
 
     bool main_window::save_active_document()
@@ -651,6 +704,7 @@ namespace zeta::holdem::ui {
             return false;
         }
         entry->document.clear_dirty();
+        add_recent_file(entry->document.file_path());
         update_tab_title(tabs_->currentIndex());
         update_window_title();
         return true;
@@ -674,6 +728,7 @@ namespace zeta::holdem::ui {
             QMessageBox::critical(this, tr("Save failed"), error_text(result.error()));
             return false;
         }
+        add_recent_file(entry->document.file_path());
         update_tab_title(tabs_->currentIndex());
         update_window_title();
         return true;
@@ -698,25 +753,142 @@ namespace zeta::holdem::ui {
 
     void main_window::solve_active_document()
     {
+        if (has_active_solve()) {
+            QMessageBox::warning(this, tr("Solve in progress"), tr("Wait for the active solve to finish before starting another one."));
+            return;
+        }
         auto* entry = active_entry();
         if (entry == nullptr || !parse_editor_into_document(*entry, true)) {
             return;
         }
+        const int document_index = tabs_->currentIndex();
         if (auto transition = solver_state_.transition_to(solver_state::starting); !transition) {
             QMessageBox::warning(this, tr("Invalid solver state"), QString::fromStdString(transition.error()));
             return;
         }
-        (void) solver_state_.transition_to(solver_state::completed);
-        status_label_->setText(tr("Spot is ready for solver execution."));
+
+        solver::solver_session_request request{
+            .spot_snapshot = entry->document.current_spot(),
+            .iterations = static_cast<uint64_t>(iterations_spin_->value())
+        };
+        if (const char* revision = std::getenv("ZETA_GIT_REVISION")) {
+            request.runtime.git_revision = revision;
+        }
+
+        active_session_ = std::make_shared<solver::solver_session>(std::move(request));
+        active_solver_document_index_ = document_index;
+        const auto& session_request = active_session_->request();
+        set_solve_console(*entry, tr("Started %1\nIterations: %2\nOutput: store artifact in active document\nPlayers: %3\nStatus: running")
+            .arg(QString::fromStdString(cli::detail::now_utc_iso8601()))
+            .arg(static_cast<qulonglong>(session_request.iterations))
+            .arg(static_cast<qulonglong>(session_request.spot_snapshot.players.size())));
+        entry->editor->setReadOnly(true);
+        status_label_->setText(tr("Solving %1 with %2 iterations.")
+            .arg(display_name(*entry))
+            .arg(static_cast<qulonglong>(session_request.iterations)));
+
+        active_solver_ = std::async(std::launch::async, [session = active_session_] {
+            return session->run();
+        });
+        (void) solver_state_.transition_to(solver_state::running);
+        solver_poll_timer_->start();
         update_solver_controls();
     }
 
     void main_window::cancel_solver()
     {
+        if (!has_active_solve()) {
+            return;
+        }
+        if (active_session_) {
+            active_session_->cancel_before_start();
+        }
         if (solver_state_.state() == solver_state::running || solver_state_.state() == solver_state::starting) {
             (void) solver_state_.transition_to(solver_state::cancelling);
-            (void) solver_state_.transition_to(solver_state::idle);
+            if (active_solver_document_index_ >= 0 && active_solver_document_index_ < static_cast<int>(documents_.size())) {
+                append_solve_console(documents_[active_solver_document_index_], tr("Cancellation requested. The run stops only if solver work has not started."));
+            }
+            status_label_->setText(tr("Cancellation requested."));
         }
+        update_solver_controls();
+    }
+
+    void main_window::finish_solver_if_ready()
+    {
+        if (!active_solver_.valid()) {
+            return;
+        }
+        if (active_solver_.wait_for(std::chrono::milliseconds{0}) != std::future_status::ready) {
+            return;
+        }
+        auto result = active_solver_.get();
+        finish_solver_session(std::move(result));
+    }
+
+    void main_window::finish_solver_session(solver::solver_session_result result)
+    {
+        solver_poll_timer_->stop();
+        const int document_index = active_solver_document_index_;
+        active_solver_document_index_ = -1;
+        active_session_.reset();
+
+        if (document_index < 0 || document_index >= static_cast<int>(documents_.size())) {
+            (void) solver_state_.transition_to(result.terminal_state == solver::solver_session_terminal_state::failed
+                ? solver_state::failed
+                : solver_state::completed);
+            update_solver_controls();
+            return;
+        }
+
+        auto& entry = documents_[document_index];
+        if (entry.editor != nullptr) {
+            entry.editor->setReadOnly(false);
+        }
+
+        QString summary;
+        switch (result.terminal_state) {
+            case solver::solver_session_terminal_state::completed:
+                if (result.artifact) {
+                    entry.document.replace_artifact(std::move(result.artifact));
+                }
+                summary = tr("completed");
+                append_solve_console(entry, tr("Graph build: %1ms\nCFR: %2ms\nExtraction: %3ms\nFinished %4\nStatus: completed")
+                    .arg(result.timing.graph_build_ms, 0, 'f', 3)
+                    .arg(result.timing.cfr_iterations_ms, 0, 'f', 3)
+                    .arg(result.timing.extraction_ms, 0, 'f', 3)
+                    .arg(QString::fromStdString(result.metadata.finished_utc)));
+                (void) solver_state_.transition_to(solver_state::completed);
+                status_label_->setText(tr("Solve completed."));
+                break;
+            case solver::solver_session_terminal_state::failed:
+                summary = tr("failed: %1").arg(QString::fromStdString(result.error_message));
+                append_solve_console(entry, tr("Finished %1\nStatus: failed\nError: %2")
+                    .arg(QString::fromStdString(result.metadata.finished_utc))
+                    .arg(QString::fromStdString(result.error_message)));
+                (void) solver_state_.transition_to(solver_state::failed);
+                status_label_->setText(tr("Solve failed."));
+                break;
+            case solver::solver_session_terminal_state::cancelled_before_start:
+                summary = tr("cancelled-before-start");
+                append_solve_console(entry, tr("Finished %1\nStatus: cancelled before start")
+                    .arg(QString::fromStdString(result.metadata.finished_utc)));
+                if (solver_state_.state() == solver_state::running || solver_state_.state() == solver_state::starting) {
+                    (void) solver_state_.transition_to(solver_state::cancelling);
+                }
+                (void) solver_state_.transition_to(solver_state::idle);
+                status_label_->setText(tr("Solve cancelled before start."));
+                break;
+        }
+
+        auto metadata = entry.document.metadata();
+        metadata.last_solve_summary = summary.toStdString();
+        entry.document.update_metadata(std::move(metadata));
+        entry.document.add_history(solve_history_entry{
+            .timestamp_utc = result.metadata.finished_utc,
+            .iterations = result.iterations,
+            .outcome = summary.toStdString()
+        });
+        refresh_document_tab(document_index);
         update_solver_controls();
     }
 
@@ -724,6 +896,10 @@ namespace zeta::holdem::ui {
     {
         if (index < 0 || index >= static_cast<int>(documents_.size())) {
             return true;
+        }
+        finish_solver_if_ready();
+        if (!maybe_close_active_solve(index)) {
+            return false;
         }
         tabs_->setCurrentIndex(index);
         auto& entry = documents_[index];
@@ -743,6 +919,19 @@ namespace zeta::holdem::ui {
             return true;
         }
         return save_active_document();
+    }
+
+    bool main_window::maybe_close_active_solve(const int index)
+    {
+        if (!has_active_solve() || index != active_solver_document_index_) {
+            return true;
+        }
+        QMessageBox::information(
+            this,
+            tr("Solve in progress"),
+            tr("A solve is still running for %1. Close this document after the solve finishes.")
+                .arg(display_name(documents_[index])));
+        return false;
     }
 
     bool main_window::parse_editor_into_document(document_entry& entry, const bool show_error)
@@ -768,19 +957,32 @@ namespace zeta::holdem::ui {
         documents_.push_back(document_entry{
             .document = std::move(document),
             .editor = nullptr,
+            .solve_console = nullptr,
+            .solve_console_text = "Ready.\nValidate the spot, then solve to stream progress here.",
             .updating_editor = false
         });
         const int index = static_cast<int>(documents_.size()) - 1;
-        auto& entry = documents_.back();
+        auto* root = create_document_widget(index);
+        tabs_->addTab(root, display_name(documents_.back()));
+        tabs_->setCurrentIndex(index);
+        update_document_rail();
+        update_tab_title(index);
+        update_window_title();
+    }
 
+    QWidget* main_window::create_document_widget(const int index)
+    {
+        auto& entry = documents_[index];
+        const auto metrics = theme::metrics_for_density(density_mode_);
         auto* root = new QWidget{this};
+        root->setObjectName("documentRoot");
         auto* root_layout = new QVBoxLayout{root};
-        root_layout->setContentsMargins(6, 6, 6, 6);
-        root_layout->setSpacing(6);
+        root_layout->setContentsMargins(metrics.shell_margin, metrics.shell_margin, metrics.shell_margin, metrics.shell_margin);
+        root_layout->setSpacing(metrics.panel_spacing);
 
         const auto& spot = entry.document.current_spot();
         auto* position_strip = new QHBoxLayout;
-        position_strip->setSpacing(6);
+        position_strip->setSpacing(metrics.panel_spacing);
         for (std::size_t player_index = 0; player_index < spot.players.size(); ++player_index) {
             const auto stack = player_index < spot.stacks.size() ? spot.stacks[player_index] : 0.0;
             const auto contribution = player_index < spot.contributions.size() ? spot.contributions[player_index] : 0.0;
@@ -788,18 +990,21 @@ namespace zeta::holdem::ui {
                 QString::fromStdString(spot.players[player_index]),
                 player_index == spot.root_actor ? tr("To act") : tr("Committed %1").arg(money_text(contribution)),
                 tr("Stack %1").arg(money_text(stack)),
-                player_index == spot.root_actor));
+                player_index == spot.root_actor,
+                metrics));
         }
         position_strip->addStretch(1);
         root_layout->addLayout(position_strip);
 
         auto* workspace = new QSplitter{Qt::Horizontal, root};
+        entry.workspace_splitter = workspace;
         auto* left_tabs = new QTabWidget{workspace};
         left_tabs->setObjectName("solverSubTabs");
 
         auto* raw_editor = new QPlainTextEdit{left_tabs};
         raw_editor->setPlainText(QString::fromStdString(cli::serialize_spot_json(entry.document.current_spot())));
         raw_editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+        raw_editor->setReadOnly(index == active_solver_document_index_ && has_active_solve());
         entry.editor = raw_editor;
 
         auto refresh_raw_editor = [this, raw_editor, index] {
@@ -823,28 +1028,34 @@ namespace zeta::holdem::ui {
             set_range_contains_exact_hand(updated_spot, hand, enabled);
             entry.document.replace_spot(std::move(updated_spot));
             refresh_raw_editor();
-        }), entry.document.artifact() ? tr("Strategy + EV") : tr("Range input"));
+        }, metrics), entry.document.artifact() ? tr("Strategy + EV") : tr("Range input"));
         left_tabs->addTab(raw_editor, tr("Spot JSON"));
 
         auto* right_column = new QWidget{workspace};
+        right_column->setObjectName("inspectorPanel");
         auto* right_layout = new QVBoxLayout{right_column};
-        right_layout->setContentsMargins(0, 0, 0, 0);
-        right_layout->setSpacing(6);
-        right_layout->addWidget(create_table_overview(entry.document));
+        right_layout->setContentsMargins(metrics.shell_margin, metrics.shell_margin, metrics.shell_margin, metrics.shell_margin);
+        right_layout->setSpacing(metrics.panel_spacing);
+        right_layout->addWidget(create_table_overview(entry.document, metrics));
 
-        right_layout->addWidget(create_actions_panel(entry.document));
+        right_layout->addWidget(create_actions_panel(entry.document, metrics));
         right_layout->addWidget(create_hands_panel(entry.document), 1);
 
         workspace->addWidget(left_tabs);
         workspace->addWidget(right_column);
         workspace->setStretchFactor(0, 3);
         workspace->setStretchFactor(1, 2);
+        if (workspace_splitter_sizes_.size() == 2) {
+            workspace->setSizes(workspace_splitter_sizes_);
+        }
         root_layout->addWidget(workspace, 1);
 
         auto* log = new QPlainTextEdit{root};
+        log->setObjectName("solveConsole");
         log->setReadOnly(true);
-        log->setMaximumHeight(82);
-        log->setPlainText(tr("Ready.\nValidate the spot, then solve to stream progress here."));
+        log->setMaximumHeight(metrics.console_height);
+        log->setPlainText(QString::fromStdString(entry.solve_console_text));
+        entry.solve_console = log;
         root_layout->addWidget(log);
 
         connect(raw_editor, &QPlainTextEdit::textChanged, this, [this, raw_editor] {
@@ -859,10 +1070,187 @@ namespace zeta::holdem::ui {
             }
         });
 
-        tabs_->addTab(root, display_name(documents_.back()));
+        return root;
+    }
+
+    void main_window::refresh_document_tab(const int index)
+    {
+        if (index < 0 || index >= static_cast<int>(documents_.size())) {
+            return;
+        }
+        if (documents_[index].workspace_splitter != nullptr) {
+            workspace_splitter_sizes_ = documents_[index].workspace_splitter->sizes();
+        }
+        auto* old_widget = tabs_->widget(index);
+        auto* next_widget = create_document_widget(index);
+        tabs_->removeTab(index);
+        tabs_->insertTab(index, next_widget, display_name(documents_[index]));
         tabs_->setCurrentIndex(index);
+        delete old_widget;
         update_tab_title(index);
+        update_document_rail();
         update_window_title();
+    }
+
+    void main_window::append_solve_console(document_entry& entry, const QString& text)
+    {
+        QString console = QString::fromStdString(entry.solve_console_text);
+        if (!console.isEmpty()) {
+            console += QStringLiteral("\n");
+        }
+        console += text;
+        set_solve_console(entry, console);
+    }
+
+    void main_window::set_solve_console(document_entry& entry, const QString& text)
+    {
+        entry.solve_console_text = text.toStdString();
+        if (entry.solve_console != nullptr) {
+            entry.solve_console->setPlainText(text);
+            entry.solve_console->moveCursor(QTextCursor::End);
+        }
+    }
+
+    void main_window::apply_active_theme()
+    {
+        setStyleSheet(theme::style_sheet(theme::find_theme(active_theme_), density_mode_));
+    }
+
+    void main_window::set_active_theme(const theme::theme_id theme)
+    {
+        if (active_theme_ == theme) {
+            return;
+        }
+        active_theme_ = theme;
+        settings_.set_active_theme(active_theme_);
+        settings_.sync();
+        apply_active_theme();
+        if (theme_actions_ != nullptr) {
+            for (auto* action : theme_actions_->actions()) {
+                action->setChecked(action->data().toInt() == static_cast<int>(active_theme_));
+            }
+        }
+    }
+
+    void main_window::set_density_mode(const theme::density_mode density)
+    {
+        if (density_mode_ == density) {
+            return;
+        }
+        if (auto* entry = active_entry(); entry != nullptr && entry->workspace_splitter != nullptr) {
+            workspace_splitter_sizes_ = entry->workspace_splitter->sizes();
+        }
+        density_mode_ = density;
+        settings_.set_density(density_mode_);
+        settings_.sync();
+        apply_active_theme();
+        if (density_actions_ != nullptr) {
+            for (auto* action : density_actions_->actions()) {
+                action->setChecked(action->data().toInt() == static_cast<int>(density_mode_));
+            }
+        }
+        refresh_all_document_tabs();
+    }
+
+    void main_window::refresh_all_document_tabs()
+    {
+        const int current = tabs_ == nullptr ? -1 : tabs_->currentIndex();
+        for (int index = 0; index < static_cast<int>(documents_.size()); ++index) {
+            auto* old_widget = tabs_->widget(index);
+            auto* next_widget = create_document_widget(index);
+            tabs_->removeTab(index);
+            tabs_->insertTab(index, next_widget, display_name(documents_[index]));
+            delete old_widget;
+            update_tab_title(index);
+        }
+        if (current >= 0 && current < tabs_->count()) {
+            tabs_->setCurrentIndex(current);
+        }
+        update_document_rail();
+    }
+
+    void main_window::update_document_rail()
+    {
+        if (document_rail_ == nullptr || tabs_ == nullptr) {
+            return;
+        }
+        QSignalBlocker blocker{document_rail_};
+        document_rail_->clear();
+        for (int index = 0; index < static_cast<int>(documents_.size()); ++index) {
+            auto title = display_name(documents_[index]);
+            if (documents_[index].document.is_dirty()) {
+                title += QStringLiteral("*");
+            }
+            auto* item = new QListWidgetItem{title};
+            item->setToolTip(documents_[index].document.file_path().empty()
+                ? tr("Unsaved Hold'em spot")
+                : QString::fromStdWString(documents_[index].document.file_path().wstring()));
+            document_rail_->addItem(item);
+        }
+        if (tabs_->currentIndex() >= 0 && tabs_->currentIndex() < document_rail_->count()) {
+            document_rail_->setCurrentRow(tabs_->currentIndex());
+        }
+    }
+
+    void main_window::update_recent_files_menu()
+    {
+        if (recent_files_menu_ == nullptr) {
+            return;
+        }
+        recent_files_menu_->clear();
+        const auto files = settings_.recent_files();
+        if (files.isEmpty()) {
+            auto* empty_action = recent_files_menu_->addAction(tr("No recent files"));
+            empty_action->setEnabled(false);
+            return;
+        }
+        for (const auto& file : files) {
+            auto* action = recent_files_menu_->addAction(QFileInfo{file}.fileName());
+            action->setToolTip(file);
+            connect(action, &QAction::triggered, this, [this, file] {
+                open_document_path(std::filesystem::path{file.toStdWString()});
+            });
+        }
+    }
+
+    void main_window::add_recent_file(const std::filesystem::path& path)
+    {
+        if (path.empty()) {
+            return;
+        }
+        settings_.add_recent_file(QString::fromStdWString(path.wstring()));
+        settings_.sync();
+        update_recent_files_menu();
+    }
+
+    void main_window::restore_window_settings()
+    {
+        if (const auto geometry = settings_.window_geometry(); !geometry.isEmpty()) {
+            restoreGeometry(geometry);
+        }
+        if (shell_splitter_ != nullptr) {
+            const auto sizes = settings_.shell_splitter_sizes();
+            if (sizes.size() == 2) {
+                shell_splitter_->setSizes(sizes);
+            } else {
+                shell_splitter_->setSizes(QList<int>{190, 990});
+            }
+        }
+    }
+
+    void main_window::save_window_settings()
+    {
+        settings_.set_window_geometry(saveGeometry());
+        if (shell_splitter_ != nullptr) {
+            settings_.set_shell_splitter_sizes(shell_splitter_->sizes());
+        }
+        if (auto* entry = active_entry(); entry != nullptr && entry->workspace_splitter != nullptr) {
+            workspace_splitter_sizes_ = entry->workspace_splitter->sizes();
+        }
+        if (workspace_splitter_sizes_.size() == 2) {
+            settings_.set_workspace_splitter_sizes(workspace_splitter_sizes_);
+        }
+        settings_.sync();
     }
 
     void main_window::update_tab_title(const int index)
@@ -875,6 +1263,7 @@ namespace zeta::holdem::ui {
             title += "*";
         }
         tabs_->setTabText(index, title);
+        update_document_rail();
     }
 
     void main_window::update_window_title()
@@ -897,7 +1286,15 @@ namespace zeta::holdem::ui {
         validate_action_->setEnabled(controls.validate_enabled && active_entry() != nullptr);
         solve_action_->setEnabled(controls.solve_enabled && active_entry() != nullptr);
         cancel_action_->setEnabled(controls.cancel_enabled);
+        if (iterations_spin_ != nullptr) {
+            iterations_spin_->setEnabled(!has_active_solve());
+        }
         state_label_->setText(tr("State: %1").arg(QString::fromLatin1(to_string(solver_state_.state()))));
+    }
+
+    bool main_window::has_active_solve() const
+    {
+        return active_solver_.valid();
     }
 
     main_window::document_entry* main_window::active_entry()

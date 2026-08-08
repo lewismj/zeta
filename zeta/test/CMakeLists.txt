@@ -4,12 +4,17 @@ add_executable(zeta_tests
     src/test_holdem.cpp
     src/test_holdem_cli.cpp
     src/test_holdem_ui.cpp
+    ../ui/holdem/src/app/app_settings.cpp
+    ../ui/holdem/src/document/document_json.cpp
+    ../ui/holdem/src/solver/solver_session.cpp
     ../ui/holdem/src/solver_state.cpp
     ../ui/holdem/src/spot_document.cpp
+    ../ui/holdem/src/theme/theme_registry.cpp
+    ../ui/holdem/src/theme/theme_styles.cpp
     src/test_cfr_graph.cpp
 )
 target_include_directories(zeta_tests PRIVATE ${CMAKE_SOURCE_DIR}/zeta/ui/holdem/src)
-target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json)
+target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json Qt6::Widgets)
 target_compile_definitions(zeta_tests PRIVATE BOOST_TEST_DYN_LINK)
 target_compile_features(zeta_tests PRIVATE cxx_std_23)
 
@@ -38,6 +43,60 @@ if(TARGET zeta-check-holdem-tables)
 endif()
 
 if(WIN32)
+    set(ZETA_TEST_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
+    cmake_path(NORMAL_PATH ZETA_TEST_QT_RUNTIME_BIN)
+
+    set(ZETA_TEST_QT_RUNTIME_DLLS
+        brotlicommon.dll
+        brotlidec.dll
+        bz2.dll
+        double-conversion.dll
+        freetype.dll
+        harfbuzz.dll
+        icudt78.dll
+        icuin78.dll
+        icuuc78.dll
+        libpng16.dll
+        md4c.dll
+        pcre2-16.dll
+        Qt6Core.dll
+        Qt6Gui.dll
+        Qt6Widgets.dll
+        zlib1.dll
+        zstd.dll
+    )
+
+    set(ZETA_TEST_QT_RUNTIME_DLL_PATHS "")
+    foreach(_zeta_test_runtime_dll IN LISTS ZETA_TEST_QT_RUNTIME_DLLS)
+        set(_zeta_test_runtime_dll_path "${ZETA_TEST_QT_RUNTIME_BIN}/${_zeta_test_runtime_dll}")
+        if(NOT EXISTS "${_zeta_test_runtime_dll_path}")
+            message(FATAL_ERROR "Required test runtime dependency not found: ${_zeta_test_runtime_dll_path}")
+        endif()
+        list(APPEND ZETA_TEST_QT_RUNTIME_DLL_PATHS "${_zeta_test_runtime_dll_path}")
+    endforeach()
+
+    find_file(ZETA_QOFFSCREEN_PLUGIN
+        NAMES qoffscreen.dll
+        HINTS
+            "${Qt6_DIR}/../../Qt6/plugins/platforms"
+            "${Qt6_DIR}/../../../Qt6/plugins/platforms"
+        REQUIRED
+    )
+
+    add_custom_command(TARGET zeta_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:zeta_tests>
+            ${ZETA_TEST_QT_RUNTIME_DLL_PATHS}
+            $<TARGET_FILE_DIR:zeta_tests>
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:zeta_tests>/platforms
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ZETA_QOFFSCREEN_PLUGIN}"
+            $<TARGET_FILE_DIR:zeta_tests>/platforms
+        COMMAND_EXPAND_LISTS
+        COMMENT "Copying Qt runtime dependencies for zeta_tests"
+    )
+
     if(NOT DEFINED BOOST_ROOT)
         if(DEFINED ENV{BOOST_ROOT})
             set(BOOST_ROOT "$ENV{BOOST_ROOT}")
@@ -58,14 +117,15 @@ if(WIN32)
         set(BOOST_DLL_PATH "${BOOST_ROOT}/bin")
     endif()
     message(STATUS "Looking for Boost DLLs in: ${BOOST_DLL_PATH}")
-    file(GLOB BOOST_TEST_DLL "${BOOST_DLL_PATH}/boost_unit_test_framework*.dll")
+    file(GLOB BOOST_RUNTIME_DLLS "${BOOST_DLL_PATH}/boost_*.dll")
 
-    foreach(dll IN LISTS BOOST_TEST_DLL)
+    if(BOOST_RUNTIME_DLLS)
         add_custom_command(TARGET zeta_tests POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${dll}"
-            $<TARGET_FILE_DIR:zeta_tests>
-            COMMENT "Copying Boost.Test DLL to output directory"
+                ${BOOST_RUNTIME_DLLS}
+                $<TARGET_FILE_DIR:zeta_tests>
+            COMMAND_EXPAND_LISTS
+            COMMENT "Copying Boost runtime DLLs to zeta_tests output directory"
         )
-    endforeach()
+    endif()
 endif()

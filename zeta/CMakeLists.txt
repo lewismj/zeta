@@ -7,9 +7,7 @@ if(ZETA_BUILD_TOOLS)
     add_subdirectory(tools)
 endif()
 
-if(ZETA_BUILD_UI)
-    add_subdirectory(ui)
-endif()
+add_subdirectory(ui)
 
 if(ZETA_BUILD_BENCHMARKS)
     add_subdirectory(benchmark)

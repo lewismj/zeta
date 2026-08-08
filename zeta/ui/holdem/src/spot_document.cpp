@@ -1,14 +1,12 @@
 #include "spot_document.h"
 
-#include <boost/json.hpp>
+#include "document/document_json.h"
 
 #include <utility>
 
 namespace zeta::holdem::ui {
 
     namespace {
-
-        namespace json = boost::json;
 
         [[nodiscard]] document_error from_cli_error(const cli::cli_error& error)
         {
@@ -23,89 +21,6 @@ namespace zeta::holdem::ui {
                     return document_error{document_error_kind::invalid_document, error.message};
             }
             return document_error{document_error_kind::invalid_document, error.message};
-        }
-
-        [[nodiscard]] const json::value* find_value(const json::object& object, const std::string_view key)
-        {
-            return object.if_contains(json::string_view{key.data(), key.size()});
-        }
-
-        [[nodiscard]] std::string json_string(const json::value& value)
-        {
-            const auto& string = value.as_string();
-            return std::string{string.data(), string.size()};
-        }
-
-        [[nodiscard]] json::array string_array_json(const std::vector<std::string>& values)
-        {
-            json::array out;
-            out.reserve(values.size());
-            for (const auto& value : values) {
-                out.emplace_back(value);
-            }
-            return out;
-        }
-
-        void parse_metadata(const json::object& object, spot_document_metadata& metadata)
-        {
-            if (const auto* value = find_value(object, "created_utc"); value != nullptr && value->is_string()) {
-                metadata.created_utc = json_string(*value);
-            }
-            if (const auto* value = find_value(object, "updated_utc"); value != nullptr && value->is_string()) {
-                metadata.updated_utc = json_string(*value);
-            }
-            if (const auto* value = find_value(object, "last_solve_summary"); value != nullptr && value->is_string()) {
-                metadata.last_solve_summary = json_string(*value);
-            }
-            const auto* tags = find_value(object, "tags");
-            if (tags != nullptr && tags->is_array()) {
-                metadata.tags.clear();
-                metadata.tags.reserve(tags->as_array().size());
-                for (const auto& tag : tags->as_array()) {
-                    if (tag.is_string()) {
-                        metadata.tags.push_back(json_string(tag));
-                    }
-                }
-            }
-        }
-
-        void parse_history(const json::object& object, std::vector<solve_history_entry>& history)
-        {
-            const auto* value = find_value(object, "recent_history");
-            if (value == nullptr || !value->is_array()) {
-                return;
-            }
-            for (const auto& entry_value : value->as_array()) {
-                if (!entry_value.is_object()) {
-                    continue;
-                }
-                const auto& entry = entry_value.as_object();
-                const auto* timestamp = find_value(entry, "timestamp_utc");
-                const auto* iterations = find_value(entry, "iterations");
-                const auto* outcome = find_value(entry, "outcome");
-                if (timestamp == nullptr || !timestamp->is_string()
-                    || iterations == nullptr || (!iterations->is_uint64() && !iterations->is_int64())
-                    || outcome == nullptr || !outcome->is_string()) {
-                    continue;
-                }
-                if (iterations->is_int64() && iterations->as_int64() < 0) {
-                    continue;
-                }
-                history.push_back(solve_history_entry{
-                    .timestamp_utc = json_string(*timestamp),
-                    .iterations = iterations->is_uint64()
-                        ? iterations->as_uint64()
-                        : static_cast<uint64_t>(iterations->as_int64()),
-                    .outcome = json_string(*outcome)
-                });
-            }
-        }
-
-        [[nodiscard]] json::value parse_serialized_json(const std::string& text)
-        {
-            boost::system::error_code ec;
-            auto value = json::parse(text, ec);
-            return ec ? json::value{nullptr} : std::move(value);
         }
 
     }
@@ -139,54 +54,19 @@ namespace zeta::holdem::ui {
 
     std::expected<spot_document, document_error> spot_document::parse_json(const std::string_view json)
     {
-        spot_document document = create_new();
-        boost::system::error_code ec;
-        auto value = json::parse(json, ec);
-        if (ec || !value.is_object()) {
-            auto parsed_spot = cli::parse_spot_json(json);
-            if (!parsed_spot) {
-                return std::unexpected(from_cli_error(parsed_spot.error()));
-            }
-            document.spot_ = std::move(*parsed_spot);
-            document.dirty_ = false;
-            return document;
+        spot_document parsed_document = create_new();
+        auto parsed = ui::document::parse_document_json(json);
+        if (!parsed) {
+            return std::unexpected(parsed.error());
         }
-
-        const auto& root = value.as_object();
-        if (find_value(root, "document_schema_version") == nullptr) {
-            auto parsed_spot = cli::parse_spot_json(json);
-            if (!parsed_spot) {
-                return std::unexpected(from_cli_error(parsed_spot.error()));
-            }
-            document.spot_ = std::move(*parsed_spot);
-            document.dirty_ = false;
-            return document;
+        parsed_document.spot_ = std::move(parsed->spot);
+        parsed_document.artifact_ = std::move(parsed->artifact);
+        if (parsed->metadata) {
+            parsed_document.metadata_ = std::move(*parsed->metadata);
         }
-
-        const auto* spot_value = find_value(root, "spot");
-        if (spot_value == nullptr || !spot_value->is_object()) {
-            return std::unexpected(document_error{document_error_kind::parse, "Missing spot object."});
-        }
-        auto parsed_spot = cli::parse_spot_json(json::serialize(*spot_value));
-        if (!parsed_spot) {
-            return std::unexpected(from_cli_error(parsed_spot.error()));
-        }
-        document.spot_ = std::move(*parsed_spot);
-
-        if (const auto* metadata = find_value(root, "metadata"); metadata != nullptr && metadata->is_object()) {
-            parse_metadata(metadata->as_object(), document.metadata_);
-        }
-        if (const auto* artifact = find_value(root, "artifact"); artifact != nullptr && artifact->is_object()) {
-            auto parsed_artifact = cli::parse_artifact_json(json::serialize(*artifact));
-            if (!parsed_artifact) {
-                return std::unexpected(from_cli_error(parsed_artifact.error()));
-            }
-            document.artifact_ = std::move(*parsed_artifact);
-        }
-        parse_history(root, document.recent_history_);
-
-        document.dirty_ = false;
-        return document;
+        parsed_document.recent_history_ = std::move(parsed->recent_history);
+        parsed_document.dirty_ = false;
+        return parsed_document;
     }
 
     const spot& spot_document::current_spot() const noexcept
@@ -263,29 +143,12 @@ namespace zeta::holdem::ui {
 
     std::string spot_document::serialize_json() const
     {
-        json::object metadata;
-        metadata["created_utc"] = metadata_.created_utc;
-        metadata["updated_utc"] = metadata_.updated_utc;
-        metadata["last_solve_summary"] = metadata_.last_solve_summary;
-        metadata["tags"] = string_array_json(metadata_.tags);
-
-        json::array history;
-        history.reserve(recent_history_.size());
-        for (const auto& entry : recent_history_) {
-            json::object entry_object;
-            entry_object["timestamp_utc"] = entry.timestamp_utc;
-            entry_object["iterations"] = entry.iterations;
-            entry_object["outcome"] = entry.outcome;
-            history.emplace_back(std::move(entry_object));
-        }
-
-        json::object root;
-        root["document_schema_version"] = 1;
-        root["metadata"] = std::move(metadata);
-        root["spot"] = parse_serialized_json(cli::serialize_spot_json(spot_));
-        root["artifact"] = artifact_ ? parse_serialized_json(cli::serialize_artifact_json(*artifact_)) : json::value{nullptr};
-        root["recent_history"] = std::move(history);
-        return json::serialize(root);
+        return ui::document::serialize_document_json(ui::document::document_json_payload{
+            .spot = spot_,
+            .artifact = artifact_,
+            .metadata = metadata_,
+            .recent_history = recent_history_
+        });
     }
 
     std::expected<void, document_error> spot_document::save() const

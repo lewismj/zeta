@@ -10,7 +10,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(ZETA_BUILD_TESTS "Build Zeta test targets" ON)
 option(ZETA_BUILD_TOOLS "Build Zeta tool targets" ON)
-option(ZETA_BUILD_UI "Build Zeta UI targets" ON)
 option(ZETA_BUILD_BENCHMARKS "Build Zeta benchmark targets" ON)
 
 set(_zeta_boost_components json)
@@ -22,9 +21,7 @@ if(NOT Boost_FOUND)
     message(FATAL_ERROR "Boost not found.")
 endif()
 
-if(ZETA_BUILD_UI)
-    find_package(Qt6 CONFIG REQUIRED COMPONENTS Widgets)
-endif()
+find_package(Qt6 CONFIG REQUIRED COMPONENTS Widgets)
 
 if(ZETA_BUILD_BENCHMARKS)
     find_package(benchmark 1.9.5 CONFIG QUIET)

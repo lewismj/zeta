@@ -6,10 +6,21 @@ add_executable(zeta-ui-holdem
     src/main.cpp
     src/main_window.h
     src/main_window.cpp
+    src/app/app_settings.h
+    src/app/app_settings.cpp
+    src/document/document_json.h
+    src/document/document_json.cpp
+    src/solver/solver_session.h
+    src/solver/solver_session.cpp
     src/solver_state.h
     src/solver_state.cpp
     src/spot_document.h
     src/spot_document.cpp
+    src/theme/theme.h
+    src/theme/theme_registry.h
+    src/theme/theme_registry.cpp
+    src/theme/theme_styles.h
+    src/theme/theme_styles.cpp
 )
 
 target_link_libraries(zeta-ui-holdem
@@ -19,7 +30,12 @@ target_link_libraries(zeta-ui-holdem
     Qt6::Widgets
 )
 
+target_include_directories(zeta-ui-holdem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(zeta-ui-holdem PRIVATE cxx_std_23)
+
+if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_link_libraries(zeta-ui-holdem PRIVATE m)
+endif()
 
 if(WIN32)
     set(ZETA_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
@@ -64,6 +80,7 @@ if(WIN32)
 
     add_custom_command(TARGET zeta-ui-holdem POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:zeta-ui-holdem>
             ${ZETA_HOLDEM_RUNTIME_DLL_PATHS}
             $<TARGET_FILE_DIR:zeta-ui-holdem>
         COMMAND ${CMAKE_COMMAND} -E make_directory
