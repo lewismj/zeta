@@ -8,7 +8,9 @@
 #include "spot_document.h"
 #include "theme/theme_registry.h"
 #include "theme/theme_styles.h"
+#include "viewmodels/range_view_model.h"
 #include "viewmodels/spot_view_model.h"
+#include "widgets/range_editor.h"
 #include "widgets/spot_builder.h"
 
 #include <QApplication>
@@ -19,6 +21,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QVBoxLayout>
 
@@ -481,6 +484,121 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_reflects_validated_json_edits_in_str
     BOOST_CHECK_EQUAL(player_count->value(), 4);
     BOOST_CHECK_EQUAL(root_actor->currentIndex(), static_cast<int>(edited.root_actor));
     BOOST_CHECK_EQUAL(hero_seat->currentIndex(), static_cast<int>(edited.hero_seat));
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_range_view_model_expands_exact_class_and_weighted_syntax) {
+    {
+        const auto exact = zeta::holdem::ui::viewmodels::analyze_range("AhKh", {});
+        BOOST_CHECK(!exact.parse_issue.has_value());
+        BOOST_REQUIRE_EQUAL(exact.exact_combos.size(), 1u);
+        BOOST_CHECK_EQUAL(exact.exact_combos[0].hand, "AhKh");
+        BOOST_CHECK_EQUAL(exact.exact_combos[0].hand_class, "AKs");
+        BOOST_CHECK_EQUAL(exact.metrics.combos_before_blockers, 1u);
+        BOOST_CHECK_EQUAL(exact.metrics.live_combos, 1u);
+    }
+
+    {
+        const auto classes = zeta::holdem::ui::viewmodels::analyze_range("TT+, AQs-AJs, KQo", {});
+        BOOST_CHECK(!classes.parse_issue.has_value());
+        BOOST_CHECK_EQUAL(classes.metrics.combos_before_blockers, 50u);
+        BOOST_CHECK_EQUAL(classes.metrics.live_combos, 50u);
+    }
+
+    {
+        const auto weighted = zeta::holdem::ui::viewmodels::analyze_range("AA:0.5, AKs:0.25", {});
+        BOOST_CHECK(!weighted.parse_issue.has_value());
+        const auto labels = zeta::holdem::ui::viewmodels::hand_class_labels();
+        const auto aa = std::distance(labels.begin(), std::ranges::find(labels, std::string{"AA"}));
+        const auto aks = std::distance(labels.begin(), std::ranges::find(labels, std::string{"AKs"}));
+        BOOST_REQUIRE_LT(aa, static_cast<std::ptrdiff_t>(weighted.matrix.size()));
+        BOOST_REQUIRE_LT(aks, static_cast<std::ptrdiff_t>(weighted.matrix.size()));
+        BOOST_CHECK_CLOSE(weighted.matrix[static_cast<std::size_t>(aa)].max_weight, 0.5f, 0.001);
+        BOOST_CHECK_CLOSE(weighted.matrix[static_cast<std::size_t>(aks)].max_weight, 0.25f, 0.001);
+        const auto normalized = zeta::holdem::ui::viewmodels::normalized_exact_range_text(weighted);
+        BOOST_CHECK(normalized.find(":0.5") != std::string::npos);
+        BOOST_CHECK(normalized.find(":0.25") != std::string::npos);
+    }
+
+    const auto invalid = zeta::holdem::ui::viewmodels::analyze_range("AA AKs", {});
+    BOOST_REQUIRE(invalid.parse_issue.has_value());
+    BOOST_CHECK_EQUAL(invalid.parse_issue->position, 3u);
+
+    const auto without_aces = zeta::holdem::ui::viewmodels::analyze_range(
+        zeta::holdem::ui::viewmodels::set_hand_class_enabled("TT+", "AA", false),
+        {});
+    BOOST_CHECK(!without_aces.parse_issue.has_value());
+    BOOST_CHECK_EQUAL(without_aces.metrics.combos_before_blockers, 24u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_range_view_model_reports_board_blockers_live_metrics_and_empty_ranges) {
+    const auto blocked = zeta::holdem::ui::viewmodels::analyze_range("AA", {"As"});
+    BOOST_CHECK(!blocked.parse_issue.has_value());
+    BOOST_CHECK_EQUAL(blocked.metrics.combos_before_blockers, 6u);
+    BOOST_CHECK_EQUAL(blocked.metrics.live_combos, 3u);
+    BOOST_REQUIRE_EQUAL(blocked.metrics.blocked_combos_by_card.size(), 1u);
+    BOOST_CHECK_EQUAL(blocked.metrics.blocked_combos_by_card[0].first, "As");
+    BOOST_CHECK_EQUAL(blocked.metrics.blocked_combos_by_card[0].second, 3u);
+
+    auto spot = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::heads_up_river);
+    spot.ranges[0] = "AsKd";
+    const auto issues = zeta::holdem::ui::viewmodels::validate_structured_spot(spot);
+    BOOST_CHECK(has_issue(issues, "ranges"));
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_range_text_roundtrips_weighted_ranges_through_spot_json_per_seat) {
+    auto spot = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_flop);
+    spot.ranges = {"AA:0.5, AKs:0.25", "QQ+, AJs:0.75", "AhKh:0.2"};
+
+    const auto json = zeta::holdem::cli::serialize_spot_json(spot);
+    const auto parsed = zeta::holdem::cli::parse_spot_json(json);
+
+    BOOST_REQUIRE(parsed.has_value());
+    BOOST_REQUIRE_EQUAL(parsed->ranges.size(), 3u);
+    BOOST_CHECK_EQUAL(parsed->ranges[0], "AA:0.5, AKs:0.25");
+    BOOST_CHECK_EQUAL(parsed->ranges[1], "QQ+, AJs:0.75");
+    BOOST_CHECK_EQUAL(parsed->ranges[2], "AhKh:0.2");
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_range_editor_authors_all_seat_ranges_without_raw_json) {
+    auto& app = qt_app();
+    auto initial = zeta::holdem::ui::viewmodels::resize_player_count(
+        zeta::holdem::ui::viewmodels::make_template_spot(zeta::holdem::ui::viewmodels::spot_template_kind::heads_up_river),
+        6);
+    auto observed = initial;
+
+    zeta::holdem::ui::widgets::range_editor editor{
+        initial,
+        zeta::holdem::ui::theme::metrics_for_density(zeta::holdem::ui::theme::density_mode::comfortable),
+        [&observed](zeta::holdem::ui::spot next) {
+            observed = std::move(next);
+        },
+        nullptr};
+
+    auto* seat_selector = editor.findChild<QComboBox*>("rangeSeatSelector");
+    auto* range_text = editor.findChild<QPlainTextEdit*>("rangeTextEditor");
+    auto* combo_table = editor.findChild<QTableWidget*>("exactComboTable");
+    BOOST_REQUIRE(seat_selector != nullptr);
+    BOOST_REQUIRE(range_text != nullptr);
+    BOOST_REQUIRE(combo_table != nullptr);
+
+    const std::vector<std::string> ranges{
+        "AA:0.5",
+        "KK",
+        "QQ",
+        "JJ",
+        "TT",
+        "AKs:0.25"
+    };
+    for (std::size_t seat = 0; seat < ranges.size(); ++seat) {
+        seat_selector->setCurrentIndex(static_cast<int>(seat));
+        range_text->setPlainText(QString::fromStdString(ranges[seat]));
+        app.processEvents();
+        BOOST_CHECK_EQUAL(observed.ranges[seat], ranges[seat]);
+    }
+
+    BOOST_CHECK_EQUAL(combo_table->rowCount(), 4);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_theme_registry_exposes_required_stage2_themes_and_tokens) {

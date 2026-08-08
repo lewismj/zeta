@@ -1,5 +1,7 @@
 #include "viewmodels/spot_view_model.h"
 
+#include "viewmodels/range_view_model.h"
+
 #include <algorithm>
 #include <array>
 #include <set>
@@ -212,6 +214,17 @@ namespace zeta::holdem::ui::viewmodels {
             }
             if (source.contributions[seat] < 0.0) {
                 issues.push_back({"contributions", "Contributions must be non-negative."});
+            }
+        }
+
+        const auto range_count = std::min(source.players.size(), source.ranges.size());
+        for (std::size_t seat = 0; seat < range_count; ++seat) {
+            const auto analysis = analyze_range(source.ranges[seat], source.board);
+            if (analysis.parse_issue) {
+                issues.push_back({"ranges", "Seat " + std::to_string(seat + 1u) + " range is invalid at position "
+                    + std::to_string(analysis.parse_issue->position) + ": " + analysis.parse_issue->message});
+            } else if (analysis.metrics.live_combos == 0u) {
+                issues.push_back({"ranges", "Seat " + std::to_string(seat + 1u) + " range has no live combos after board blockers."});
             }
         }
 

@@ -21,8 +21,12 @@ add_executable(zeta-ui-holdem
     src/theme/theme_registry.cpp
     src/theme/theme_styles.h
     src/theme/theme_styles.cpp
+    src/viewmodels/range_view_model.h
+    src/viewmodels/range_view_model.cpp
     src/viewmodels/spot_view_model.h
     src/viewmodels/spot_view_model.cpp
+    src/widgets/range_editor.h
+    src/widgets/range_editor.cpp
     src/widgets/spot_builder.h
     src/widgets/spot_builder.cpp
     src/widgets/table_state_view.h

@@ -35,6 +35,7 @@
 #include "theme/theme_registry.h"
 #include "theme/theme_styles.h"
 #include "viewmodels/spot_view_model.h"
+#include "widgets/range_editor.h"
 #include "widgets/spot_builder.h"
 #include "widgets/table_state_view.h"
 
@@ -101,6 +102,15 @@ namespace zeta::holdem::ui {
                 return QString::fromStdString(spot.players[spot.hero_seat]);
             }
             return QStringLiteral("Hero %1").arg(static_cast<unsigned>(spot.hero_seat));
+        }
+
+        [[nodiscard]] QString validation_text(const std::vector<viewmodels::spot_validation_issue>& issues)
+        {
+            QStringList lines;
+            for (const auto& issue : issues) {
+                lines.push_back(QString::fromStdString(issue.message));
+            }
+            return lines.join(QStringLiteral("\n"));
         }
 
         [[nodiscard]] std::size_t editable_range_index(const spot& spot)
@@ -872,6 +882,13 @@ namespace zeta::holdem::ui {
             }
             return false;
         }
+        const auto issues = viewmodels::validate_structured_spot(*parsed);
+        if (!issues.empty()) {
+            if (show_error) {
+                QMessageBox::critical(this, tr("Invalid spot"), validation_text(issues));
+            }
+            return false;
+        }
         const bool was_dirty = entry.document.is_dirty();
         entry.document.replace_spot(std::move(*parsed));
         if (!was_dirty) {
@@ -963,16 +980,22 @@ namespace zeta::holdem::ui {
             },
             left_tabs};
         left_tabs->addTab(builder, tr("Spot Builder"));
-        left_tabs->addTab(create_strategy_grid(entry.document, [this, index, refresh_raw_editor](const QString& hand, const bool enabled) {
-            if (index < 0 || index >= static_cast<int>(documents_.size())) {
-                return;
-            }
-            auto& entry = documents_[index];
-            auto updated_spot = entry.document.current_spot();
-            set_range_contains_exact_hand(updated_spot, hand, enabled);
-            entry.document.replace_spot(std::move(updated_spot));
-            refresh_raw_editor();
-        }, metrics), entry.document.artifact() ? tr("Strategy + EV") : tr("Range input"));
+        if (entry.document.artifact()) {
+            left_tabs->addTab(create_strategy_grid(entry.document, {}, metrics), tr("Strategy + EV"));
+        } else {
+            auto* range_editor = new widgets::range_editor{
+                entry.document.current_spot(),
+                metrics,
+                [this, index, refresh_raw_editor](spot next_spot) {
+                    if (index < 0 || index >= static_cast<int>(documents_.size())) {
+                        return;
+                    }
+                    documents_[index].document.replace_spot(std::move(next_spot));
+                    refresh_raw_editor();
+                },
+                left_tabs};
+            left_tabs->addTab(range_editor, tr("Ranges"));
+        }
         left_tabs->addTab(raw_editor, tr("Spot JSON"));
 
         right_layout->addWidget(create_actions_panel(entry.document, metrics));

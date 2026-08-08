@@ -81,7 +81,7 @@ namespace zeta::holdem::ui::theme {
                 color: %7;
                 font-weight: 600;
             }
-            QLabel#errorLabel {
+            QLabel#errorLabel, QLabel#rangeParseError {
                 color: %27;
                 font-weight: 600;
             }

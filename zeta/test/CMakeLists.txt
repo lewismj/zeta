@@ -11,7 +11,9 @@ add_executable(zeta_tests
     ../ui/holdem/src/spot_document.cpp
     ../ui/holdem/src/theme/theme_registry.cpp
     ../ui/holdem/src/theme/theme_styles.cpp
+    ../ui/holdem/src/viewmodels/range_view_model.cpp
     ../ui/holdem/src/viewmodels/spot_view_model.cpp
+    ../ui/holdem/src/widgets/range_editor.cpp
     ../ui/holdem/src/widgets/spot_builder.cpp
     ../ui/holdem/src/widgets/table_state_view.cpp
     src/test_cfr_graph.cpp
