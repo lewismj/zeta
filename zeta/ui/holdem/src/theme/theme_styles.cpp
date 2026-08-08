@@ -66,7 +66,7 @@ namespace zeta::holdem::ui::theme {
             QSplitter::handle {
                 background: %5;
             }
-            QFrame#solverPanel, QFrame#positionCard, QFrame#activePositionCard, QWidget#documentRail, QWidget#inspectorPanel {
+            QFrame#solverPanel, QFrame#positionCard, QFrame#activePositionCard, QFrame#tableStatePanel, QWidget#documentRail, QWidget#inspectorPanel {
                 background: %2;
                 border: 1px solid %5;
                 border-radius: 4px;
@@ -77,8 +77,12 @@ namespace zeta::holdem::ui::theme {
                 border-bottom: 0;
                 border-radius: 0;
             }
-            QLabel#panelTitle, QLabel#positionName, QLabel#railTitle {
+            QLabel#panelTitle, QLabel#positionName, QLabel#railTitle, QLabel#spotSummaryHeader {
                 color: %7;
+                font-weight: 600;
+            }
+            QLabel#errorLabel {
+                color: %27;
                 font-weight: 600;
             }
             QLabel#mutedLabel, QLabel#actionText {
@@ -109,7 +113,7 @@ namespace zeta::holdem::ui::theme {
                 color: %7;
                 border-left: 2px solid %10;
             }
-            QPlainTextEdit, QTableWidget, QSpinBox {
+            QPlainTextEdit, QTableWidget, QSpinBox, QDoubleSpinBox, QComboBox {
                 background: %4;
                 color: %7;
                 border: 1px solid %5;
@@ -154,6 +158,22 @@ namespace zeta::holdem::ui::theme {
                 border-radius: 70px;
                 color: %7;
             }
+            QLabel#seatCard, QLabel#heroSeatCard, QLabel#activeSeatCard, QLabel#activeHeroSeatCard {
+                background: %3;
+                color: %8;
+                border: 1px solid %5;
+                border-radius: 4px;
+                padding: %23px;
+            }
+            QLabel#heroSeatCard {
+                border-color: %11;
+                color: %7;
+            }
+            QLabel#activeSeatCard, QLabel#activeHeroSeatCard {
+                border-color: %21;
+                color: %21;
+                font-weight: 600;
+            }
             QPushButton#callButton {
                 background: %21;
                 color: %1;
@@ -196,7 +216,8 @@ namespace zeta::holdem::ui::theme {
             .arg(density == density_mode::compact ? 4 : 6)
             .arg(density == density_mode::compact ? 8 : 10)
             .arg(density == density_mode::compact ? 18 : 22)
-            .arg(density == density_mode::compact ? 8 : 10);
+            .arg(density == density_mode::compact ? 8 : 10)
+            .arg(q(t.error));
     }
 
 }

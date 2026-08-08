@@ -21,6 +21,12 @@ add_executable(zeta-ui-holdem
     src/theme/theme_registry.cpp
     src/theme/theme_styles.h
     src/theme/theme_styles.cpp
+    src/viewmodels/spot_view_model.h
+    src/viewmodels/spot_view_model.cpp
+    src/widgets/spot_builder.h
+    src/widgets/spot_builder.cpp
+    src/widgets/table_state_view.h
+    src/widgets/table_state_view.cpp
 )
 
 target_link_libraries(zeta-ui-holdem

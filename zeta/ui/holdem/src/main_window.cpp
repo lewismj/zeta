@@ -34,6 +34,9 @@
 
 #include "theme/theme_registry.h"
 #include "theme/theme_styles.h"
+#include "viewmodels/spot_view_model.h"
+#include "widgets/spot_builder.h"
+#include "widgets/table_state_view.h"
 
 #include <algorithm>
 #include <array>
@@ -109,31 +112,6 @@ namespace zeta::holdem::ui {
                 return spot.hero_seat;
             }
             return 0;
-        }
-
-        [[nodiscard]] QFrame* make_position_card(
-            const QString& position,
-            const QString& action,
-            const QString& stack,
-            const bool active,
-            const theme::density_metrics& metrics)
-        {
-            auto* card = make_panel();
-            card->setObjectName(active ? "activePositionCard" : "positionCard");
-            card->setMinimumWidth(92);
-            auto* layout = new QVBoxLayout{card};
-            layout->setContentsMargins(metrics.panel_margin, metrics.panel_margin, metrics.panel_margin, metrics.panel_margin);
-            layout->setSpacing(metrics.panel_spacing / 2);
-
-            auto* name = new QLabel{position};
-            name->setObjectName("positionName");
-            auto* action_label = new QLabel{action};
-            action_label->setObjectName(active ? "activeActionText" : "actionText");
-            auto* stack_label = make_muted_label(stack);
-            layout->addWidget(name);
-            layout->addWidget(action_label);
-            layout->addWidget(stack_label);
-            return card;
         }
 
         [[nodiscard]] QPushButton* make_action_button(
@@ -336,58 +314,6 @@ namespace zeta::holdem::ui {
                 }
             }
             return container;
-        }
-
-        [[nodiscard]] QWidget* create_table_overview(const spot_document& document, const theme::density_metrics& metrics)
-        {
-            const auto& spot = document.current_spot();
-            auto* panel = make_panel();
-            auto* layout = new QVBoxLayout{panel};
-            layout->setContentsMargins(metrics.panel_margin, metrics.panel_margin, metrics.panel_margin, metrics.panel_margin);
-            layout->setSpacing(metrics.panel_spacing);
-            layout->addWidget(make_panel_title(QStringLiteral("Overview")));
-
-            QString table_text;
-            for (std::size_t i = 0; i < spot.players.size(); ++i) {
-                if (!table_text.isEmpty()) {
-                    table_text += QStringLiteral("\n");
-                }
-                QString markers;
-                if (i == spot.root_actor) {
-                    markers += QStringLiteral(" to act");
-                }
-                if (i == spot.hero_seat) {
-                    markers += QStringLiteral(" hero");
-                }
-                const auto stack = i < spot.stacks.size() ? spot.stacks[i] : 0.0;
-                const auto contribution = i < spot.contributions.size() ? spot.contributions[i] : 0.0;
-                table_text += QStringLiteral("%1%2\n  stack %3 | committed %4")
-                    .arg(QString::fromStdString(spot.players[i]))
-                    .arg(markers)
-                    .arg(money_text(stack))
-                    .arg(money_text(contribution));
-            }
-            auto* table = new QLabel{table_text};
-            table->setAlignment(Qt::AlignCenter);
-            table->setObjectName("tableFelt");
-            table->setMinimumHeight(145);
-            layout->addWidget(table);
-
-            QString board;
-            for (const auto& card : spot.board) {
-                if (!board.isEmpty()) {
-                    board += QStringLiteral(" ");
-                }
-                board += QString::fromStdString(card);
-            }
-            auto* details = make_muted_label(QStringLiteral("Street: %1\nBoard: %2\nPot: %3\nHero: %4  |  Actor: %5")
-                .arg(QString::fromStdString(spot.street))
-                .arg(board.isEmpty() ? QStringLiteral("-") : board)
-                .arg(money_text(spot.gross_pot))
-                .arg(hero_label(spot))
-                .arg(actor_label(spot)));
-            layout->addWidget(details);
-            return panel;
         }
 
         [[nodiscard]] QWidget* create_actions_panel(const spot_document& document, const theme::density_metrics& metrics)
@@ -746,6 +672,9 @@ namespace zeta::holdem::ui {
         }
         update_solver_controls();
         const bool ok = parse_editor_into_document(*entry, true);
+        if (ok) {
+            refresh_document_tab(tabs_->currentIndex());
+        }
         (void) solver_state_.transition_to(ok ? solver_state::idle : solver_state::failed);
         status_label_->setText(ok ? tr("Spot is valid.") : tr("Spot validation failed."));
         update_solver_controls();
@@ -980,21 +909,9 @@ namespace zeta::holdem::ui {
         root_layout->setContentsMargins(metrics.shell_margin, metrics.shell_margin, metrics.shell_margin, metrics.shell_margin);
         root_layout->setSpacing(metrics.panel_spacing);
 
-        const auto& spot = entry.document.current_spot();
-        auto* position_strip = new QHBoxLayout;
-        position_strip->setSpacing(metrics.panel_spacing);
-        for (std::size_t player_index = 0; player_index < spot.players.size(); ++player_index) {
-            const auto stack = player_index < spot.stacks.size() ? spot.stacks[player_index] : 0.0;
-            const auto contribution = player_index < spot.contributions.size() ? spot.contributions[player_index] : 0.0;
-            position_strip->addWidget(make_position_card(
-                QString::fromStdString(spot.players[player_index]),
-                player_index == spot.root_actor ? tr("To act") : tr("Committed %1").arg(money_text(contribution)),
-                tr("Stack %1").arg(money_text(stack)),
-                player_index == spot.root_actor,
-                metrics));
-        }
-        position_strip->addStretch(1);
-        root_layout->addLayout(position_strip);
+        auto* summary_header = make_panel_title(QString::fromStdString(viewmodels::spot_summary_text(entry.document.current_spot(), entry.document.artifact().has_value())));
+        summary_header->setObjectName("spotSummaryHeader");
+        root_layout->addWidget(summary_header);
 
         auto* workspace = new QSplitter{Qt::Horizontal, root};
         entry.workspace_splitter = workspace;
@@ -1007,7 +924,15 @@ namespace zeta::holdem::ui {
         raw_editor->setReadOnly(index == active_solver_document_index_ && has_active_solve());
         entry.editor = raw_editor;
 
-        auto refresh_raw_editor = [this, raw_editor, index] {
+        auto* right_column = new QWidget{workspace};
+        right_column->setObjectName("inspectorPanel");
+        auto* right_layout = new QVBoxLayout{right_column};
+        right_layout->setContentsMargins(metrics.shell_margin, metrics.shell_margin, metrics.shell_margin, metrics.shell_margin);
+        right_layout->setSpacing(metrics.panel_spacing);
+        auto* table_view = new widgets::table_state_view{entry.document.current_spot(), metrics, right_column};
+        right_layout->addWidget(table_view);
+
+        auto refresh_raw_editor = [this, raw_editor, summary_header, table_view, index] {
             if (index < 0 || index >= static_cast<int>(documents_.size())) {
                 return;
             }
@@ -1015,10 +940,29 @@ namespace zeta::holdem::ui {
             entry.updating_editor = true;
             raw_editor->setPlainText(QString::fromStdString(cli::serialize_spot_json(entry.document.current_spot())));
             entry.updating_editor = false;
+            summary_header->setText(QString::fromStdString(viewmodels::spot_summary_text(entry.document.current_spot(), entry.document.artifact().has_value())));
+            table_view->set_spot(entry.document.current_spot());
             update_tab_title(index);
             update_window_title();
         };
 
+        auto* builder = new widgets::spot_builder{
+            entry.document.current_spot(),
+            metrics,
+            [this, index, refresh_raw_editor](spot next_spot) {
+                if (index < 0 || index >= static_cast<int>(documents_.size())) {
+                    return;
+                }
+                documents_[index].document.replace_spot(std::move(next_spot));
+                refresh_raw_editor();
+            },
+            [this](const spot& source) {
+                auto document = spot_document::create_new();
+                document.replace_spot(source);
+                add_document_tab(std::move(document));
+            },
+            left_tabs};
+        left_tabs->addTab(builder, tr("Spot Builder"));
         left_tabs->addTab(create_strategy_grid(entry.document, [this, index, refresh_raw_editor](const QString& hand, const bool enabled) {
             if (index < 0 || index >= static_cast<int>(documents_.size())) {
                 return;
@@ -1030,13 +974,6 @@ namespace zeta::holdem::ui {
             refresh_raw_editor();
         }, metrics), entry.document.artifact() ? tr("Strategy + EV") : tr("Range input"));
         left_tabs->addTab(raw_editor, tr("Spot JSON"));
-
-        auto* right_column = new QWidget{workspace};
-        right_column->setObjectName("inspectorPanel");
-        auto* right_layout = new QVBoxLayout{right_column};
-        right_layout->setContentsMargins(metrics.shell_margin, metrics.shell_margin, metrics.shell_margin, metrics.shell_margin);
-        right_layout->setSpacing(metrics.panel_spacing);
-        right_layout->addWidget(create_table_overview(entry.document, metrics));
 
         right_layout->addWidget(create_actions_panel(entry.document, metrics));
         right_layout->addWidget(create_hands_panel(entry.document), 1);

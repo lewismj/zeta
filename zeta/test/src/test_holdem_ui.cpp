@@ -8,18 +8,24 @@
 #include "spot_document.h"
 #include "theme/theme_registry.h"
 #include "theme/theme_styles.h"
+#include "viewmodels/spot_view_model.h"
+#include "widgets/spot_builder.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QImage>
 #include <QLabel>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTemporaryDir>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <set>
 #include <regex>
+#include <utility>
 
 namespace {
 
@@ -82,6 +88,15 @@ namespace {
         for (const auto& color : tokens.range_heat) {
             colors.insert(color);
         }
+    }
+
+    [[nodiscard]] bool has_issue(
+        const std::vector<zeta::holdem::ui::viewmodels::spot_validation_issue>& issues,
+        const std::string& field)
+    {
+        return std::ranges::any_of(issues, [&field](const auto& issue) {
+            return issue.field == field;
+        });
     }
 
 }
@@ -332,6 +347,140 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_reports_failed_and_cancelled_befor
     BOOST_CHECK(cancelled.terminal_state == zeta::holdem::ui::solver::solver_session_terminal_state::cancelled_before_start);
     BOOST_CHECK(!cancelled.artifact.has_value());
     BOOST_CHECK(cancelled.error_message.empty());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_builder_resizes_player_arrays_safely) {
+    auto spot = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::heads_up_river);
+    spot.players[0] = "Hero";
+    spot.ranges[0] = "AhAd";
+    spot.stacks[0] = 250.0;
+    spot.contributions[0] = 75.0;
+    spot.root_actor = 1;
+    spot.hero_seat = 1;
+
+    auto resized = zeta::holdem::ui::viewmodels::resize_player_count(std::move(spot), 6);
+
+    BOOST_REQUIRE_EQUAL(resized.players.size(), 6u);
+    BOOST_CHECK_EQUAL(resized.ranges.size(), 6u);
+    BOOST_CHECK_EQUAL(resized.stacks.size(), 6u);
+    BOOST_CHECK_EQUAL(resized.contributions.size(), 6u);
+    BOOST_CHECK_EQUAL(resized.players[0], "Hero");
+    BOOST_CHECK_EQUAL(resized.ranges[0], "AhAd");
+    BOOST_CHECK_EQUAL(resized.stacks[0], 250.0);
+    BOOST_CHECK_EQUAL(resized.contributions[0], 75.0);
+    BOOST_CHECK_EQUAL(resized.ranges[5], "AA");
+    BOOST_CHECK_EQUAL(resized.stacks[5], 100.0);
+    BOOST_CHECK_EQUAL(resized.contributions[5], 0.0);
+
+    resized.root_actor = 5;
+    resized.hero_seat = 4;
+    auto shrunk = zeta::holdem::ui::viewmodels::resize_player_count(std::move(resized), 3);
+
+    BOOST_REQUIRE_EQUAL(shrunk.players.size(), 3u);
+    BOOST_CHECK_EQUAL(shrunk.ranges.size(), 3u);
+    BOOST_CHECK_EQUAL(shrunk.stacks.size(), 3u);
+    BOOST_CHECK_EQUAL(shrunk.contributions.size(), 3u);
+    BOOST_CHECK_EQUAL(shrunk.root_actor, 2u);
+    BOOST_CHECK_EQUAL(shrunk.hero_seat, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_validation_reports_board_actor_and_array_errors) {
+    auto spot = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_flop);
+    BOOST_CHECK(zeta::holdem::ui::viewmodels::validate_structured_spot(spot).empty());
+
+    spot.board = {"As", "As", "7c"};
+    auto issues = zeta::holdem::ui::viewmodels::validate_structured_spot(spot);
+    BOOST_CHECK(has_issue(issues, "board"));
+
+    spot.board = {"As", "Kd"};
+    issues = zeta::holdem::ui::viewmodels::validate_structured_spot(spot);
+    BOOST_CHECK(has_issue(issues, "board"));
+
+    spot.board = {"As", "Kd", "1x"};
+    issues = zeta::holdem::ui::viewmodels::validate_structured_spot(spot);
+    BOOST_CHECK(has_issue(issues, "board"));
+
+    spot.board = {"As", "Kd", "7c"};
+    spot.root_actor = 7;
+    spot.hero_seat = 8;
+    spot.ranges.pop_back();
+    spot.stacks.pop_back();
+    spot.contributions.pop_back();
+    issues = zeta::holdem::ui::viewmodels::validate_structured_spot(spot);
+    BOOST_CHECK(has_issue(issues, "root_actor"));
+    BOOST_CHECK(has_issue(issues, "hero_seat"));
+    BOOST_CHECK(has_issue(issues, "ranges"));
+    BOOST_CHECK(has_issue(issues, "stacks"));
+    BOOST_CHECK(has_issue(issues, "contributions"));
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_templates_roundtrip_to_valid_json_for_two_to_six_players) {
+    for (const auto kind : {
+             zeta::holdem::ui::viewmodels::spot_template_kind::heads_up_river,
+             zeta::holdem::ui::viewmodels::spot_template_kind::three_way_flop,
+             zeta::holdem::ui::viewmodels::spot_template_kind::four_way_turn}) {
+        const auto templated = zeta::holdem::ui::viewmodels::make_template_spot(kind);
+        BOOST_CHECK(zeta::holdem::ui::viewmodels::validate_structured_spot(templated).empty());
+        const auto parsed = zeta::holdem::cli::parse_spot_json(zeta::holdem::cli::serialize_spot_json(templated));
+        BOOST_REQUIRE(parsed.has_value());
+        BOOST_CHECK_EQUAL(parsed->players.size(), templated.players.size());
+        BOOST_CHECK_EQUAL(parsed->board.size(), templated.board.size());
+    }
+
+    auto resizable = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::heads_up_river);
+    for (std::size_t count = 2; count <= 6; ++count) {
+        auto spot = zeta::holdem::ui::viewmodels::resize_player_count(resizable, count);
+        spot.root_actor = static_cast<uint8_t>(count - 1u);
+        spot.hero_seat = 0;
+        BOOST_CHECK(zeta::holdem::ui::viewmodels::validate_structured_spot(spot).empty());
+        const auto parsed = zeta::holdem::cli::parse_spot_json(zeta::holdem::cli::serialize_spot_json(spot));
+        BOOST_REQUIRE(parsed.has_value());
+        BOOST_CHECK_EQUAL(parsed->players.size(), count);
+        BOOST_CHECK_EQUAL(parsed->ranges.size(), count);
+        BOOST_CHECK_EQUAL(parsed->stacks.size(), count);
+        BOOST_CHECK_EQUAL(parsed->contributions.size(), count);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_reflects_validated_json_edits_in_structured_controls) {
+    auto& app = qt_app();
+    auto initial = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::heads_up_river);
+    auto observed = initial;
+    zeta::holdem::ui::widgets::spot_builder builder{
+        initial,
+        zeta::holdem::ui::theme::metrics_for_density(zeta::holdem::ui::theme::density_mode::comfortable),
+        [&observed](zeta::holdem::ui::spot next) {
+            observed = std::move(next);
+        },
+        {},
+        nullptr};
+
+    auto edited = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::four_way_turn);
+    edited.players = {"A", "B", "C", "D"};
+    const auto parsed = zeta::holdem::cli::parse_spot_json(zeta::holdem::cli::serialize_spot_json(edited));
+    BOOST_REQUIRE(parsed.has_value());
+
+    builder.set_spot(*parsed);
+    app.processEvents();
+
+    auto* street = builder.findChild<QComboBox*>("streetSelector");
+    auto* player_count = builder.findChild<QSpinBox*>("playerCountSelector");
+    auto* root_actor = builder.findChild<QComboBox*>("rootActorSelector");
+    auto* hero_seat = builder.findChild<QComboBox*>("heroSeatSelector");
+
+    BOOST_REQUIRE(street != nullptr);
+    BOOST_REQUIRE(player_count != nullptr);
+    BOOST_REQUIRE(root_actor != nullptr);
+    BOOST_REQUIRE(hero_seat != nullptr);
+    BOOST_CHECK_EQUAL(street->currentText().toStdString(), "turn");
+    BOOST_CHECK_EQUAL(player_count->value(), 4);
+    BOOST_CHECK_EQUAL(root_actor->currentIndex(), static_cast<int>(edited.root_actor));
+    BOOST_CHECK_EQUAL(hero_seat->currentIndex(), static_cast<int>(edited.hero_seat));
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_theme_registry_exposes_required_stage2_themes_and_tokens) {
