@@ -171,13 +171,16 @@ namespace zeta::holdem::ui::widgets {
         root->setSpacing(metrics_.panel_spacing);
 
         auto* author_panel = make_panel();
+        author_panel->setObjectName("rangePanel");
         auto* author_layout = new QVBoxLayout{author_panel};
         author_layout->setContentsMargins(metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin);
         author_layout->setSpacing(metrics_.panel_spacing);
 
         auto* header = new QHBoxLayout;
         header->setSpacing(metrics_.panel_spacing);
-        header->addWidget(make_panel_title(tr("Range")));
+        auto* range_title = make_panel_title(tr("Range"));
+        range_title->setObjectName("rangePanelTitle");
+        header->addWidget(range_title);
         seat_selector_ = new QComboBox{author_panel};
         seat_selector_->setObjectName("rangeSeatSelector");
         header->addWidget(seat_selector_);

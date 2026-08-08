@@ -64,15 +64,15 @@ QPushButton {
 QToolButton:hover {
     background: %16;
     color: %7;
-    border-color: %10;
+    border-color: %5;
 }
 QPushButton:hover {
     background: %13;
     color: %36;
-    border-color: %13;
+    border-color: %11;
 }
 QToolButton:focus, QPushButton:focus {
-    border-color: %10;
+    border-color: %11;
 }
 QToolButton:disabled, QPushButton:disabled {
     background: %3;
@@ -89,14 +89,59 @@ QTabBar::tab {
 QTabBar::tab:selected {
     background: %16;
     color: %7;
-    border-top-color: %10;
+    border-top-color: %11;
 }
 QSplitter::handle {
     background: %5;
 }
+QScrollBar:vertical {
+    background: %3;
+    border: 1px solid %5;
+    width: 12px;
+    margin: 0;
+}
+QScrollBar:horizontal {
+    background: %3;
+    border: 1px solid %5;
+    height: 12px;
+    margin: 0;
+}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background: %6;
+    border: 1px solid %5;
+    border-radius: 4px;
+    min-height: 24px;
+    min-width: 24px;
+}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    background: %6;
+    border-color: %5;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    background: %2;
+    border: 1px solid %5;
+    width: 12px;
+    height: 12px;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: %3;
+}
+QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical,
+QScrollBar::left-arrow:horizontal, QScrollBar::right-arrow:horizontal {
+    width: 5px;
+    height: 5px;
+    background: %8;
+}
 QFrame#solverPanel, QFrame#positionCard, QFrame#activePositionCard, QFrame#tableStatePanel, QWidget#documentRail, QWidget#inspectorPanel {
     background: %2;
     border: 1px solid %5;
+    border-radius: 4px;
+}
+QFrame#rangePanel {
+    background: %2;
+    border: 1px solid %20;
     border-radius: 4px;
 }
 QWidget#documentRail {
@@ -109,6 +154,15 @@ QLabel#panelTitle, QLabel#positionName, QLabel#railTitle, QLabel#spotSummaryHead
     color: %7;
     font-weight: 600;
     font-size: %29px;
+}
+QLabel#rangePanelTitle {
+    color: %20;
+    font-weight: 600;
+    font-size: %29px;
+}
+QLabel#betSizeLabel {
+    color: %14;
+    font-weight: 600;
 }
 QLabel#errorLabel, QLabel#rangeParseError {
     color: %27;
@@ -155,7 +209,7 @@ QListWidget#documentRailList::item {
 QListWidget#documentRailList::item:selected {
     background: %34;
     color: %7;
-    border-left: 2px solid %10;
+    border-left: 2px solid %11;
 }
 QPlainTextEdit, QLineEdit, QTableWidget, QTreeWidget, QListView, QTreeView, QSpinBox, QDoubleSpinBox, QComboBox {
     background: %4;
@@ -165,7 +219,13 @@ QPlainTextEdit, QLineEdit, QTableWidget, QTreeWidget, QListView, QTreeView, QSpi
     selection-color: %7;
 }
 QPlainTextEdit:focus, QLineEdit:focus, QTableWidget:focus, QTreeWidget:focus, QListView:focus, QTreeView:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
-    border-color: %10;
+    border-color: %11;
+}
+QPlainTextEdit#rangeTextEditor:focus, QComboBox#rangeSeatSelector:focus {
+    border-color: %20;
+}
+QDoubleSpinBox#betFractionField {
+    border-color: %14;
 }
 QComboBox::drop-down {
     background: %3;
@@ -175,7 +235,7 @@ QComboBox::drop-down {
 QComboBox QAbstractItemView {
     background: %4;
     color: %7;
-    border: 1px solid %10;
+    border: 1px solid %5;
     selection-background-color: %16;
     selection-color: %7;
 }
@@ -230,12 +290,12 @@ QPushButton#rangeCellHeat3 {
 }
 QPushButton#rangeCellHeat4 {
     background: %19;
-    border-color: %10;
+    border-color: %18;
     color: %36;
 }
 QPushButton#rangeCellBlocked {
     background: %17;
-    border-color: %20;
+    border-color: %18;
     color: %9;
 }
 QPushButton#rangeCellMuted {
@@ -267,7 +327,7 @@ QLabel#heroSeatCard {
 }
 QLabel#activeSeatCard, QLabel#activeHeroSeatCard {
     background: %35;
-    border-color: %10;
+    border-color: %11;
     color: %7;
     font-weight: 600;
 }

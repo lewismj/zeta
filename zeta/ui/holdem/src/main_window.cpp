@@ -276,6 +276,43 @@ namespace zeta::holdem::ui {
             return tokens;
         }
 
+        [[nodiscard]] QString range_summary_title(const spot& spot)
+        {
+            return QStringLiteral("%1 range").arg(actor_label(spot));
+        }
+
+        [[nodiscard]] QString range_summary_value(const spot& spot)
+        {
+            const auto range_index = editable_range_index(spot);
+            const auto range = range_index < spot.ranges.size() ? spot.ranges[range_index] : std::string{};
+            return QStringLiteral("%1 hands").arg(range_tokens(range).size());
+        }
+
+        [[nodiscard]] QString bet_summary_value(const spot& spot)
+        {
+            return QStringLiteral("%1% pot").arg(spot.bet_fraction * 100.0, 0, 'f', 1);
+        }
+
+        void update_inspector_summary(QWidget* root, const spot_document& document)
+        {
+            if (root == nullptr) {
+                return;
+            }
+
+            const auto& spot = document.current_spot();
+            if (auto* range_button = root->findChild<QPushButton*>(QStringLiteral("callButton"))) {
+                range_button->setText(range_summary_title(spot) + QStringLiteral("\n") + range_summary_value(spot));
+            }
+            if (auto* bet_button = root->findChild<QPushButton*>(QStringLiteral("foldButton"))) {
+                bet_button->setText(QStringLiteral("Bet size\n") + bet_summary_value(spot));
+            }
+            if (auto* hands_table = root->findChild<QTableWidget*>(QStringLiteral("handsTable"))) {
+                const auto range_index = editable_range_index(spot);
+                hands_table->setItem(0, 0, new QTableWidgetItem{range_summary_title(spot)});
+                hands_table->setItem(0, 1, new QTableWidgetItem{range_index < spot.ranges.size() ? QString::fromStdString(spot.ranges[range_index]) : QString{}});
+            }
+        }
+
         [[nodiscard]] QWidget* create_actions_panel(const spot_document& document, const theme::density_metrics& metrics)
         {
             auto* panel = make_panel();
@@ -285,13 +322,13 @@ namespace zeta::holdem::ui {
 
             const auto& spot = document.current_spot();
             layout->addWidget(make_action_button(
-                QStringLiteral("%1 range").arg(actor_label(spot)),
-                QStringLiteral("%1 hands").arg(range_tokens(editable_range_index(spot) < spot.ranges.size() ? spot.ranges[editable_range_index(spot)] : std::string{}).size()),
+                range_summary_title(spot),
+                range_summary_value(spot),
                 QStringLiteral("callButton"),
                 metrics));
             layout->addWidget(make_action_button(
                 QStringLiteral("Bet size"),
-                QStringLiteral("%1% pot").arg(spot.bet_fraction * 100.0, 0, 'f', 1),
+                bet_summary_value(spot),
                 QStringLiteral("foldButton"),
                 metrics));
             return panel;
@@ -309,7 +346,7 @@ namespace zeta::holdem::ui {
 
             const auto& spot = document.current_spot();
             const auto range_index = editable_range_index(spot);
-            table->setItem(0, 0, new QTableWidgetItem{QStringLiteral("%1 range").arg(actor_label(spot))});
+            table->setItem(0, 0, new QTableWidgetItem{range_summary_title(spot)});
             table->setItem(0, 1, new QTableWidgetItem{range_index < spot.ranges.size() ? QString::fromStdString(spot.ranges[range_index]) : QString{}});
             return table;
         }
@@ -939,7 +976,7 @@ namespace zeta::holdem::ui {
         auto* table_view = new widgets::table_state_view{entry.document.current_spot(), metrics, right_column};
         right_layout->addWidget(table_view);
 
-        auto refresh_raw_editor = [this, raw_editor, summary_header, table_view, index] {
+        auto refresh_raw_editor = [this, raw_editor, summary_header, table_view, right_column, index] {
             if (index < 0 || index >= static_cast<int>(documents_.size())) {
                 return;
             }
@@ -949,6 +986,7 @@ namespace zeta::holdem::ui {
             entry.updating_editor = false;
             summary_header->setText(QString::fromStdString(viewmodels::spot_summary_text(entry.document.current_spot(), entry.document.artifact().has_value())));
             table_view->set_spot(entry.document.current_spot());
+            update_inspector_summary(right_column, entry.document);
             update_tab_title(index);
             update_window_title();
         };

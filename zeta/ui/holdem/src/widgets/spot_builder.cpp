@@ -242,7 +242,9 @@ namespace zeta::holdem::ui::widgets {
         grid->addWidget(gross_pot_, 6, 1);
         grid->addWidget(new QLabel{tr("Rake"), spot_panel}, 6, 2);
         grid->addWidget(rake_, 6, 3);
-        grid->addWidget(new QLabel{tr("Bet fraction"), spot_panel}, 7, 0);
+        auto* bet_fraction_label = new QLabel{tr("Bet size"), spot_panel};
+        bet_fraction_label->setObjectName("betSizeLabel");
+        grid->addWidget(bet_fraction_label, 7, 0);
         grid->addWidget(bet_fraction_, 7, 1);
         grid->addWidget(new QLabel{tr("Max history"), spot_panel}, 7, 2);
         grid->addWidget(max_history_, 7, 3);
