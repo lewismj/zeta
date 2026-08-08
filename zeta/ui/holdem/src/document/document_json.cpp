@@ -25,6 +25,17 @@ namespace zeta::holdem::ui::document {
             return document_error{document_error_kind::invalid_document, error.message};
         }
 
+        [[nodiscard]] document_error from_solution_error(const solver::solution_store_error& error)
+        {
+            switch (error.kind) {
+                case solver::solution_store_error_kind::parse:
+                    return document_error{document_error_kind::parse, error.message};
+                case solver::solution_store_error_kind::invalid_solution:
+                    return document_error{document_error_kind::invalid_document, error.message};
+            }
+            return document_error{document_error_kind::invalid_document, error.message};
+        }
+
         [[nodiscard]] std::string key_name(const std::string_view key)
         {
             return std::string{key};
@@ -256,6 +267,20 @@ namespace zeta::holdem::ui::document {
             payload.artifact = std::move(*parsed_artifact);
         }
 
+        if (const auto* solution = find_value(root, "solution"); solution != nullptr && !solution->is_null()) {
+            if (!solution->is_object()) {
+                return std::unexpected(document_error{
+                    document_error_kind::parse,
+                    "solution must be an object or null."
+                });
+            }
+            auto parsed_solution = solver::parse_solution_store_json(json::serialize(*solution));
+            if (!parsed_solution) {
+                return std::unexpected(from_solution_error(parsed_solution.error()));
+            }
+            payload.solution = std::move(*parsed_solution);
+        }
+
         auto history = parse_history(root);
         if (!history) {
             return std::unexpected(history.error());
@@ -288,6 +313,7 @@ namespace zeta::holdem::ui::document {
         root["metadata"] = std::move(metadata);
         root["spot"] = parse_serialized_json(cli::serialize_spot_json(payload.spot));
         root["artifact"] = payload.artifact ? parse_serialized_json(cli::serialize_artifact_json(*payload.artifact)) : json::value{nullptr};
+        root["solution"] = payload.solution ? parse_serialized_json(solver::serialize_solution_store_json(*payload.solution)) : json::value{nullptr};
         root["recent_history"] = std::move(history);
         return json::serialize(root);
     }

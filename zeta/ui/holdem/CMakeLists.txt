@@ -10,6 +10,8 @@ add_executable(zeta-ui-holdem
     src/app/app_settings.cpp
     src/document/document_json.h
     src/document/document_json.cpp
+    src/solver/solution_store.h
+    src/solver/solution_store.cpp
     src/solver/solver_session.h
     src/solver/solver_session.cpp
     src/solver_state.h

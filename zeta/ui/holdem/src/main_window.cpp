@@ -581,7 +581,9 @@ namespace zeta::holdem::ui {
         switch (result.terminal_state) {
             case solver::solver_session_terminal_state::completed:
                 if (result.artifact) {
+                    auto solution = solver::make_action_tree_solution_store(result.spot_snapshot, *result.artifact);
                     entry.document.replace_artifact(std::move(result.artifact));
+                    entry.document.replace_solution(std::move(solution));
                 }
                 summary = tr("completed");
                 append_solve_console(entry, tr("Graph build: %1ms\nCFR: %2ms\nExtraction: %3ms\nFinished %4\nStatus: completed")
@@ -777,6 +779,7 @@ namespace zeta::holdem::ui {
             left_tabs->addTab(new widgets::strategy_explorer{
                 entry.document.current_spot(),
                 *entry.document.artifact(),
+                entry.document.solution(),
                 metrics,
                 left_tabs}, tr("Strategy Explorer"));
         } else {

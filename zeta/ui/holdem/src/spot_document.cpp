@@ -61,6 +61,12 @@ namespace zeta::holdem::ui {
         }
         parsed_document.spot_ = std::move(parsed->spot);
         parsed_document.artifact_ = std::move(parsed->artifact);
+        parsed_document.solution_ = std::move(parsed->solution);
+        if (!parsed_document.solution_ && parsed_document.artifact_) {
+            parsed_document.solution_ = solver::make_root_only_solution_store(
+                parsed_document.spot_,
+                *parsed_document.artifact_);
+        }
         if (parsed->metadata) {
             parsed_document.metadata_ = std::move(*parsed->metadata);
         }
@@ -77,6 +83,11 @@ namespace zeta::holdem::ui {
     const std::optional<solve_artifact>& spot_document::artifact() const noexcept
     {
         return artifact_;
+    }
+
+    const std::optional<solver::solution_store>& spot_document::solution() const noexcept
+    {
+        return solution_;
     }
 
     const spot_document_metadata& spot_document::metadata() const noexcept
@@ -109,6 +120,14 @@ namespace zeta::holdem::ui {
     void spot_document::replace_artifact(std::optional<solve_artifact> next_artifact)
     {
         artifact_ = std::move(next_artifact);
+        solution_ = artifact_ ? std::optional{solver::make_root_only_solution_store(spot_, *artifact_)} : std::nullopt;
+        metadata_.updated_utc = cli::detail::now_utc_iso8601();
+        dirty_ = true;
+    }
+
+    void spot_document::replace_solution(std::optional<solver::solution_store> next_solution)
+    {
+        solution_ = std::move(next_solution);
         metadata_.updated_utc = cli::detail::now_utc_iso8601();
         dirty_ = true;
     }
@@ -146,6 +165,7 @@ namespace zeta::holdem::ui {
         return ui::document::serialize_document_json(ui::document::document_json_payload{
             .spot = spot_,
             .artifact = artifact_,
+            .solution = solution_,
             .metadata = metadata_,
             .recent_history = recent_history_
         });

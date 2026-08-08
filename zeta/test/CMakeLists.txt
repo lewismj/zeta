@@ -6,6 +6,7 @@ add_executable(zeta_tests
     src/test_holdem_ui.cpp
     ../ui/holdem/src/app/app_settings.cpp
     ../ui/holdem/src/document/document_json.cpp
+    ../ui/holdem/src/solver/solution_store.cpp
     ../ui/holdem/src/solver/solver_session.cpp
     ../ui/holdem/src/solver_state.cpp
     ../ui/holdem/src/spot_document.cpp

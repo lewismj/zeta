@@ -3,6 +3,7 @@
 #include "cli/solve_cli.h"
 #include "app/app_settings.h"
 #include "document/document_json.h"
+#include "solver/solution_store.h"
 #include "solver/solver_session.h"
 #include "solver_state.h"
 #include "spot_document.h"
@@ -25,6 +26,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -778,6 +780,66 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_filters_hands_and_formats_ev)
     BOOST_CHECK_EQUAL(zeta::holdem::ui::viewmodels::format_strategy_percent(0.625), "62.5%");
 }
 
+BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_migrates_legacy_artifact_to_root_only_fallback) {
+    const auto spot_json = zeta::holdem::cli::serialize_spot_json(sample_strategy_spot());
+    const auto artifact_json = zeta::holdem::cli::serialize_artifact_json(sample_strategy_artifact());
+    const auto document_json = std::string{R"({
+  "document_schema_version": 1,
+  "metadata": {},
+  "spot": )"} + spot_json + R"(,
+  "artifact": )" + artifact_json + R"(,
+  "recent_history": []
+})";
+
+    const auto parsed = zeta::holdem::ui::spot_document::parse_json(document_json);
+
+    BOOST_REQUIRE(parsed.has_value());
+    BOOST_REQUIRE(parsed->artifact().has_value());
+    BOOST_REQUIRE(parsed->solution().has_value());
+    BOOST_CHECK(parsed->solution()->compatibility_mode == zeta::holdem::ui::solver::solution_compatibility_mode::root_only_artifact);
+    const auto* root = zeta::holdem::ui::solver::root_solution_node(*parsed->solution());
+    BOOST_REQUIRE(root != nullptr);
+    BOOST_CHECK_EQUAL(root->node_id, "root");
+    BOOST_CHECK_EQUAL(root->acting_seat, sample_strategy_spot().root_actor);
+    BOOST_REQUIRE_EQUAL(root->average_strategy.size(), 3u);
+    BOOST_CHECK(std::ranges::any_of(root->average_strategy, [](const auto& action) {
+        return action.action == "check";
+    }));
+    BOOST_CHECK(!parsed->solution()->diagnostics.empty());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_saves_reopens_action_tree_nodes_and_root_frequencies) {
+    auto spot = sample_strategy_spot();
+    spot.max_history = 2;
+    const auto artifact = sample_strategy_artifact();
+    auto solution = zeta::holdem::ui::solver::make_action_tree_solution_store(spot, artifact);
+
+    BOOST_CHECK(solution.compatibility_mode == zeta::holdem::ui::solver::solution_compatibility_mode::action_tree);
+    const auto* root = zeta::holdem::ui::solver::root_solution_node(solution);
+    BOOST_REQUIRE(root != nullptr);
+    BOOST_CHECK_EQUAL(root->acting_seat, spot.root_actor);
+    BOOST_REQUIRE(!root->children.empty());
+    BOOST_REQUIRE(!root->average_strategy.empty());
+    BOOST_CHECK_CLOSE(root->average_strategy.front().frequency, 1.0 / 3.0, 0.001);
+
+    auto document = zeta::holdem::ui::spot_document::create_new();
+    document.replace_spot(spot);
+    document.replace_artifact(artifact);
+    document.replace_solution(solution);
+
+    const auto reopened = zeta::holdem::ui::spot_document::parse_json(document.serialize_json());
+    BOOST_REQUIRE(reopened.has_value());
+    BOOST_REQUIRE(reopened->solution().has_value());
+    BOOST_CHECK(reopened->solution()->compatibility_mode == zeta::holdem::ui::solver::solution_compatibility_mode::action_tree);
+    const auto* reopened_root = zeta::holdem::ui::solver::root_solution_node(*reopened->solution());
+    BOOST_REQUIRE(reopened_root != nullptr);
+    BOOST_REQUIRE(!reopened_root->children.empty());
+    const auto* child = zeta::holdem::ui::solver::find_solution_node(*reopened->solution(), reopened_root->children.front());
+    BOOST_REQUIRE(child != nullptr);
+    BOOST_REQUIRE_EQUAL(child->path.size(), 1u);
+    BOOST_CHECK_EQUAL(child->table_state.commitments.size(), spot.players.size());
+}
+
 BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_artifact_and_action_filter) {
     auto& app = qt_app();
 
@@ -807,6 +869,46 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_artifact_and_act
 
     BOOST_CHECK_EQUAL(hand_table->rowCount(), 1);
     BOOST_CHECK(detail_table->rowCount() <= 1);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_tree_navigation) {
+    auto& app = qt_app();
+    auto spot = sample_strategy_spot();
+    spot.max_history = 2;
+    auto artifact = sample_strategy_artifact();
+    auto solution = zeta::holdem::ui::solver::make_action_tree_solution_store(spot, artifact);
+
+    zeta::holdem::ui::widgets::strategy_explorer explorer{
+        spot,
+        artifact,
+        solution,
+        zeta::holdem::ui::theme::metrics_for_density(zeta::holdem::ui::theme::density_mode::comfortable),
+        nullptr};
+    explorer.resize(1000, 760);
+    explorer.show();
+    app.processEvents();
+
+    auto* tree = explorer.findChild<QTreeWidget*>("solutionActionTree");
+    auto* node_actions = explorer.findChild<QTableWidget*>("solutionNodeActionTable");
+    auto* breadcrumb = explorer.findChild<QLabel*>("solutionNodeBreadcrumb");
+    auto* state = explorer.findChild<QLabel*>("solutionNodeState");
+    auto* hand_table = explorer.findChild<QTableWidget*>("strategyHandTable");
+
+    BOOST_REQUIRE(tree != nullptr);
+    BOOST_REQUIRE(node_actions != nullptr);
+    BOOST_REQUIRE(breadcrumb != nullptr);
+    BOOST_REQUIRE(state != nullptr);
+    BOOST_REQUIRE(hand_table != nullptr);
+    BOOST_REQUIRE_EQUAL(tree->topLevelItemCount(), 1);
+    BOOST_REQUIRE(tree->topLevelItem(0)->childCount() > 0);
+    BOOST_CHECK_EQUAL(node_actions->rowCount(), 3);
+    BOOST_CHECK(state->text().contains(QStringLiteral("BB")));
+
+    tree->setCurrentItem(tree->topLevelItem(0)->child(0));
+    app.processEvents();
+
+    BOOST_CHECK(breadcrumb->text().contains(QStringLiteral("Root /")));
+    BOOST_CHECK_EQUAL(hand_table->rowCount(), 0);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_theme_registry_exposes_required_stage2_themes_and_tokens) {

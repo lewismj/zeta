@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cli/solve_cli.h"
+#include "solver/solution_store.h"
 
 #include <cstdint>
 #include <expected>
@@ -50,6 +51,7 @@ namespace zeta::holdem::ui {
 
         [[nodiscard]] const spot& current_spot() const noexcept;
         [[nodiscard]] const std::optional<solve_artifact>& artifact() const noexcept;
+        [[nodiscard]] const std::optional<solver::solution_store>& solution() const noexcept;
         [[nodiscard]] const spot_document_metadata& metadata() const noexcept;
         [[nodiscard]] const std::vector<solve_history_entry>& recent_history() const noexcept;
         [[nodiscard]] const std::filesystem::path& file_path() const noexcept;
@@ -57,6 +59,7 @@ namespace zeta::holdem::ui {
 
         void replace_spot(spot next_spot);
         void replace_artifact(std::optional<solve_artifact> next_artifact);
+        void replace_solution(std::optional<solver::solution_store> next_solution);
         void update_metadata(spot_document_metadata next_metadata);
         void add_history(solve_history_entry entry);
         void set_file_path(std::filesystem::path path);
@@ -70,6 +73,7 @@ namespace zeta::holdem::ui {
     private:
         spot spot_{};
         std::optional<solve_artifact> artifact_{};
+        std::optional<solver::solution_store> solution_{};
         spot_document_metadata metadata_{};
         std::vector<solve_history_entry> recent_history_{};
         std::filesystem::path file_path_{};
