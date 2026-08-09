@@ -38,6 +38,10 @@ endif()
 target_compile_definitions(zeta_tests PRIVATE BOOST_TEST_DYN_LINK)
 target_compile_features(zeta_tests PRIVATE cxx_std_23)
 
+if(MSVC)
+    target_link_options(zeta_tests PRIVATE "$<$<CONFIG:Debug>:/STACK:8388608>")
+endif()
+
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta_tests PRIVATE stdc++ m)
 endif()
