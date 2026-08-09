@@ -24,8 +24,8 @@ The Hold'em module currently includes a lookup-based native 7-card evaluator and
 
 ### GTO postflop analyser
 
-Zeta includes postflop CFR solver surfaces for flop, turn, and river Hold'em
-analysis, exposed through both `zeta-solve` and the solver UI. River leaves are
+Zeta includes a multiway postflop CFR solver for **flop**, **turn**, and **river** Hold'em
+analysis, exposed through both `zeta-solve` CLI and the solver UI. River leaves are
 evaluated by the terminal evaluator documented in
 [River terminal evaluator](doc/holdem/terminal_evaluator.md), which currently
 implements:
