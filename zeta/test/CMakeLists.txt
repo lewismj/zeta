@@ -1,11 +1,16 @@
 set(CMAKE_AUTORCC ON)
 
-add_executable(zeta_tests
-    src/test_main.cpp
+set(ZETA_TEST_SOURCES
     src/test_repr.cpp
     src/test_holdem.cpp
     src/test_holdem_cli.cpp
     src/test_holdem_ui.cpp
+    src/test_cfr_graph.cpp
+)
+
+add_executable(zeta_tests
+    src/test_main.cpp
+    ${ZETA_TEST_SOURCES}
     ../ui/holdem/src/app/app_settings.cpp
     ../ui/holdem/src/document/document_json.cpp
     ../ui/holdem/src/main_window.cpp
@@ -24,7 +29,6 @@ add_executable(zeta_tests
     ../ui/holdem/src/widgets/strategy_explorer.cpp
     ../ui/holdem/src/widgets/table_state_view.cpp
     ../ui/holdem/resources/holdem.qrc
-    src/test_cfr_graph.cpp
 )
 target_include_directories(zeta_tests PRIVATE ${CMAKE_SOURCE_DIR}/zeta/ui/holdem/src)
 target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json Qt6::Widgets)
@@ -38,13 +42,59 @@ if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta_tests PRIVATE stdc++ m)
 endif()
 
-add_test(
-    NAME zeta_tests
-    COMMAND $<TARGET_FILE:zeta_tests>
-)
-set_tests_properties(zeta_tests PROPERTIES
+function(zeta_register_boost_test_cases target)
+    set(_options)
+    set(_one_value_args)
+    set(_multi_value_args SOURCES LABELS)
+    cmake_parse_arguments(ZETA_BOOST_TEST "${_options}" "${_one_value_args}" "${_multi_value_args}" ${ARGN})
+
+    set(_registered_tests)
+    foreach(_source IN LISTS ZETA_BOOST_TEST_SOURCES)
+        set(_suite_stack)
+        file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _source_lines
+            REGEX "BOOST_(AUTO_TEST_SUITE|AUTO_TEST_SUITE_END|AUTO_TEST_CASE|FIXTURE_TEST_CASE|DATA_TEST_CASE)"
+        )
+
+        foreach(_line IN LISTS _source_lines)
+            if(_line MATCHES "BOOST_AUTO_TEST_SUITE[ \t]*\\([ \t]*([A-Za-z_][A-Za-z0-9_]*)")
+                list(APPEND _suite_stack "${CMAKE_MATCH_1}")
+            elseif(_line MATCHES "BOOST_AUTO_TEST_SUITE_END")
+                list(LENGTH _suite_stack _suite_depth)
+                if(_suite_depth GREATER 0)
+                    list(POP_BACK _suite_stack)
+                endif()
+            elseif(_line MATCHES "BOOST_(AUTO|FIXTURE|DATA)_TEST_CASE[ \t]*\\([ \t]*([A-Za-z_][A-Za-z0-9_]*)")
+                set(_test_case "${CMAKE_MATCH_2}")
+                if(_suite_stack)
+                    string(JOIN "/" _suite_path ${_suite_stack})
+                    set(_boost_test_filter "${_suite_path}/${_test_case}")
+                else()
+                    set(_boost_test_filter "${_test_case}")
+                endif()
+
+                string(REPLACE "/" "." _ctest_test_name "${_boost_test_filter}")
+                set(_ctest_test_name "${target}.${_ctest_test_name}")
+                add_test(
+                    NAME "${_ctest_test_name}"
+                    COMMAND $<TARGET_FILE:${target}> "--run_test=${_boost_test_filter}"
+                )
+                set_tests_properties("${_ctest_test_name}" PROPERTIES
+                    LABELS "${ZETA_BOOST_TEST_LABELS}"
+                    WORKING_DIRECTORY $<TARGET_FILE_DIR:${target}>
+                )
+                list(APPEND _registered_tests "${_ctest_test_name}")
+            endif()
+        endforeach()
+    endforeach()
+
+    if(NOT _registered_tests)
+        message(FATAL_ERROR "No Boost.Test cases were registered for ${target}")
+    endif()
+endfunction()
+
+zeta_register_boost_test_cases(zeta_tests
+    SOURCES ${ZETA_TEST_SOURCES}
     LABELS "core;holdem;cfr"
-    WORKING_DIRECTORY $<TARGET_FILE_DIR:zeta_tests>
 )
 
 add_custom_target(zeta_test
