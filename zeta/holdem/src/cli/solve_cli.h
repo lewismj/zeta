@@ -237,6 +237,9 @@ namespace zeta::holdem::cli {
                 case cfr::solver::holdem_street::flop: return 3u;
                 case cfr::solver::holdem_street::turn: return 4u;
                 case cfr::solver::holdem_street::river: return 5u;
+                case cfr::solver::holdem_street::invalid:
+                case cfr::solver::holdem_street::preflop:
+                    return 0u;
                 default: return 0u;
             }
         }
