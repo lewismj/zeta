@@ -19,6 +19,11 @@ QLabel {
     color: %7;
     background: transparent;
 }
+QLabel#appLogo {
+    background: transparent;
+    border: 0;
+    padding: 0 %23px;
+}
 QMenuBar::item:selected, QMenu::item:selected, QToolButton:hover {
     background: %16;
 }

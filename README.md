@@ -4,7 +4,8 @@ Zeta is a C++ card-game engine and solver project.
 
 ## Generic card game engine
 
-The core library provides the generic card representation, deck traits, suit/rank types, and bit-mask operations used by higher-level games.
+The core library provides the generic card representation, deck traits, suit/rank types, and bit-mask operations that
+can be used to implement trick taking card games. The Texas Hold'em module has its own representations and algorithms.
 
 - [Core structures](doc/core/core_structures.md)
 - [Glossary and math notes](doc/glossary.md)
@@ -19,12 +20,14 @@ The Hold'em module currently includes a lookup-based native 7-card evaluator and
 - [PokerStove range parser](doc/holdem/range_parser.md)
 - [River terminal evaluator](doc/holdem/terminal_evaluator.md)
 - [zeta-solve CLI](doc/holdem/cli_usage.md)
+- [Hold'em solver UI user guide](doc/holdem/ui/user_guide.md)
 
 ### GTO postflop analyser
 
-Zeta includes a river terminal evaluator and CFR solver surfaces for postflop
-Hold'em analysis. The terminal evaluator is documented in
-[River terminal evaluator](doc/holdem/terminal_evaluator.md) and currently
+Zeta includes postflop CFR solver surfaces for flop, turn, and river Hold'em
+analysis, exposed through both `zeta-solve` and the solver UI. River leaves are
+evaluated by the terminal evaluator documented in
+[River terminal evaluator](doc/holdem/terminal_evaluator.md), which currently
 implements:
 
 - board-specialized river caches (`river_terminal_cache`)

@@ -4,6 +4,7 @@
 #include <QDebug>
 #include <QFont>
 #include <QFontDatabase>
+#include <QIcon>
 
 namespace {
 
@@ -44,6 +45,7 @@ int main(int argc, char** argv)
 {
     QApplication app{argc, argv};
     load_application_fonts(app);
+    app.setWindowIcon(QIcon{QStringLiteral(":/icons/zeta-logo.svg")});
     zeta::holdem::ui::main_window window;
     window.show();
     return QApplication::exec();

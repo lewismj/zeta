@@ -1027,6 +1027,22 @@ BOOST_AUTO_TEST_CASE(holdem_ui_theme_registry_exposes_required_stage2_themes_and
     }
 }
 
+BOOST_AUTO_TEST_CASE(holdem_ui_zeta_logo_resource_loads_as_icon) {
+    auto& app = qt_app();
+    (void) app;
+
+    QIcon icon{QStringLiteral(":/icons/zeta-logo.svg")};
+    BOOST_CHECK(!icon.isNull());
+    BOOST_CHECK(!icon.pixmap(QSize{64, 64}).isNull());
+
+    zeta::holdem::ui::main_window window;
+    auto* logo = window.findChild<QLabel*>("appLogo");
+
+    BOOST_REQUIRE(logo != nullptr);
+    BOOST_CHECK(!logo->pixmap().isNull());
+    BOOST_CHECK(!window.windowIcon().isNull());
+}
+
 BOOST_AUTO_TEST_CASE(holdem_ui_settings_persist_theme_density_recent_files_and_splitters) {
     QTemporaryDir dir;
     BOOST_REQUIRE(dir.isValid());

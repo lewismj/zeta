@@ -16,6 +16,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -356,6 +357,7 @@ namespace zeta::holdem::ui {
     main_window::main_window(QWidget* parent)
         : QMainWindow(parent)
     {
+        setWindowIcon(QIcon{QStringLiteral(":/icons/zeta-logo.svg")});
         active_theme_ = settings_.active_theme();
         density_mode_ = settings_.density();
         solver_iterations_ = settings_.solver_iterations();
@@ -434,6 +436,13 @@ namespace zeta::holdem::ui {
         toolbar->setMovable(false);
         toolbar->setIconSize(QSize{22, 22});
         toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        auto* logo = new QLabel{toolbar};
+        logo->setObjectName("appLogo");
+        logo->setPixmap(QIcon{QStringLiteral(":/icons/zeta-logo.svg")}.pixmap(QSize{24, 24}));
+        logo->setFixedSize(28, 28);
+        logo->setAlignment(Qt::AlignCenter);
+        toolbar->addWidget(logo);
+        toolbar->addSeparator();
         toolbar->addAction(new_action_);
         toolbar->addAction(open_action_);
         toolbar->addAction(save_action_);

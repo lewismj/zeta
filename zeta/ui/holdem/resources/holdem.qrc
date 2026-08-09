@@ -12,6 +12,7 @@
         <file alias="info.svg">icons/info.svg</file>
         <file alias="triangle-alert.svg">icons/triangle-alert.svg</file>
         <file alias="circle-x.svg">icons/circle-x.svg</file>
+        <file alias="zeta-logo.svg">icons/zeta-logo.svg</file>
     </qresource>
     <qresource prefix="/fonts">
         <file alias="D-DIN.ttf">fonts/D-DIN.ttf</file>
