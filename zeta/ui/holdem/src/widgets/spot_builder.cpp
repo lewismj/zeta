@@ -36,6 +36,7 @@ namespace zeta::holdem::ui::widgets {
         {
             auto* label = new QLabel{text};
             label->setObjectName("panelTitle");
+            label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
             return label;
         }
 
@@ -258,6 +259,7 @@ namespace zeta::holdem::ui::widgets {
         auto* seats_layout = new QVBoxLayout{seats_panel};
         seats_layout->setContentsMargins(metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin);
         seats_layout->setSpacing(metrics_.panel_spacing);
+        seats_layout->setAlignment(Qt::AlignTop);
         seats_layout->addWidget(make_panel_title(tr("Seats")));
         seat_table_ = new QTableWidget{seats_panel};
         seat_table_->setObjectName("seatTableEditor");

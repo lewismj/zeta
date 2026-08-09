@@ -28,6 +28,9 @@ add_executable(zeta_tests
 )
 target_include_directories(zeta_tests PRIVATE ${CMAKE_SOURCE_DIR}/zeta/ui/holdem/src)
 target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json Qt6::Widgets)
+if(TARGET Qt6::Svg)
+    target_link_libraries(zeta_tests PRIVATE Qt6::Svg)
+endif()
 target_compile_definitions(zeta_tests PRIVATE BOOST_TEST_DYN_LINK)
 target_compile_features(zeta_tests PRIVATE cxx_std_23)
 

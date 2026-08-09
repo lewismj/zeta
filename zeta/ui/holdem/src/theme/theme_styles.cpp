@@ -77,11 +77,11 @@ namespace zeta::holdem::ui::theme {
             sheet.replace(QStringLiteral("%") + QString::number(index), value);
         };
 
-        replace_placeholder(33, QString::number(density == density_mode::compact ? 3 : 4));
         replace_placeholder(37, q(t.destructive_text));
         replace_placeholder(36, q(t.button_text));
         replace_placeholder(35, q(t.active_surface));
         replace_placeholder(34, q(t.document_selection));
+        replace_placeholder(33, QString::number(density == density_mode::compact ? 3 : 4));
         replace_placeholder(32, QString::number(density == density_mode::compact ? 32 : 36));
         replace_placeholder(31, q(t.range_heat[1]));
         replace_placeholder(30, QString::number(density == density_mode::compact ? 12 : 14));

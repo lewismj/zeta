@@ -22,6 +22,7 @@ if(NOT Boost_FOUND)
 endif()
 
 find_package(Qt6 CONFIG REQUIRED COMPONENTS Widgets)
+find_package(Qt6 CONFIG QUIET COMPONENTS Svg)
 
 if(ZETA_BUILD_BENCHMARKS)
     find_package(benchmark 1.9.5 CONFIG QUIET)

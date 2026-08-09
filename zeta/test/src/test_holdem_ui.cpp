@@ -26,6 +26,7 @@
 #include <QFontDatabase>
 #include <QIcon>
 #include <QImage>
+#include <QImageReader>
 #include <QLabel>
 #include <QListWidget>
 #include <QPainter>
@@ -172,9 +173,28 @@ namespace {
         colors.insert(tokens.success);
         colors.insert(tokens.selection);
         colors.insert(tokens.document_selection);
+        colors.insert(tokens.active_surface);
+        colors.insert(tokens.button_text);
+        colors.insert(tokens.destructive_text);
         for (const auto& color : tokens.range_heat) {
             colors.insert(color);
         }
+    }
+
+    [[nodiscard]] bool style_rule_contains(
+        const std::string& sheet,
+        const std::string_view selector,
+        const std::string_view declaration)
+    {
+        const auto selector_pos = sheet.find(std::string{selector} + " {");
+        if (selector_pos == std::string::npos) {
+            return false;
+        }
+        const auto rule_end = sheet.find("\n}", selector_pos);
+        if (rule_end == std::string::npos) {
+            return false;
+        }
+        return sheet.substr(selector_pos, rule_end - selector_pos).find(declaration) != std::string::npos;
     }
 
     [[nodiscard]] bool has_issue(
@@ -628,6 +648,37 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_reflects_validated_json_edits_in_str
     BOOST_CHECK_EQUAL(hero_seat->currentIndex(), static_cast<int>(edited.hero_seat));
 }
 
+BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_keeps_seats_table_with_header) {
+    auto& app = qt_app();
+    auto initial = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_flop);
+    const auto metrics = zeta::holdem::ui::theme::metrics_for_density(zeta::holdem::ui::theme::density_mode::comfortable);
+    zeta::holdem::ui::widgets::spot_builder builder{
+        initial,
+        metrics,
+        [](zeta::holdem::ui::spot) {},
+        {},
+        nullptr};
+    builder.resize(900, 700);
+    builder.show();
+    app.processEvents();
+
+    QLabel* seats_title = nullptr;
+    const auto titles = builder.findChildren<QLabel*>("panelTitle");
+    for (auto* title : titles) {
+        if (title->text() == QStringLiteral("Seats")) {
+            seats_title = title;
+            break;
+        }
+    }
+    auto* seat_table = builder.findChild<QTableWidget*>("seatTableEditor");
+
+    BOOST_REQUIRE(seats_title != nullptr);
+    BOOST_REQUIRE(seat_table != nullptr);
+    BOOST_CHECK_LE(seats_title->height(), seats_title->sizeHint().height() + 2);
+    BOOST_CHECK_LE(seat_table->geometry().top(), seats_title->geometry().bottom() + metrics.panel_spacing + 2);
+}
+
 BOOST_AUTO_TEST_CASE(holdem_ui_range_view_model_expands_exact_class_and_weighted_syntax) {
     {
         const auto exact = zeta::holdem::ui::viewmodels::analyze_range("AhKh", {});
@@ -1033,10 +1084,10 @@ BOOST_AUTO_TEST_CASE(holdem_ui_theme_styles_use_registered_tokens_only) {
 
         if (theme.id == zeta::holdem::ui::theme::theme_id::dark_pro) {
             BOOST_CHECK(sheet.find("font-size: 14px;") != std::string::npos);
-            BOOST_CHECK(sheet.find("QPushButton#callButton {\n                background: #a8c8a8;") != std::string::npos);
-            BOOST_CHECK(sheet.find("QPushButton#foldButton {\n                background: #cf7c92;") != std::string::npos);
-            BOOST_CHECK(sheet.find("QPushButton#rangeCellHeat4 {\n                background: #B77F8C;") != std::string::npos);
-            BOOST_CHECK(sheet.find("QListWidget#documentRailList::item:selected {\n                background: #566f84;") != std::string::npos);
+            BOOST_CHECK(style_rule_contains(sheet, "QPushButton#callButton", "background: " + theme.tokens.action_positive));
+            BOOST_CHECK(style_rule_contains(sheet, "QPushButton#foldButton", "background: " + theme.tokens.action_negative));
+            BOOST_CHECK(style_rule_contains(sheet, "QPushButton#rangeCellHeat4", "background: " + theme.tokens.range_heat[3]));
+            BOOST_CHECK(style_rule_contains(sheet, "QListWidget#documentRailList::item:selected", "background: " + theme.tokens.document_selection));
         }
     }
 }
@@ -1180,6 +1231,9 @@ BOOST_AUTO_TEST_CASE(holdem_ui_resources_expose_toolbar_icons_and_ddin_font) {
     auto& app = qt_app();
     (void) app;
 
+    const auto image_formats = QImageReader::supportedImageFormats();
+    const bool svg_supported = std::ranges::contains(image_formats, QByteArray{"svg"});
+
     for (const auto& icon : {
              QStringLiteral(":/icons/file-plus.svg"),
              QStringLiteral(":/icons/folder-open.svg"),
@@ -1189,7 +1243,9 @@ BOOST_AUTO_TEST_CASE(holdem_ui_resources_expose_toolbar_icons_and_ddin_font) {
              QStringLiteral(":/icons/square.svg"),
              QStringLiteral(":/icons/settings.svg")}) {
         BOOST_CHECK(QFile::exists(icon));
-        BOOST_CHECK(!QIcon{icon}.pixmap(QSize{22, 22}).isNull());
+        if (svg_supported) {
+            BOOST_CHECK(!QIcon{icon}.pixmap(QSize{22, 22}).isNull());
+        }
     }
 
     for (const auto& font : {

@@ -49,6 +49,9 @@ target_link_libraries(zeta-ui-holdem
     Boost::json
     Qt6::Widgets
 )
+if(TARGET Qt6::Svg)
+    target_link_libraries(zeta-ui-holdem PRIVATE Qt6::Svg)
+endif()
 
 target_include_directories(zeta-ui-holdem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(zeta-ui-holdem PRIVATE cxx_std_23)
