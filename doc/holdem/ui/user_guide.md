@@ -129,7 +129,7 @@ The **Ranges** tab edits one seat at a time. Use the seat selector beside the **
 
 ### Range text
 
-Range text uses the PokerStove-style parser documented in [PokerStove range parser](../range_parser.md). Common forms include:
+Range text uses the PokerStove-style parser documented in [PokerStove-compatible range parser](../range_parser.md). Common forms include:
 
 | Form | Example | Meaning |
 |---|---|---|

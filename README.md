@@ -2,6 +2,13 @@
 
 Zeta is a C++ card-game engine and solver project.
 
+## Disclaimer
+
+Zeta is an independent research and software project developed for
+educational and experimental purposes. It is not intended to provide
+financial, investment, gambling, or other professional advice. The
+software is provided "as is" without warranty.
+
 ## Generic card game engine
 
 The core library provides the generic card representation, deck traits, suit/rank types, and bit-mask operations that
@@ -17,7 +24,7 @@ The Hold'em module currently includes a lookup-based native 7-card evaluator and
 - [Core structures](doc/holdem/core_structures.md)
 - [Core algorithms](doc/holdem/core_algorithms.md)
 - [Lookup-based 7-card evaluator](doc/holdem/post_flop_hand_evaluator.md)
-- [PokerStove range parser](doc/holdem/range_parser.md)
+- [PokerStove-compatible range parser](doc/holdem/range_parser.md)
 - [River terminal evaluator](doc/holdem/terminal_evaluator.md)
 - [zeta-solve CLI](doc/holdem/cli_usage.md)
 - [Hold'em solver UI user guide](doc/holdem/ui/user_guide.md)
