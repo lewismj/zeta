@@ -26,13 +26,68 @@ The same suit-rank masks are converted to canonical rank multiplicity layers:
 - `threes` (count >= 3)
 - `fours` (count >= 4)
 
-These layers are packed into a canonical key and mapped to a dense restricted-quinary index, then:
+These threshold layers are canonical for non-flush hands because they ignore
+suit identity and preserve only rank multiplicities. For a rank with count `3`,
+the corresponding bit is set in `ones`, `twos`, and `threes`, but not `fours`.
+The exact rank count is reconstructed as:
+
+```cpp
+count(rank) =
+      bit(ones, rank)
+    + bit(twos, rank)
+    + bit(threes, rank)
+    + bit(fours, rank);
+```
+
+The four layers are packed into a canonical key:
+
+```cpp
+key = uint64_t(ones)
+    | (uint64_t(twos)   << 13)
+    | (uint64_t(threes) << 26)
+    | (uint64_t(fours)  << 39);
+```
+
+The packed key layout is:
+
+```text
+bits  0..12  ones
+bits 13..25  twos
+bits 26..38  threes
+bits 39..51  fours
+bits 52..63  unused
+```
+
+The rank-count vector is naturally quinary because each rank can appear `0..4`
+times. For a 7-card hand the 13 digits are restricted by:
+
+```text
+0 <= ci <= 4
+sum(ci) = 7
+```
+
+There are exactly 49,205 valid 13-rank count vectors under those constraints.
+The evaluator maps each valid vector to a dense perfect index in `0..49204`,
+with no empty buckets, stored keys, collisions, or probe loops. The dense index
+is then used directly:
 
 ```cpp
 rank = non_flush_table[index];
 ```
 
-The runtime indexer uses precomputed chunk tables (4+4+5 rank chunks) to avoid a long dependent DP loop.
+Conceptually the index is a combinatorial rank: at each rank, count how many
+valid suffixes would have existed for smaller digit choices before consuming the
+current rank count. The runtime hot path avoids a 13-rank dependent DP loop by
+splitting ranks into `4 + 4 + 5` chunks. Each chunk table entry packs:
+
+```text
+bits  0..23  dense-index contribution
+bits 24..31  cards used by chunk
+```
+
+Within a chunk, small pair-weight tables combine `ones/twos` and
+`threes/fours` fields, replacing four separate weight lookups with two pair
+lookups plus one addition per chunk.
 
 ## 2. Range parsing (PokerStove grammar)
 

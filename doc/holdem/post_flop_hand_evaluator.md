@@ -4,7 +4,7 @@
 
 The evaluator splits 7-card evaluation into two paths:
 1. flush/straight-flush via direct mask lookup
-2. non-flush via canonical rank-multiplicity encoding and hash-table lookup
+2. non-flush via canonical rank-multiplicity encoding and dense restricted-quinary lookup
 
 No 21-subset runtime search is performed.
 

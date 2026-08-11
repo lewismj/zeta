@@ -15,7 +15,6 @@ The core library provides the generic card representation, deck traits, suit/ran
 can be used to implement trick taking card games. The Texas Hold'em module has its own representations and algorithms.
 
 - [Core structures](doc/core/core_structures.md)
-- [Glossary and math notes](doc/glossary.md)
 
 ## Texas Hold'em
 
