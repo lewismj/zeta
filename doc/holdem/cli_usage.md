@@ -13,11 +13,11 @@ zeta-solve solve --spot <spot.json> --iterations <n> --output <solution.json>
 
 Runs CFR+ and writes a solution artifact JSON file.
 
-| Flag | Required | Description |
-|---|---|---|
-| `--spot <path>` | Yes | Spot description JSON |
-| `--iterations <n>` | No | CFR+ iterations (default: `1000`) |
-| `--output <path>` | Yes | Output artifact JSON path |
+| Flag               | Required | Description                       |
+| ------------------ | -------- | --------------------------------- |
+| `--spot <path>`    | Yes      | Spot description JSON             |
+| `--iterations <n>` | No       | CFR+ iterations (default: `1000`) |
+| `--output <path>`  | Yes      | Output artifact JSON path         |
 
 ### validate
 
@@ -86,27 +86,28 @@ and `ip_range` are still accepted. For **multiway**, use the array fields.
 
 ### Fields
 
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `players` | string[] | `["BTN","BB"]` | 2..6 player labels |
-| `street` | string | `"river"` | One of `flop`, `turn`, `river` |
-| `board` | string[] | — | Exactly 3 cards on flop, 4 on turn, 5 on river |
-| `ranges` | string[] | `["AA","AA"]` | Must match player count |
-| `gross_pot` | number | `100.0` | Must be positive |
-| `rake` | number | `0.0` | Must be in `[0, gross_pot]` |
-| `contributions` | number[] | `[50.0,50.0]` | Must match player count |
-| `stacks` | number[] | `[100.0,100.0]` | Must match player count |
-| `bet_fraction` | number | `0.75` | Must be positive |
-| `max_history` | integer | `8` | Betting history cap |
-| `public_state_id` | integer | `0` | User-defined public-state id |
-| `root_actor` | integer | `0` | Acting seat at root |
-| `hero_seat` | integer | `0` | Seat used for artifact EV rows |
-| `samples_per_combo` | integer | `64` | Multiplayer/pre-river sampling budget (higher = lower variance, slower) |
+| Field               | Type     | Default         | Notes                                                                   |
+| ------------------- | -------- | --------------- | ----------------------------------------------------------------------- |
+| `players`           | string[] | `["BTN","BB"]`  | 2..6 player labels                                                      |
+| `street`            | string   | `"river"`       | One of `flop`, `turn`, `river`                                          |
+| `board`             | string[] | —               | Exactly 3 cards on flop, 4 on turn, 5 on river                          |
+| `ranges`            | string[] | `["AA","AA"]`   | Must match player count                                                 |
+| `gross_pot`         | number   | `100.0`         | Must be positive                                                        |
+| `rake`              | number   | `0.0`           | Must be in `[0, gross_pot]`                                             |
+| `contributions`     | number[] | `[50.0,50.0]`   | Must match player count                                                 |
+| `stacks`            | number[] | `[100.0,100.0]` | Must match player count                                                 |
+| `bet_fraction`      | number   | `0.75`          | Must be positive                                                        |
+| `max_history`       | integer  | `8`             | Betting history cap                                                     |
+| `public_state_id`   | integer  | `0`             | User-defined public-state id                                            |
+| `root_actor`        | integer  | `0`             | Acting seat at root                                                     |
+| `hero_seat`         | integer  | `0`             | Seat used for artifact EV rows                                          |
+| `samples_per_combo` | integer  | `64`            | Multiplayer/pre-river sampling budget (higher = lower variance, slower) |
 
 Heads-up direct fields: `oop_range`, `ip_range`, `oop_contribution`,
 `ip_contribution`, `oop_stack`, `ip_stack`.
 
 Recommended `samples_per_combo` ranges:
+
 - Sanity checks: `1000` to `4000`
 - Regular analysis: `8000` to `32000`
 - Higher-confidence runs: `64000+` (sometimes `128000+`)
@@ -141,6 +142,7 @@ Recommended `samples_per_combo` ranges:
 ```
 
 Validation checks include:
+
 1. Schema/game/street fields
 2. Street-consistent unique board (3/4/5 cards)
 3. 2..6 players and valid `hero_seat`
@@ -257,8 +259,8 @@ zeta-solve dump solution_5way.json
 
 ## Environment variable
 
-| Variable | Purpose |
-|---|---|
+| Variable            | Purpose                                                |
+| ------------------- | ------------------------------------------------------ |
 | `ZETA_GIT_REVISION` | Stored in `solver.git_revision` in the output artifact |
 
 ## Building from source

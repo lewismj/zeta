@@ -1,6 +1,8 @@
 # Hold'em Solver Release Instructions
 
-This guide explains how to build a Windows release bundle for `zeta-ui-holdem` and publish it to a GitHub Release without triggering a release-time source build in GitHub Actions.
+This guide explains how to build a Windows release bundle for `zeta-ui-holdem`
+and `zeta-solve`, and how to publish it with the manual GitHub Actions release
+workflow.
 
 ## Release bundle
 
@@ -10,17 +12,48 @@ The Windows release asset is:
 zeta-holdem-solver-windows-x64.zip
 ```
 
-It contains the Release build output from:
+It contains a self-contained `zeta` directory:
 
 ```text
-build\zeta\ui\holdem\Release
+zeta/
+  README.md
+  doc/
+  bin/
+    holdem/
+      zeta-ui-holdem.exe
+      zeta-solve.exe
+      *.dll
+      platforms/
+      iconengines/
+      imageformats/
+      styles/
 ```
 
-The GitHub Actions **Windows Build** workflow creates and uploads this zip as a workflow artifact named:
+The GitHub Actions **Windows Release** workflow creates and uploads this zip as
+both a workflow artifact and a GitHub Release asset.
+
+## Publish with GitHub Actions
+
+The release workflow is manual only. It does not run on every push, pull request,
+or tag creation.
+
+1. Create and push the release tag.
+2. Open **Actions > Windows Release > Run workflow**.
+3. Enter the tag, for example `v0.1.0`.
+4. Choose whether the release is a prerelease.
+
+The same workflow can be started from the CLI:
 
 ```text
-zeta-holdem-solver-windows-x64
+gh workflow run "Windows Release" -f tag=v0.1.0 -f prerelease=false
 ```
+
+The workflow avoids long always-on release builds by:
+
+- running only through `workflow_dispatch`
+- building only `zeta-ui-holdem` and `zeta-solve`
+- configuring with tests and benchmarks disabled
+- using the vcpkg binary cache for third-party dependencies
 
 ## Build locally
 
@@ -29,32 +62,30 @@ Configure the build tree with vcpkg and benchmarks disabled:
 ```powershell
 cmake -S . -B build `
   -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
+  -DZETA_BUILD_TESTS=OFF `
   -DZETA_BUILD_BENCHMARKS=OFF
 ```
 
-Build the UI and tests:
+Build the release targets:
 
 ```powershell
-cmake --build build --config Release --target zeta-ui-holdem zeta_tests
-```
-
-Run the tests:
-
-```powershell
-$env:QT_QPA_PLATFORM = 'offscreen'
-ctest --test-dir build\zeta\test -C Release --output-on-failure
+cmake --build build --config Release --target zeta-ui-holdem zeta-solve --parallel
 ```
 
 Create the release zip:
 
 ```powershell
 $bundleName = 'zeta-holdem-solver-windows-x64'
-$source = 'build\zeta\ui\holdem\Release'
 $staging = "artifacts\$bundleName"
+$root = "$staging\zeta"
+$bin = "$root\bin\holdem"
 
-New-Item -ItemType Directory -Force -Path $staging | Out-Null
-Copy-Item "$source\*" $staging -Recurse -Force
-Compress-Archive -Path "$staging\*" -DestinationPath "artifacts\$bundleName.zip" -Force
+New-Item -ItemType Directory -Force -Path $bin | Out-Null
+Copy-Item README.md $root -Force
+Copy-Item doc "$root\doc" -Recurse -Force
+Copy-Item "build\zeta\ui\holdem\Release\*" $bin -Recurse -Force
+Copy-Item "build\zeta\tools\holdem\Release\zeta-solve.exe" $bin -Force
+Compress-Archive -Path $root -DestinationPath "artifacts\$bundleName.zip" -Force
 ```
 
 ## Publish a local bundle
@@ -69,33 +100,4 @@ Upload or replace the asset on an existing release:
 
 ```powershell
 gh release upload v0.1.0 artifacts\zeta-holdem-solver-windows-x64.zip --clobber
-```
-
-## Publish a GitHub Actions artifact
-
-Use this path when the **Windows Build** workflow has already produced the bundle artifact and you only need to publish it to a release.
-
-Find the workflow run ID:
-
-```powershell
-gh run list --workflow "Windows Build" --limit 10
-```
-
-Then run the **Publish Release Bundle** workflow from GitHub Actions with:
-
-| Input | Value |
-| --- | --- |
-| `tag` | Release tag, for example `v0.1.0` |
-| `run_id` | The completed **Windows Build** run ID |
-| `artifact_name` | `zeta-holdem-solver-windows-x64` |
-
-The workflow downloads the artifact from the selected run, checks that it contains exactly one zip file, then creates or updates the GitHub Release asset.
-
-The same workflow can be started from the CLI:
-
-```powershell
-gh workflow run "Publish Release Bundle" `
-  -f tag=v0.1.0 `
-  -f run_id=1234567890 `
-  -f artifact_name=zeta-holdem-solver-windows-x64
 ```

@@ -42,21 +42,3 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           ctest --test-dir build\zeta\test -C Release --output-on-failure
-
-      - name: Package Hold'em Solver
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $bundleName = 'zeta-holdem-solver-windows-x64'
-          $source = 'build\zeta\ui\holdem\Release'
-          $staging = "artifacts\$bundleName"
-          New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item "$source\*" $staging -Recurse -Force
-          Compress-Archive -Path "$staging\*" -DestinationPath "artifacts\$bundleName.zip" -Force
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: zeta-holdem-solver-windows-x64
-          path: artifacts/zeta-holdem-solver-windows-x64.zip
-          if-no-files-found: error

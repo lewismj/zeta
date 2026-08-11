@@ -18,23 +18,23 @@ if (result.ok()) {
 On failure, `range_parse_result::error` contains an error code and input
 position. Parsing is exception-free.
 
-## PokerStove grammar
+## PokerStove style grammar
 
 Terms are comma-separated. Whitespace is allowed around terms and separators.
 
-| Syntax | Meaning | Combos |
-|---|---|---:|
-| `AA` | Pair hand class | 6 |
-| `AKs` | Suited non-pair hand class | 4 |
-| `AKo` | Offsuit non-pair hand class | 12 |
-| `AK` | Both suited and offsuit non-pair hand class | 16 |
-| `AsKh` | Exact two-card combo | 1 |
-| `22+` | Pair plus: `22..AA` | 78 |
-| `A5s+` | Suited plus with fixed high rank: `A5s..AKs` | 36 |
-| `AJo+` | Offsuit plus with fixed high rank: `AJo..AKo` | 36 |
-| `55-99` | Pair range | 30 |
-| `A5s-A9s` | Non-pair range with same high rank and suitedness | 20 |
-| `KTs-KQs` | Non-pair range with same high rank and suitedness | 12 |
+| Syntax    | Meaning                                           | Combos |
+| --------- | ------------------------------------------------- | ------:|
+| `AA`      | Pair hand class                                   | 6      |
+| `AKs`     | Suited non-pair hand class                        | 4      |
+| `AKo`     | Offsuit non-pair hand class                       | 12     |
+| `AK`      | Both suited and offsuit non-pair hand class       | 16     |
+| `AsKh`    | Exact two-card combo                              | 1      |
+| `22+`     | Pair plus: `22..AA`                               | 78     |
+| `A5s+`    | Suited plus with fixed high rank: `A5s..AKs`      | 36     |
+| `AJo+`    | Offsuit plus with fixed high rank: `AJo..AKo`     | 36     |
+| `55-99`   | Pair range                                        | 30     |
+| `A5s-A9s` | Non-pair range with same high rank and suitedness | 20     |
+| `KTs-KQs` | Non-pair range with same high rank and suitedness | 12     |
 
 If a combo appears more than once, the later term overwrites the previous
 weight.
@@ -57,10 +57,10 @@ QJo+:0.75
 AsKh:0.10
 ```
 
-| Syntax | Meaning |
-|---|---|
-| `AA:0.5` | Pair hand class at weight `0.5` |
-| `QJo+:0.75` | Plus expression at weight `0.75` |
+| Syntax      | Meaning                               |
+| ----------- | ------------------------------------- |
+| `AA:0.5`    | Pair hand class at weight `0.5`       |
+| `QJo+:0.75` | Plus expression at weight `0.75`      |
 | `AsKh:0.10` | Exact two-card combo at weight `0.10` |
 
 Weights are parsed as non-negative decimal values. Percent syntax such as `50%`
@@ -107,16 +107,16 @@ The parser implements the PokerStove preflop range grammar above. These
 non-PokerStove extensions and broader range-language features are not currently
 supported:
 
-| Syntax | Status |
-|---|---|
-| Parentheses / grouping | Not implemented |
-| Boolean set operations such as `!`, `&`, `|`, subtraction | Not implemented |
-| Named ranges or variables | Not implemented |
-| Percent weights such as `AA:50%` | Not implemented |
-| Equality weights such as `AA=50%` | Not implemented |
-| Suit wildcards such as `AsKx` | Not implemented |
-| Exact combo exclusions such as `!AsKh` | Not implemented |
-| Postflop hand categories | Not implemented |
+| Syntax                                     | Status          |
+| ------------------------------------------ | --------------- |
+| Parentheses / grouping                     | Not implemented |
+| Boolean set operations such as `!`, `&`, ` | `, subtraction  |
+| Named ranges or variables                  | Not implemented |
+| Percent weights such as `AA:50%`           | Not implemented |
+| Equality weights such as `AA=50%`          | Not implemented |
+| Suit wildcards such as `AsKx`              | Not implemented |
+| Exact combo exclusions such as `!AsKh`     | Not implemented |
+| Postflop hand categories                   | Not implemented |
 
 These can be added later without changing the core `hand_range` storage.
 

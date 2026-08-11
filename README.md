@@ -27,6 +27,7 @@ The Hold'em module currently includes a lookup-based native 7-card evaluator and
 - [River terminal evaluator](doc/holdem/terminal_evaluator.md)
 - [zeta-solve CLI](doc/holdem/cli_usage.md)
 - [Hold'em solver UI user guide](doc/holdem/ui/user_guide.md)
+- [Hold'em solver next steps](doc/holdem/next_steps.md)
 
 ### GTO postflop analyser
 
@@ -47,6 +48,8 @@ implements:
 | Solver overview | Range editor |
 |---|---|
 | ![Zeta solver UI overview](doc/holdem/ui/images/solver-ui-overview.png) | ![Zeta solver UI ranges](doc/holdem/ui/images/solver-ui-overview-ranges.png) |
+
+ The core next [next_steps](doc/holdem/next_steps.md) to a useful product.
 
 #### Benchmark baseline (CFR runtime and scheduler)
 

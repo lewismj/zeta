@@ -1,0 +1,125 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish, for example v0.1.0
+        required: true
+        type: string
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}\vcpkg-binary-cache,readwrite
+      BUNDLE_NAME: zeta-holdem-solver-windows-x64
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\vcpkg-binary-cache
+          key: windows-release-vcpkg-${{ hashFiles('.github/workflows/windows-release.yml') }}
+          restore-keys: |
+            windows-release-vcpkg-
+
+      - name: Install release dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path "${{ runner.temp }}\vcpkg-binary-cache" | Out-Null
+          C:\vcpkg\vcpkg.exe install boost-json:x64-windows qtbase:x64-windows qtsvg:x64-windows
+
+      - name: Configure release build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S . -B build `
+            -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
+            -DZETA_BUILD_TESTS=OFF `
+            -DZETA_BUILD_BENCHMARKS=OFF
+
+      - name: Build release targets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake --build build --config Release --target zeta-ui-holdem zeta-solve --parallel
+
+      - name: Stage release bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = Join-Path artifacts $env:BUNDLE_NAME
+          $root = Join-Path $bundle 'zeta'
+          $bin = Join-Path $root 'bin\holdem'
+
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+          Copy-Item README.md $root -Force
+          Copy-Item doc (Join-Path $root 'doc') -Recurse -Force
+
+          Copy-Item 'build\zeta\ui\holdem\Release\*' $bin -Recurse -Force
+          Copy-Item 'build\zeta\tools\holdem\Release\zeta-solve.exe' $bin -Force
+
+          $required = @(
+            (Join-Path $bin 'zeta-ui-holdem.exe'),
+            (Join-Path $bin 'zeta-solve.exe'),
+            (Join-Path $root 'README.md'),
+            (Join-Path $root 'doc')
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) {
+              throw "Release bundle is missing required path: $path"
+            }
+          }
+
+          Compress-Archive -Path $root -DestinationPath "artifacts\$env:BUNDLE_NAME.zip" -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeta-holdem-solver-windows-x64
+          path: artifacts/zeta-holdem-solver-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = "artifacts\$env:BUNDLE_NAME.zip"
+          if (-not (Test-Path $bundle)) {
+            throw "Release bundle not found: $bundle"
+          }
+
+          if (gh release view $env:RELEASE_TAG 2>$null) {
+            gh release upload $env:RELEASE_TAG $bundle --clobber
+          } else {
+            $args = @('release', 'create', $env:RELEASE_TAG, $bundle, '--title', $env:RELEASE_TAG, '--generate-notes')
+            if ($env:PRERELEASE -eq 'true') {
+              $args += '--prerelease'
+            }
+            gh @args
+          }
