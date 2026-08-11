@@ -11,6 +11,7 @@
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
+#include <QStyle>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
@@ -65,6 +66,49 @@ namespace zeta::holdem::ui::widgets {
             spin->setDecimals(3);
             spin->setSingleStep(0.05);
             return spin;
+        }
+
+        [[nodiscard]] QString display_card_label(const std::string& label)
+        {
+            if (label.size() != 2u) {
+                return QString::fromStdString(label);
+            }
+
+            const auto rank = QChar::fromLatin1(label[0]);
+            switch (label[1]) {
+                case 's':
+                    return QString{rank} + QStringLiteral("♠");
+                case 'h':
+                    return QString{rank} + QStringLiteral("♥");
+                case 'd':
+                    return QString{rank} + QStringLiteral("♦");
+                case 'c':
+                    return QString{rank} + QStringLiteral("♣");
+                default:
+                    return QString::fromStdString(label);
+            }
+        }
+
+        [[nodiscard]] const char* card_suit_tone(const QString& canonical)
+        {
+            if (canonical.size() != 2) {
+                return "neutral";
+            }
+            const auto suit = canonical.at(1).toLatin1();
+            if (suit == 'h' || suit == 'd') {
+                return "red";
+            }
+            if (suit == 's' || suit == 'c') {
+                return "amber";
+            }
+            return "neutral";
+        }
+
+        void refresh_card_suit_tone(QComboBox* combo)
+        {
+            combo->setProperty("cardSuitTone", card_suit_tone(combo->currentData().toString()));
+            combo->style()->unpolish(combo);
+            combo->style()->polish(combo);
         }
 
         [[nodiscard]] QString seat_selector_text(const spot& source, const std::size_t seat)
@@ -195,13 +239,15 @@ namespace zeta::holdem::ui::widgets {
         for (int index = 0; index < 5; ++index) {
             auto* card = new QComboBox{spot_panel};
             card->setObjectName(QStringLiteral("boardCard%1").arg(index));
-            card->addItem(QStringLiteral("-"));
+            card->addItem(QStringLiteral("-"), QString{});
             for (const auto& label : viewmodels::deck_card_labels()) {
-                card->addItem(QString::fromStdString(label));
+                const auto canonical = QString::fromStdString(label);
+                card->addItem(display_card_label(label), canonical);
             }
             board_cards_.push_back(card);
             grid->addWidget(card, 2, index);
-            connect(card, &QComboBox::currentTextChanged, this, [this] {
+            connect(card, &QComboBox::currentIndexChanged, this, [this, card] {
+                refresh_card_suit_tone(card);
                 if (!updating_) {
                     spot_ = spot_from_controls();
                     refresh_validation();
@@ -369,9 +415,10 @@ namespace zeta::holdem::ui::widgets {
         for (std::size_t index = 0; index < board_cards_.size(); ++index) {
             auto* combo = board_cards_[index];
             combo->setVisible(index < expected);
-            const auto text = index < spot_.board.size() ? QString::fromStdString(spot_.board[index]) : QStringLiteral("-");
-            const int item = combo->findText(text);
+            const auto text = index < spot_.board.size() ? QString::fromStdString(spot_.board[index]) : QString{};
+            const int item = combo->findData(text);
             combo->setCurrentIndex(item >= 0 ? item : 0);
+            refresh_card_suit_tone(combo);
         }
     }
 
@@ -418,8 +465,8 @@ namespace zeta::holdem::ui::widgets {
         out.board.clear();
         const auto expected = viewmodels::board_card_count_for_street(out.street);
         for (std::size_t index = 0; index < std::min(expected, board_cards_.size()); ++index) {
-            const auto text = board_cards_[index]->currentText();
-            if (text != QStringLiteral("-")) {
+            const auto text = board_cards_[index]->currentData().toString();
+            if (!text.isEmpty()) {
                 out.board.push_back(text.toStdString());
             }
         }

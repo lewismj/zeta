@@ -44,6 +44,10 @@ implements:
 - side-pot and rake-aware terminal-state payoff distribution
 - thread-local terminal workspaces for solver traversal
 
+| Solver overview | Range editor |
+|---|---|
+| ![Zeta solver UI overview](doc/holdem/ui/images/solver-ui-overview.png) | ![Zeta solver UI ranges](doc/holdem/ui/images/solver-ui-overview-ranges.png) |
+
 #### Benchmark baseline (CFR runtime and scheduler)
 
 Latest Google Benchmark summary from `zeta-bench-holdem-cfr` on Release WSL Clang (`setarch x86_64 -R`):

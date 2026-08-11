@@ -169,6 +169,15 @@ QLabel#betSizeLabel {
     color: %14;
     font-weight: 600;
 }
+QWidget#spotBuilder QLabel,
+QWidget#spotBuilder QComboBox,
+QWidget#spotBuilder QSpinBox,
+QWidget#spotBuilder QDoubleSpinBox,
+QWidget#spotBuilder QTableWidget,
+QWidget#spotBuilder QHeaderView::section {
+    font-family: "D-DIN";
+    font-size: %29px;
+}
 QLabel#errorLabel, QLabel#rangeParseError {
     color: %27;
     font-weight: 600;
@@ -231,6 +240,19 @@ QPlainTextEdit#rangeTextEditor:focus, QComboBox#rangeSeatSelector:focus {
 }
 QDoubleSpinBox#betFractionField {
     border-color: %14;
+}
+QComboBox[cardSuitTone="neutral"], QComboBox[cardSuitTone="amber"], QComboBox[cardSuitTone="red"] {
+    color: %7;
+    font-family: "D-DIN";
+    font-size: %29px;
+    font-weight: 700;
+}
+QComboBox[cardSuitTone="neutral"] QAbstractItemView,
+QComboBox[cardSuitTone="amber"] QAbstractItemView,
+QComboBox[cardSuitTone="red"] QAbstractItemView {
+    color: %7;
+    font-family: "D-DIN";
+    font-size: %29px;
 }
 QComboBox::drop-down {
     background: %3;

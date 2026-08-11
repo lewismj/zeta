@@ -637,15 +637,25 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_reflects_validated_json_edits_in_str
     auto* player_count = builder.findChild<QSpinBox*>("playerCountSelector");
     auto* root_actor = builder.findChild<QComboBox*>("rootActorSelector");
     auto* hero_seat = builder.findChild<QComboBox*>("heroSeatSelector");
+    auto* first_board_card = builder.findChild<QComboBox*>("boardCard0");
+    auto* second_board_card = builder.findChild<QComboBox*>("boardCard1");
 
     BOOST_REQUIRE(street != nullptr);
     BOOST_REQUIRE(player_count != nullptr);
     BOOST_REQUIRE(root_actor != nullptr);
     BOOST_REQUIRE(hero_seat != nullptr);
+    BOOST_REQUIRE(first_board_card != nullptr);
+    BOOST_REQUIRE(second_board_card != nullptr);
     BOOST_CHECK_EQUAL(street->currentText().toStdString(), "turn");
     BOOST_CHECK_EQUAL(player_count->value(), 4);
     BOOST_CHECK_EQUAL(root_actor->currentIndex(), static_cast<int>(edited.root_actor));
     BOOST_CHECK_EQUAL(hero_seat->currentIndex(), static_cast<int>(edited.hero_seat));
+    BOOST_CHECK_EQUAL(first_board_card->currentText().toStdString(), "A\u2660");
+    BOOST_CHECK_EQUAL(first_board_card->currentData().toString().toStdString(), "As");
+    BOOST_CHECK_EQUAL(first_board_card->property("cardSuitTone").toString().toStdString(), "amber");
+    BOOST_CHECK_EQUAL(second_board_card->currentText().toStdString(), "K\u2666");
+    BOOST_CHECK_EQUAL(second_board_card->currentData().toString().toStdString(), "Kd");
+    BOOST_CHECK_EQUAL(second_board_card->property("cardSuitTone").toString().toStdString(), "red");
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_keeps_seats_table_with_header) {
