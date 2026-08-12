@@ -22,7 +22,8 @@ jobs:
     timeout-minutes: 60
 
     env:
-      VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}\vcpkg-binary-cache,readwrite
+      VCPKG_BINARY_CACHE: vcpkg-binary-cache
+      VCPKG_BINARY_SOURCES: clear;files,vcpkg-binary-cache,readwrite
       BUNDLE_NAME: zeta-holdem-solver-windows-x64
 
     steps:
@@ -37,7 +38,7 @@ jobs:
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}\vcpkg-binary-cache
+          path: vcpkg-binary-cache
           key: windows-release-vcpkg-${{ hashFiles('.github/workflows/windows-release.yml') }}
           restore-keys: |
             windows-release-vcpkg-
@@ -46,7 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path "${{ runner.temp }}\vcpkg-binary-cache" | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_BINARY_CACHE | Out-Null
           C:\vcpkg\vcpkg.exe install boost-json:x64-windows qtbase:x64-windows qtsvg:x64-windows
 
       - name: Configure release build
