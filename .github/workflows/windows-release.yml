@@ -22,9 +22,9 @@ jobs:
     timeout-minutes: 60
 
     env:
-      VCPKG_BINARY_CACHE: vcpkg-binary-cache
-      VCPKG_BINARY_SOURCES: clear;files,vcpkg-binary-cache,readwrite
-      BUNDLE_NAME: zeta-holdem-solver-windows-x64
+        VCPKG_BINARY_CACHE: ${{ github.workspace }}\vcpkg-binary-cache
+        VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-binary-cache,readwrite
+        BUNDLE_NAME: zeta-holdem-solver-windows-x64
 
     steps:
       - name: Check out release tag
