@@ -50,3 +50,6 @@ Folder.DotSettings.user
 # CLion/
 .idea
 
+# Local release artifacts
+artifacts/
+

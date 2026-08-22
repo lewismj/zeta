@@ -261,9 +261,10 @@ namespace zeta::holdem::ui::viewmodels {
                 ? std::vector<std::string>{}
                 : found_range->second.blocked_by;
 
+            const auto& effective_strategy = artifact_row.strategy.empty() ? artifact.root_strategy : artifact_row.strategy;
             std::vector<strategy_action_frequency> row_actions;
-            row_actions.reserve(artifact_row.strategy.size());
-            for (const auto& action : artifact_row.strategy) {
+            row_actions.reserve(effective_strategy.size());
+            for (const auto& action : effective_strategy) {
                 row_actions.push_back(strategy_action_frequency{
                     .action = action.action,
                     .frequency = action.frequency

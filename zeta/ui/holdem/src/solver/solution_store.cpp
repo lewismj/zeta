@@ -279,6 +279,32 @@ namespace zeta::holdem::ui::solver {
             std::map<std::string, double> frequency_totals;
             std::map<std::string, double> weighted_evs;
             std::map<std::string, double> ev_weights;
+            double total_ev = 0.0;
+            for (const auto& row : artifact.strategy) {
+                total_ev += row.ev;
+            }
+            const auto overall_ev = artifact.strategy.empty()
+                ? 0.0
+                : total_ev / static_cast<double>(artifact.strategy.size());
+            if (!artifact.root_strategy.empty()) {
+                std::vector<solution_action_summary> out;
+                out.reserve(artifact.root_strategy.size());
+                for (const auto& action : artifact.root_strategy) {
+                    out.push_back(solution_action_summary{
+                        .action = action.action,
+                        .frequency = std::max(0.0, action.frequency),
+                        .average_ev = overall_ev
+                    });
+                }
+                std::ranges::sort(out, [](const auto& lhs, const auto& rhs) {
+                    if (std::abs(lhs.frequency - rhs.frequency) > 0.000001) {
+                        return lhs.frequency > rhs.frequency;
+                    }
+                    return lhs.action < rhs.action;
+                });
+                return out;
+            }
+
             for (const auto& row : artifact.strategy) {
                 for (const auto& action : row.strategy) {
                     const auto frequency = std::max(0.0, action.frequency);
@@ -328,11 +354,14 @@ namespace zeta::holdem::ui::solver {
         [[nodiscard]] std::vector<std::string> root_action_labels_from_artifact(const cli::solve_artifact& artifact)
         {
             std::vector<std::string> labels;
-            if (artifact.strategy.empty()) {
+            const auto* source = !artifact.root_strategy.empty()
+                ? &artifact.root_strategy
+                : (artifact.strategy.empty() ? nullptr : &artifact.strategy.front().strategy);
+            if (source == nullptr) {
                 return labels;
             }
-            labels.reserve(artifact.strategy.front().strategy.size());
-            for (const auto& action : artifact.strategy.front().strategy) {
+            labels.reserve(source->size());
+            for (const auto& action : *source) {
                 labels.push_back(action.action);
             }
             return labels;

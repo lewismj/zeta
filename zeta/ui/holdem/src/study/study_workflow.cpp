@@ -64,9 +64,22 @@ namespace zeta::holdem::ui::study {
             return out.str();
         }
 
+        [[nodiscard]] const std::vector<cli::action_strategy>& effective_strategy(
+            const solve_artifact& artifact,
+            const cli::hand_strategy& row)
+        {
+            return row.strategy.empty() ? artifact.root_strategy : row.strategy;
+        }
+
         [[nodiscard]] std::map<std::string, double> aggregate_actions(const solve_artifact& artifact)
         {
             std::map<std::string, double> totals;
+            if (!artifact.root_strategy.empty()) {
+                for (const auto& action : artifact.root_strategy) {
+                    totals[action.action] = action.frequency;
+                }
+                return totals;
+            }
             if (artifact.strategy.empty()) {
                 return totals;
             }
@@ -88,7 +101,7 @@ namespace zeta::holdem::ui::study {
             for (const auto& row : artifact.strategy) {
                 std::string best_action;
                 double best_frequency = -1.0;
-                for (const auto& action : row.strategy) {
+                for (const auto& action : effective_strategy(artifact, row)) {
                     if (action.frequency > best_frequency) {
                         best_action = action.action;
                         best_frequency = action.frequency;
@@ -156,7 +169,7 @@ namespace zeta::holdem::ui::study {
     {
         std::set<std::string> actions;
         for (const auto& row : artifact.strategy) {
-            for (const auto& action : row.strategy) {
+            for (const auto& action : effective_strategy(artifact, row)) {
                 actions.insert(action.action);
             }
         }
@@ -170,7 +183,7 @@ namespace zeta::holdem::ui::study {
 
         for (const auto& row : artifact.strategy) {
             std::map<std::string, double> frequencies;
-            for (const auto& action : row.strategy) {
+            for (const auto& action : effective_strategy(artifact, row)) {
                 frequencies[action.action] = action.frequency;
             }
             out << csv_escape(row.hand) << ',' << fixed_number(row.ev);

@@ -2,6 +2,9 @@
 
 #include "cli/solve_cli.h"
 
+#include <cmath>
+#include <ranges>
+
 namespace {
 
     constexpr const char* sample_spot = R"({
@@ -61,6 +64,22 @@ namespace {
   "max_history": 4,
   "public_state_id": 3,
   "samples_per_combo": 4
+})";
+
+    constexpr const char* sample_spot_asymmetric_river = R"({
+  "players": ["BTN", "BB"],
+  "board": ["Ah", "Kd", "Qc", "Jh", "2s"],
+  "ranges": ["AA,AKs,AQo", "AA,KK,QQ,AKo"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [200.0, 200.0],
+  "bet_fraction": 0.75,
+  "max_history": 8,
+  "public_state_id": 9,
+  "root_actor": 0,
+  "hero_seat": 0,
+  "samples_per_combo": 8
 })";
 
 }
@@ -193,6 +212,10 @@ BOOST_AUTO_TEST_CASE(holdem_cli_solve_produces_valid_artifact) {
         });
     BOOST_REQUIRE(output.has_value());
     BOOST_CHECK_GT(output->artifact.strategy.size(), 0u);
+    BOOST_CHECK_GT(output->artifact.root_strategy.size(), 0u);
+    BOOST_CHECK(std::ranges::all_of(output->artifact.strategy, [](const auto& row) {
+        return !row.strategy.empty();
+    }));
     BOOST_CHECK_EQUAL(output->artifact.schema_version, 1u);
     BOOST_CHECK_EQUAL(output->artifact.game, "holdem");
     BOOST_CHECK_EQUAL(output->artifact.street, "river");
@@ -205,6 +228,38 @@ BOOST_AUTO_TEST_CASE(holdem_cli_solve_produces_valid_artifact) {
 
     auto validation = zeta::holdem::cli::validate_artifact(output->artifact);
     BOOST_CHECK(validation.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_solve_produces_combo_specific_root_strategies_for_asymmetric_river) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_asymmetric_river);
+    BOOST_REQUIRE(spot.has_value());
+
+    auto output = zeta::holdem::cli::solve_spot(*spot, 200);
+    BOOST_REQUIRE(output.has_value());
+    BOOST_REQUIRE(!output->artifact.strategy.empty());
+    BOOST_CHECK_GT(output->artifact.root_strategy.size(), 0u);
+    BOOST_CHECK(std::ranges::all_of(output->artifact.strategy, [](const auto& row) {
+        return !row.strategy.empty();
+    }));
+
+    bool found_difference = false;
+    for (std::size_t lhs = 0; lhs < output->artifact.strategy.size() && !found_difference; ++lhs) {
+        for (std::size_t rhs = lhs + 1; rhs < output->artifact.strategy.size() && !found_difference; ++rhs) {
+            const auto& left = output->artifact.strategy[lhs].strategy;
+            const auto& right = output->artifact.strategy[rhs].strategy;
+            if (left.size() != right.size()) {
+                found_difference = true;
+                break;
+            }
+            for (std::size_t action = 0; action < left.size(); ++action) {
+                if (std::fabs(left[action].frequency - right[action].frequency) > 1.0e-5) {
+                    found_difference = true;
+                    break;
+                }
+            }
+        }
+    }
+    BOOST_CHECK(found_difference);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_validate_rejects_duplicate_board_cards) {
@@ -245,13 +300,14 @@ BOOST_AUTO_TEST_CASE(holdem_cli_artifact_json_accepts_nested_objects_and_escaped
     artifact.solver.iterations = 12;
     artifact.solver.timestamp = "2026-08-01T19:47:11Z";
     artifact.solver.git_revision = "abc1234";
+    artifact.root_strategy = {
+        zeta::holdem::cli::action_strategy{.action = "bet_50", .frequency = 0.25},
+        zeta::holdem::cli::action_strategy{.action = "call\\check", .frequency = 0.75}
+    };
     artifact.strategy = {
         zeta::holdem::cli::hand_strategy{
             .hand = "QhJd",
-            .strategy = {
-                zeta::holdem::cli::action_strategy{.action = "bet_50", .frequency = 0.25},
-                zeta::holdem::cli::action_strategy{.action = "call\\check", .frequency = 0.75}
-            },
+            .strategy = {},
             .ev = 3.5
         }
     };
@@ -262,7 +318,9 @@ BOOST_AUTO_TEST_CASE(holdem_cli_artifact_json_accepts_nested_objects_and_escaped
     BOOST_REQUIRE(parsed.has_value());
     BOOST_CHECK_EQUAL(parsed->players[0], "BT\"N");
     BOOST_REQUIRE_EQUAL(parsed->strategy.size(), 1u);
-    BOOST_CHECK_EQUAL(parsed->strategy[0].strategy[1].action, "call\\check");
+    BOOST_REQUIRE_EQUAL(parsed->root_strategy.size(), 2u);
+    BOOST_CHECK_EQUAL(parsed->root_strategy[1].action, "call\\check");
+    BOOST_CHECK(parsed->strategy[0].strategy.empty());
     BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(*parsed).has_value());
 }
 

@@ -360,9 +360,6 @@ namespace zeta::holdem::cli {
                 }
                 row.strategy.push_back(std::move(*action));
             }
-            if (row.strategy.empty()) {
-                return std::unexpected(cli_error{cli_error_kind::parse, "Strategy row has no actions."});
-            }
             const auto* ev_value = find_value(object, "ev");
             if (ev_value == nullptr) {
                 return std::unexpected(cli_error{cli_error_kind::parse, "Missing ev field."});
@@ -385,22 +382,27 @@ namespace zeta::holdem::cli {
             return out;
         }
 
+        [[nodiscard]] json::array action_strategy_json(const std::vector<action_strategy>& strategy)
+        {
+            json::array actions;
+            actions.reserve(strategy.size());
+            for (const auto& action : strategy) {
+                json::object action_object;
+                action_object["action"] = action.action;
+                action_object["frequency"] = action.frequency;
+                actions.emplace_back(std::move(action_object));
+            }
+            return actions;
+        }
+
         [[nodiscard]] json::array strategy_json(const std::vector<hand_strategy>& strategy)
         {
             json::array rows;
             rows.reserve(strategy.size());
             for (const auto& row : strategy) {
-                json::array actions;
-                actions.reserve(row.strategy.size());
-                for (const auto& action : row.strategy) {
-                    json::object action_object;
-                    action_object["action"] = action.action;
-                    action_object["frequency"] = action.frequency;
-                    actions.emplace_back(std::move(action_object));
-                }
                 json::object row_object;
                 row_object["hand"] = row.hand;
-                row_object["strategy"] = std::move(actions);
+                row_object["strategy"] = action_strategy_json(row.strategy);
                 row_object["ev"] = row.ev;
                 rows.emplace_back(std::move(row_object));
             }
@@ -668,6 +670,20 @@ namespace zeta::holdem::cli {
         artifact.solver.timestamp = std::move(*timestamp);
         artifact.solver.git_revision = std::move(*git_revision);
 
+        if (const auto* root_strategy_value = find_value(*root, "root_strategy"); root_strategy_value != nullptr) {
+            if (!root_strategy_value->is_array()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "root_strategy must be an array."});
+            }
+            artifact.root_strategy.reserve(root_strategy_value->as_array().size());
+            for (const auto& action_value : root_strategy_value->as_array()) {
+                auto action = parse_action_strategy(action_value);
+                if (!action) {
+                    return std::unexpected(action.error());
+                }
+                artifact.root_strategy.push_back(std::move(*action));
+            }
+        }
+
         const auto* strategy_value = find_value(*root, "strategy");
         if (strategy_value == nullptr || !strategy_value->is_array()) {
             return std::unexpected(cli_error{cli_error_kind::parse, "Missing strategy array."});
@@ -693,6 +709,7 @@ namespace zeta::holdem::cli {
         out["board"] = string_array_json(artifact.board);
         out["hero_seat"] = static_cast<uint64_t>(artifact.hero_seat);
         out["solver"] = solver_json(artifact.solver);
+        out["root_strategy"] = action_strategy_json(artifact.root_strategy);
         out["strategy"] = strategy_json(artifact.strategy);
         return json::serialize(out);
     }
