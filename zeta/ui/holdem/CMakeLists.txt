@@ -34,6 +34,8 @@ add_executable(zeta-ui-holdem
     src/viewmodels/strategy_view_model.cpp
     src/widgets/range_editor.h
     src/widgets/range_editor.cpp
+    src/widgets/spot_json_editor.h
+    src/widgets/spot_json_editor.cpp
     src/widgets/spot_builder.h
     src/widgets/spot_builder.cpp
     src/widgets/strategy_explorer.h

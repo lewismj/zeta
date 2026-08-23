@@ -25,6 +25,7 @@ add_executable(zeta_tests
     ../ui/holdem/src/viewmodels/spot_view_model.cpp
     ../ui/holdem/src/viewmodels/strategy_view_model.cpp
     ../ui/holdem/src/widgets/range_editor.cpp
+    ../ui/holdem/src/widgets/spot_json_editor.cpp
     ../ui/holdem/src/widgets/spot_builder.cpp
     ../ui/holdem/src/widgets/strategy_explorer.cpp
     ../ui/holdem/src/widgets/table_state_view.cpp

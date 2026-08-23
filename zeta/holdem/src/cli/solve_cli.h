@@ -799,27 +799,48 @@ namespace zeta::holdem::cli {
             const std::array<reach_vector, N>& base_reach,
             const std::array<std::vector<combination_index>, N>& active_combos,
             const std::vector<std::array<reach_vector, N>>& node_reach,
-            const board river_board,
+            const river_terminal_cache& cache,
+            const std::array<river_reach_index, N>& base_indices,
             const uint8_t updating_player,
             std::vector<reach_vector>& node_values,
             const uint16_t samples_per_combo)
         {
             node_values.assign(lowered.graph.node_count, {});
-            const auto cache = make_river_terminal_cache(river_board);
             terminal_workspace<N> workspace{};
             const terminal_engine<N> engine{};
             for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
                 const auto kind = lowered.graph.node_types[node_id];
                 if (kind == cfr::node_kind::terminal) {
-                    auto terminal_reach = node_reach[node_id];
-                    terminal_reach[updating_player] = base_reach[updating_player];
-                    workspace.materialize(cache, terminal_reach);
                     const auto terminal_state_id = lowered.terminal_leaves[node_id].terminal_state_id;
-                    const auto values = engine.evaluate_terminal_values(
-                        cache,
-                        workspace.reach,
-                        lowered.terminal_states[terminal_state_id],
-                        samples_per_combo);
+                    terminal_values<N> values{};
+                    if constexpr (N == 2) {
+                        const auto opponent = static_cast<uint8_t>(1u - updating_player);
+                        const auto opponent_index = make_river_reach_index(cache, node_reach[node_id][opponent]);
+                        if (updating_player == 0u) {
+                            values = engine.evaluate_terminal_values(
+                                cache,
+                                base_indices[0],
+                                opponent_index,
+                                lowered.terminal_states[terminal_state_id],
+                                samples_per_combo);
+                        } else {
+                            values = engine.evaluate_terminal_values(
+                                cache,
+                                opponent_index,
+                                base_indices[1],
+                                lowered.terminal_states[terminal_state_id],
+                                samples_per_combo);
+                        }
+                    } else {
+                        auto terminal_reach = node_reach[node_id];
+                        terminal_reach[updating_player] = base_reach[updating_player];
+                        workspace.materialize(cache, terminal_reach);
+                        values = engine.evaluate_terminal_values(
+                            cache,
+                            workspace.reach,
+                            lowered.terminal_states[terminal_state_id],
+                            samples_per_combo);
+                    }
                     for (const auto combo : active_combos[updating_player]) {
                         node_values[node_id][combo] = values[updating_player][combo];
                     }
@@ -962,6 +983,11 @@ namespace zeta::holdem::cli {
             combo_action_table current_strategy(layout);
             combo_action_table average_strategy(layout);
             const auto active_combos = active_combos_by_player(reach_vectors);
+            const auto cache = make_river_terminal_cache(public_board);
+            std::array<river_reach_index, N> base_indices{};
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                base_indices[seat] = make_river_reach_index(cache, reach_vectors[seat]);
+            }
 
             auto initial_state = cfr::make_initial_betting_state(config);
             const auto root_actions = cfr::legal_betting_actions(initial_state, config.abstraction);
@@ -999,7 +1025,8 @@ namespace zeta::holdem::cli {
                         reach_vectors,
                         active_combos,
                         node_reach,
-                        public_board,
+                        cache,
+                        base_indices,
                         updating_player,
                         node_values,
                         spot.samples_per_combo);
@@ -1053,7 +1080,8 @@ namespace zeta::holdem::cli {
                 reach_vectors,
                 active_combos,
                 node_reach,
-                public_board,
+                cache,
+                base_indices,
                 hero,
                 node_values,
                 spot.samples_per_combo);

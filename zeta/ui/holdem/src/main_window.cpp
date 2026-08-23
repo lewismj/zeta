@@ -13,6 +13,7 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
@@ -29,7 +30,6 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
-#include <QTextCursor>
 #include <QTimer>
 #include <QToolBar>
 #include <QVariant>
@@ -39,6 +39,7 @@
 #include "theme/theme_styles.h"
 #include "viewmodels/spot_view_model.h"
 #include "widgets/range_editor.h"
+#include "widgets/spot_json_editor.h"
 #include "widgets/spot_builder.h"
 #include "widgets/strategy_explorer.h"
 #include "widgets/table_state_view.h"
@@ -414,6 +415,8 @@ namespace zeta::holdem::ui {
         solve_action_->setIcon(QIcon{QStringLiteral(":/icons/play.svg")});
         cancel_action_->setIcon(QIcon{QStringLiteral(":/icons/square.svg")});
         configuration_action_->setIcon(QIcon{QStringLiteral(":/icons/settings.svg")});
+        save_action_->setShortcuts(QKeySequence::Save);
+        save_as_action_->setShortcuts(QKeySequence::SaveAs);
 
         connect(new_action_, &QAction::triggered, this, [this] { new_document(); });
         connect(open_action_, &QAction::triggered, this, [this] { open_document(); });
@@ -982,9 +985,8 @@ namespace zeta::holdem::ui {
         auto* left_tabs = new QTabWidget{workspace};
         left_tabs->setObjectName("solverSubTabs");
 
-        auto* raw_editor = new QPlainTextEdit{left_tabs};
-        raw_editor->setPlainText(QString::fromStdString(cli::serialize_spot_json(entry.document.current_spot())));
-        raw_editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+        auto* raw_editor = new widgets::spot_json_editor{left_tabs};
+        raw_editor->set_json_text(QString::fromStdString(cli::serialize_spot_json(entry.document.current_spot())));
         raw_editor->setReadOnly(index == active_solver_document_index_ && has_active_solve());
         entry.editor = raw_editor;
 
@@ -1002,7 +1004,7 @@ namespace zeta::holdem::ui {
             }
             auto& entry = documents_[index];
             entry.updating_editor = true;
-            raw_editor->setPlainText(QString::fromStdString(cli::serialize_spot_json(entry.document.current_spot())));
+            raw_editor->set_json_text(QString::fromStdString(cli::serialize_spot_json(entry.document.current_spot())));
             entry.updating_editor = false;
             summary_header->setText(QString::fromStdString(viewmodels::spot_summary_text(entry.document.current_spot(), entry.document.artifact().has_value())));
             table_view->set_spot(entry.document.current_spot());
@@ -1086,6 +1088,30 @@ namespace zeta::holdem::ui {
                     break;
                 }
             }
+        });
+        int previous_sub_tab = left_tabs->currentIndex();
+        connect(left_tabs, &QTabWidget::currentChanged, this, [this, left_tabs, raw_editor, index, previous_sub_tab](const int current) mutable {
+            const auto previous_widget = left_tabs->widget(previous_sub_tab);
+            const auto current_widget = left_tabs->widget(current);
+            const bool leaving_raw_editor = previous_widget == raw_editor && current_widget != raw_editor;
+            previous_sub_tab = current;
+            if (!leaving_raw_editor || index < 0 || index >= static_cast<int>(documents_.size())) {
+                return;
+            }
+            auto& entry = documents_[index];
+            if (!parse_editor_into_document(entry, true)) {
+                const int raw_index = left_tabs->indexOf(raw_editor);
+                if (raw_index >= 0) {
+                    QSignalBlocker blocker{left_tabs};
+                    left_tabs->setCurrentIndex(raw_index);
+                    previous_sub_tab = raw_index;
+                }
+                return;
+            }
+            entry.updating_editor = true;
+            raw_editor->format_document_if_valid();
+            entry.updating_editor = false;
+            refresh_document_tab(index);
         });
 
         return root;

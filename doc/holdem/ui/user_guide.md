@@ -119,9 +119,9 @@ The **Spot Builder** provides templates for common starting points:
 
 ### Spot JSON tab
 
-The **Spot JSON** tab is the canonical serialized spot. Structured edits from **Spot Builder** and **Ranges** rewrite this JSON automatically.
+The **Spot JSON** tab is the canonical serialized spot. Structured edits from **Spot Builder** and **Ranges** rewrite this JSON automatically, and valid JSON edits in **Spot JSON** flow back into the structured tabs when you switch away from the raw JSON tab.
 
-You can edit JSON directly, then click **Validate** or **Solve**. Direct JSON edits must follow the same schema as the CLI spot format. If parsing or validation fails, the document is not replaced.
+The editor applies JSON syntax highlighting, and valid pasted JSON is automatically formatted as multi-line indented JSON. Direct JSON edits must follow the same schema as the CLI spot format. If parsing or validation fails, the document is not replaced.
 
 ## Editing Ranges
 

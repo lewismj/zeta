@@ -20,19 +20,23 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDialog>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFontDatabase>
 #include <QIcon>
 #include <QImage>
 #include <QImageReader>
+#include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -1299,6 +1303,108 @@ BOOST_AUTO_TEST_CASE(holdem_ui_main_window_launch_smoke_has_command_shell) {
     BOOST_CHECK(window.findChild<QTabWidget*>() != nullptr);
     BOOST_CHECK(window.findChild<QListWidget*>("documentRailList") != nullptr);
     BOOST_CHECK(window.findChild<QPlainTextEdit*>("solveConsole") != nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_main_window_spot_json_paste_formats_and_syncs_structured_tabs) {
+    auto& app = qt_app();
+    zeta::holdem::ui::main_window window;
+    window.resize(1200, 760);
+    window.show();
+    app.processEvents();
+
+    auto* sub_tabs = window.findChild<QTabWidget*>("solverSubTabs");
+    BOOST_REQUIRE(sub_tabs != nullptr);
+    const int raw_index = [&] {
+        for (int i = 0; i < sub_tabs->count(); ++i) {
+            if (sub_tabs->tabText(i) == QStringLiteral("Spot JSON")) {
+                return i;
+            }
+        }
+        return -1;
+    }();
+    BOOST_REQUIRE_GE(raw_index, 0);
+    sub_tabs->setCurrentIndex(raw_index);
+    app.processEvents();
+
+    auto* raw_editor = qobject_cast<QPlainTextEdit*>(sub_tabs->widget(raw_index));
+    BOOST_REQUIRE(raw_editor != nullptr);
+    const auto before_paste = raw_editor->toPlainText();
+    QApplication::clipboard()->setText(QStringLiteral("{\"players\":[\"BTN\",\"BB\"],\"board\":[\"Ah\",\"Kd\",\"Qc\",\"Jh\",\"2s\"],\"oop_range\":\"AA,AKs,AQo\",\"ip_range\":\"AA,KK,QQ,AKo\",\"gross_pot\":100.0,\"rake\":0.0,\"oop_contribution\":50.0,\"ip_contribution\":50.0,\"oop_stack\":200.0,\"ip_stack\":200.0,\"bet_fraction\":0.75}"));
+    raw_editor->selectAll();
+    raw_editor->paste();
+    app.processEvents();
+
+    const auto formatted_json = raw_editor->toPlainText();
+    BOOST_CHECK(formatted_json.contains(QStringLiteral("\n")));
+    BOOST_CHECK(formatted_json.contains(QStringLiteral("  \"players\"")));
+    raw_editor->undo();
+    app.processEvents();
+    BOOST_CHECK_EQUAL(raw_editor->toPlainText().toStdString(), before_paste.toStdString());
+    raw_editor->redo();
+    app.processEvents();
+    BOOST_CHECK_EQUAL(raw_editor->toPlainText().toStdString(), formatted_json.toStdString());
+
+    sub_tabs->setCurrentIndex(0);
+    app.processEvents();
+
+    auto* refreshed_tabs = window.findChild<QTabWidget*>("solverSubTabs");
+    BOOST_REQUIRE(refreshed_tabs != nullptr);
+    auto* player_count = window.findChild<QSpinBox*>("playerCountSelector");
+    auto* gross_pot = window.findChild<QDoubleSpinBox*>("grossPotField");
+    auto* bet_fraction = window.findChild<QDoubleSpinBox*>("betFractionField");
+    auto* board0 = window.findChild<QComboBox*>("boardCard0");
+    BOOST_REQUIRE(player_count != nullptr);
+    BOOST_REQUIRE(gross_pot != nullptr);
+    BOOST_REQUIRE(bet_fraction != nullptr);
+    BOOST_REQUIRE(board0 != nullptr);
+    BOOST_CHECK_EQUAL(player_count->value(), 2);
+    BOOST_CHECK_EQUAL(gross_pot->value(), 100.0);
+    BOOST_CHECK_EQUAL(bet_fraction->value(), 0.75);
+    BOOST_CHECK_EQUAL(board0->currentData().toString().toStdString(), "Ah");
+
+    int ranges_index = -1;
+    for (int i = 0; i < refreshed_tabs->count(); ++i) {
+        if (refreshed_tabs->tabText(i) == QStringLiteral("Ranges")) {
+            ranges_index = i;
+            break;
+        }
+    }
+    BOOST_REQUIRE_GE(ranges_index, 0);
+    refreshed_tabs->setCurrentIndex(ranges_index);
+    app.processEvents();
+
+    auto* seat_selector = window.findChild<QComboBox*>("rangeSeatSelector");
+    auto* range_text = window.findChild<QPlainTextEdit*>("rangeTextEditor");
+    BOOST_REQUIRE(seat_selector != nullptr);
+    BOOST_REQUIRE(range_text != nullptr);
+    seat_selector->setCurrentIndex(0);
+    app.processEvents();
+    BOOST_CHECK_EQUAL(range_text->toPlainText().toStdString(), "AA,AKs,AQo");
+    seat_selector->setCurrentIndex(1);
+    app.processEvents();
+    BOOST_CHECK_EQUAL(range_text->toPlainText().toStdString(), "AA,KK,QQ,AKo");
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_main_window_save_actions_have_standard_shortcuts) {
+    auto& app = qt_app();
+    (void) app;
+    zeta::holdem::ui::main_window window;
+
+    QAction* save = nullptr;
+    QAction* save_as = nullptr;
+    for (auto* action : window.findChildren<QAction*>()) {
+        const auto text = QString{action->text()}.remove('&');
+        if (text == QStringLiteral("Save")) {
+            save = action;
+        } else if (text == QStringLiteral("Save As...")) {
+            save_as = action;
+        }
+    }
+
+    BOOST_REQUIRE(save != nullptr);
+    BOOST_REQUIRE(save_as != nullptr);
+    BOOST_CHECK(save->shortcuts().contains(QKeySequence::Save));
+    BOOST_CHECK(save_as->shortcuts().contains(QKeySequence::SaveAs));
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_configuration_dialog_allows_worker_thread_edits) {
