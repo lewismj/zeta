@@ -45,9 +45,9 @@ implements:
 - side-pot and rake-aware terminal-state payoff distribution
 - thread-local terminal workspaces for solver traversal
 
-| Solver overview | Range editor |
-|---|---|
-| ![Zeta solver UI overview](doc/holdem/ui/images/solver-ui-overview.png) | ![Zeta solver UI ranges](doc/holdem/ui/images/solver-ui-overview-ranges.png) |
+| Solver overview | Range editor | Strategy Explorer |
+|---|---|---|
+| ![Zeta solver UI overview](doc/holdem/ui/images/solver-ui-overview.png) | ![Zeta solver UI ranges](doc/holdem/ui/images/solver-ui-overview-ranges.png) | ![Zeta solver UI strategy explorer](doc/holdem/ui/images/solver-ui-strategy-explorer.png) |
 
  The core next [next_steps](doc/holdem/next_steps.md) to a useful product.
 
