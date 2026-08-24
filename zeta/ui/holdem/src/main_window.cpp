@@ -1111,7 +1111,32 @@ namespace zeta::holdem::ui {
             entry.updating_editor = true;
             raw_editor->format_document_if_valid();
             entry.updating_editor = false;
-            refresh_document_tab(index);
+            const auto target_tab = left_tabs->tabText(current);
+            QTimer::singleShot(0, this, [this, index, target_tab] {
+                if (index < 0 || index >= static_cast<int>(documents_.size())) {
+                    return;
+                }
+                refresh_document_tab(index);
+                auto* document_root = tabs_->widget(index);
+                if (document_root == nullptr) {
+                    return;
+                }
+                auto* refreshed_tabs = document_root->findChild<QTabWidget*>(QStringLiteral("solverSubTabs"));
+                if (refreshed_tabs == nullptr) {
+                    return;
+                }
+                const int by_text = [&]() {
+                    for (int i = 0; i < refreshed_tabs->count(); ++i) {
+                        if (refreshed_tabs->tabText(i) == target_tab) {
+                            return i;
+                        }
+                    }
+                    return -1;
+                }();
+                if (by_text >= 0) {
+                    refreshed_tabs->setCurrentIndex(by_text);
+                }
+            });
         });
 
         return root;

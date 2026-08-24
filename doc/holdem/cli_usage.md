@@ -60,8 +60,8 @@ and `ip_range` are still accepted. For **multiway**, use the array fields.
   "bet_fraction": 0.75,
   "max_history": 8,
   "public_state_id": 0,
-  "root_actor": 0,
-  "hero_seat": 0,
+  "root_actor": "BB",
+  "hero_seat": "BTN",
   "samples_per_combo": 64
 }
 ```
@@ -98,9 +98,9 @@ and `ip_range` are still accepted. For **multiway**, use the array fields.
 | `stacks`            | number[] | `[100.0,100.0]` | Must match player count                                                 |
 | `bet_fraction`      | number   | `0.75`          | Must be positive                                                        |
 | `max_history`       | integer  | `8`             | Betting history cap                                                     |
-| `public_state_id`   | integer  | `0`             | User-defined public-state id                                            |
-| `root_actor`        | integer  | `0`             | Acting seat at root                                                     |
-| `hero_seat`         | integer  | `0`             | Seat used for artifact EV rows                                          |
+| `public_state_id`   | integer  | `0`             | User-defined public-state discriminator (advanced; leave at `0` for single-board spots) |
+| `root_actor`        | string or integer | first player | Player label (e.g. `"BB"`) or index of acting seat at root; the listed player acts first at the root node |
+| `hero_seat`         | string or integer | first player | Player label (e.g. `"BTN"`) or index of the seat whose strategy rows appear in the artifact |
 | `samples_per_combo` | integer  | `64`            | Multiplayer/pre-river sampling budget (higher = lower variance, slower) |
 
 Heads-up direct fields: `oop_range`, `ip_range`, `oop_contribution`,
@@ -179,8 +179,8 @@ zeta-solve solve --spot spot_4way_turn.json --iterations 50000 --output solution
   "bet_fraction": 0.75,
   "max_history": 8,
   "public_state_id": 12,
-  "root_actor": 0,
-  "hero_seat": 0,
+  "root_actor": "BTN",
+  "hero_seat": "BTN",
   "samples_per_combo": 64
 }
 ```
@@ -206,8 +206,8 @@ zeta-solve solve --spot spot_3way_flop.json --iterations 30000 --output solution
   "bet_fraction": 0.75,
   "max_history": 8,
   "public_state_id": 9,
-  "root_actor": 0,
-  "hero_seat": 0,
+  "root_actor": "BTN",
+  "hero_seat": "BTN",
   "samples_per_combo": 64
 }
 ```
@@ -239,8 +239,8 @@ zeta-solve solve --spot spot_4way_exact_combos.json --iterations 20000 --output 
   "bet_fraction": 0.75,
   "max_history": 8,
   "public_state_id": 21,
-  "root_actor": 0,
-  "hero_seat": 0,
+  "root_actor": "BTN",
+  "hero_seat": "BTN",
   "samples_per_combo": 64
 }
 ```

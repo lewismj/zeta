@@ -126,6 +126,38 @@ namespace zeta::holdem::cli {
             return std::unexpected(cli_error{cli_error_kind::parse, key_name(key) + " must be an unsigned integer."});
         }
 
+        // Accepts either a player label string ("BB") or an integer index (1) for seat fields.
+        [[nodiscard]] std::expected<uint8_t, cli_error> optional_player_seat(
+            const json::object& object,
+            const std::string_view key,
+            const std::vector<std::string>& players,
+            const uint8_t fallback)
+        {
+            const auto* value = find_value(object, key);
+            if (value == nullptr) {
+                return fallback;
+            }
+            if (value->is_string()) {
+                const auto& str = value->as_string();
+                const std::string label{str.data(), str.size()};
+                for (std::size_t i = 0; i < players.size(); ++i) {
+                    if (players[i] == label) {
+                        return static_cast<uint8_t>(i);
+                    }
+                }
+                return std::unexpected(cli_error{cli_error_kind::parse,
+                    key_name(key) + " player label '" + label + "' not found in players array."});
+            }
+            auto parsed = uint64_value(*value, key);
+            if (!parsed) {
+                return std::unexpected(parsed.error());
+            }
+            if (*parsed > static_cast<uint64_t>(std::numeric_limits<uint8_t>::max())) {
+                return std::unexpected(cli_error{cli_error_kind::parse, key_name(key) + " is out of range."});
+            }
+            return static_cast<uint8_t>(*parsed);
+        }
+
         template <typename T>
         [[nodiscard]] std::expected<T, cli_error> optional_uint(
             const json::object& object,
@@ -543,8 +575,8 @@ namespace zeta::holdem::cli {
 
         auto max_history = optional_uint<uint16_t>(*root, "max_history", spot.max_history);
         auto public_state_id = optional_uint<uint32_t>(*root, "public_state_id", spot.public_state_id);
-        auto root_actor = optional_uint<uint8_t>(*root, "root_actor", spot.root_actor);
-        auto hero_seat = optional_uint<uint8_t>(*root, "hero_seat", spot.hero_seat);
+        auto root_actor = optional_player_seat(*root, "root_actor", spot.players, spot.root_actor);
+        auto hero_seat = optional_player_seat(*root, "hero_seat", spot.players, spot.hero_seat);
         auto samples_per_combo = optional_uint<uint16_t>(*root, "samples_per_combo", spot.samples_per_combo);
         if (!max_history) {
             return std::unexpected(max_history.error());
@@ -587,8 +619,10 @@ namespace zeta::holdem::cli {
         out["bet_fraction"] = spot.bet_fraction;
         out["max_history"] = static_cast<uint64_t>(spot.max_history);
         out["public_state_id"] = static_cast<uint64_t>(spot.public_state_id);
-        out["root_actor"] = static_cast<uint64_t>(spot.root_actor);
-        out["hero_seat"] = static_cast<uint64_t>(spot.hero_seat);
+        out["root_actor"] = spot.root_actor < spot.players.size()
+            ? spot.players[spot.root_actor] : std::to_string(spot.root_actor);
+        out["hero_seat"] = spot.hero_seat < spot.players.size()
+            ? spot.players[spot.hero_seat] : std::to_string(spot.hero_seat);
         out["samples_per_combo"] = static_cast<uint64_t>(spot.samples_per_combo);
         return json::serialize(out);
     }

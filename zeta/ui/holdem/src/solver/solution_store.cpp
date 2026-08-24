@@ -195,6 +195,45 @@ namespace zeta::holdem::ui::solver {
             return string_array(*value, key);
         }
 
+        // Accepts either a player label string ("BB") or an integer index (1) for seat fields.
+        [[nodiscard]] std::expected<uint8_t, solution_store_error> required_player_seat(
+            const json::object& object,
+            const std::string_view key,
+            const std::vector<std::string>& players)
+        {
+            const auto* value = find_value(object, key);
+            if (value == nullptr) {
+                return std::unexpected(solution_store_error{
+                    solution_store_error_kind::parse,
+                    "Missing " + key_name(key) + " field."
+                });
+            }
+            if (value->is_string()) {
+                const auto& str = value->as_string();
+                const std::string label{str.data(), str.size()};
+                for (std::size_t i = 0; i < players.size(); ++i) {
+                    if (players[i] == label) {
+                        return static_cast<uint8_t>(i);
+                    }
+                }
+                return std::unexpected(solution_store_error{
+                    solution_store_error_kind::parse,
+                    key_name(key) + " player label '" + label + "' not found in players array."
+                });
+            }
+            auto parsed = uint64_value(*value, key);
+            if (!parsed) {
+                return std::unexpected(parsed.error());
+            }
+            if (*parsed > static_cast<uint64_t>(std::numeric_limits<uint8_t>::max())) {
+                return std::unexpected(solution_store_error{
+                    solution_store_error_kind::parse,
+                    key_name(key) + " is out of range."
+                });
+            }
+            return static_cast<uint8_t>(*parsed);
+        }
+
         [[nodiscard]] std::expected<std::vector<double>, solution_store_error> required_number_array(
             const json::object& object,
             const std::string_view key)
@@ -739,9 +778,6 @@ namespace zeta::holdem::ui::solver {
             auto street = required_string(object, "street");
             auto players = required_string_array(object, "players");
             auto board = required_string_array(object, "board");
-            auto hero = required_uint<uint8_t>(object, "hero_seat");
-            auto root_actor = required_uint<uint8_t>(object, "root_actor");
-            const auto* solver_value = find_value(object, "solver");
             if (!game) {
                 return std::unexpected(game.error());
             }
@@ -754,6 +790,9 @@ namespace zeta::holdem::ui::solver {
             if (!board) {
                 return std::unexpected(board.error());
             }
+            auto hero = required_player_seat(object, "hero_seat", *players);
+            auto root_actor = required_player_seat(object, "root_actor", *players);
+            const auto* solver_value = find_value(object, "solver");
             if (!hero) {
                 return std::unexpected(hero.error());
             }
@@ -818,8 +857,10 @@ namespace zeta::holdem::ui::solver {
             out["street"] = source.street;
             out["players"] = string_array_json(source.players);
             out["board"] = string_array_json(source.board);
-            out["hero_seat"] = static_cast<uint64_t>(source.hero_seat);
-            out["root_actor"] = static_cast<uint64_t>(source.root_actor);
+            out["hero_seat"] = source.hero_seat < source.players.size()
+                ? source.players[source.hero_seat] : std::to_string(source.hero_seat);
+            out["root_actor"] = source.root_actor < source.players.size()
+                ? source.players[source.root_actor] : std::to_string(source.root_actor);
             out["solver"] = solver_json(source.solver);
             return out;
         }

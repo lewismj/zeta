@@ -1,6 +1,7 @@
 #include "spot_document.h"
 
 #include "document/document_json.h"
+#include "viewmodels/spot_view_model.h"
 
 #include <utility>
 
@@ -29,6 +30,7 @@ namespace zeta::holdem::ui {
     spot_document spot_document::create_new()
     {
         spot_document document;
+        document.spot_ = viewmodels::make_template_spot(viewmodels::spot_template_kind::heads_up_river);
         const auto now = cli::detail::now_utc_iso8601();
         document.metadata_.created_utc = now;
         document.metadata_.updated_utc = now;

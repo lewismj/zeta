@@ -164,10 +164,38 @@ BOOST_AUTO_TEST_CASE(holdem_cli_json_rejects_wrong_types) {
   "ranges": ["AhKh", "QdJd"],
   "hero_seat": 300
 })";
+    constexpr const char* unknown_label = R"({
+  "players": ["BTN", "BB"],
+  "board": ["As", "Kd", "7c", "4h", "2s"],
+  "ranges": ["AhKh", "QdJd"],
+  "root_actor": "CO"
+})";
 
     BOOST_CHECK(!zeta::holdem::cli::parse_spot_json(wrong_string).has_value());
     BOOST_CHECK(!zeta::holdem::cli::parse_spot_json(wrong_array_value).has_value());
     BOOST_CHECK(!zeta::holdem::cli::parse_spot_json(out_of_range_integer).has_value());
+    BOOST_CHECK(!zeta::holdem::cli::parse_spot_json(unknown_label).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_json_accepts_player_labels_for_seat_fields) {
+    constexpr const char* with_labels = R"({
+  "players": ["BTN", "BB", "CO"],
+  "board": ["2s", "3h", "4d", "5c", "9d"],
+  "ranges": ["AsKs", "QhQd", "JcTc"],
+  "gross_pot": 150.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0, 50.0],
+  "stacks": [200.0, 200.0, 200.0],
+  "bet_fraction": 0.5,
+  "root_actor": "BB",
+  "hero_seat": "CO"
+})";
+
+    auto spot = zeta::holdem::cli::parse_spot_json(with_labels);
+
+    BOOST_REQUIRE(spot.has_value());
+    BOOST_CHECK_EQUAL(spot->root_actor, 1u);
+    BOOST_CHECK_EQUAL(spot->hero_seat, 2u);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_spot_json_roundtrips_serialized_spot) {

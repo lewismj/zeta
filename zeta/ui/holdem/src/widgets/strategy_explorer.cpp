@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 #include <utility>
 
 namespace zeta::holdem::ui::widgets {
@@ -67,9 +68,45 @@ namespace zeta::holdem::ui::widgets {
             return QString::fromStdString(value);
         }
 
+        [[nodiscard]] QString display_action_text(const std::string_view action)
+        {
+            if (action.empty()) {
+                return QStringLiteral("-");
+            }
+            if (action == "all_in" || action == "all-in" || action == "allin") {
+                return QStringLiteral("All In");
+            }
+            if (action == "fold") {
+                return QStringLiteral("Fold");
+            }
+            if (action == "check") {
+                return QStringLiteral("Check");
+            }
+            if (action == "call") {
+                return QStringLiteral("Call");
+            }
+            if (action.starts_with("bet_")) {
+                return QStringLiteral("Bet %1").arg(QString::fromStdString(std::string{action.substr(4u)}));
+            }
+            if (action.starts_with("raise_")) {
+                return QStringLiteral("Raise %1").arg(QString::fromStdString(std::string{action.substr(6u)}));
+            }
+            return QString::fromStdString(std::string{action});
+        }
+
         [[nodiscard]] QString action_text(const std::vector<viewmodels::strategy_action_frequency>& actions)
         {
-            return QString::fromStdString(viewmodels::format_strategy_actions(actions));
+            if (actions.empty()) {
+                return QStringLiteral("-");
+            }
+            QStringList parts;
+            parts.reserve(static_cast<int>(actions.size()));
+            for (const auto& action : actions) {
+                parts.push_back(QStringLiteral("%1 %2")
+                    .arg(display_action_text(action.action))
+                    .arg(QString::fromStdString(viewmodels::format_strategy_percent(action.frequency))));
+            }
+            return parts.join(QStringLiteral(", "));
         }
 
         [[nodiscard]] QString ev_text(const double ev)
@@ -235,7 +272,7 @@ namespace zeta::holdem::ui::widgets {
         aggregate_layout->setSpacing(metrics_.panel_spacing);
         for (const auto& card : model_.action_cards) {
             auto* button = new QPushButton{
-                q(card.action) + QStringLiteral("\n") + percent_text(card.frequency)
+                display_action_text(card.action) + QStringLiteral("\n") + percent_text(card.frequency)
                     + QStringLiteral(" | EV ") + ev_text(card.average_ev),
                 aggregate};
             button->setObjectName(card.action == "fold" ? "foldButton" : "callButton");
@@ -369,7 +406,7 @@ namespace zeta::holdem::ui::widgets {
     {
         const auto* node = solver::find_solution_node(solution_, active_node_id_.toStdString());
         if (node == nullptr) {
-            node_breadcrumb_->setText(tr("Node unavailable"));
+            node_breadcrumb_->setText(QStringLiteral("-"));
             node_state_->setText({});
             node_action_table_->setRowCount(0);
             return;
@@ -378,7 +415,7 @@ namespace zeta::holdem::ui::widgets {
         QStringList path;
         path.push_back(tr("Root"));
         for (const auto& action : node->path) {
-            path.push_back(q(action));
+            path.push_back(display_action_text(action));
         }
         node_breadcrumb_->setText(path.join(QStringLiteral(" / ")));
         node_state_->setText(tr("Actor %1 | pot %2 | commitments %3 | stacks %4")
@@ -393,7 +430,7 @@ namespace zeta::holdem::ui::widgets {
             const auto found = std::ranges::find_if(node->average_strategy, [&action](const auto& summary) {
                 return summary.action == action;
             });
-            node_action_table_->setItem(row, 0, new QTableWidgetItem{q(action)});
+            node_action_table_->setItem(row, 0, new QTableWidgetItem{display_action_text(action)});
             node_action_table_->setItem(row, 1, new QTableWidgetItem{
                 found == node->average_strategy.end() ? QStringLiteral("-") : percent_text(found->frequency)});
             node_action_table_->setItem(row, 2, new QTableWidgetItem{
@@ -423,7 +460,7 @@ namespace zeta::holdem::ui::widgets {
             } else if (!show_combo_strategy) {
                 text += QStringLiteral("\nNo node strategy");
             } else {
-                text += QStringLiteral("\nUnavailable");
+                text += QStringLiteral("\n-");
             }
             cell->setText(text);
             cell->setEnabled(show_combo_strategy && model.available);
@@ -449,7 +486,7 @@ namespace zeta::holdem::ui::widgets {
             auto* hand_item = new QTableWidgetItem{q(hand.hand)};
             hand_item->setData(Qt::UserRole, q(hand.hand_class));
             hand_table_->setItem(row, 0, hand_item);
-            hand_table_->setItem(row, 1, new QTableWidgetItem{q(hand.best_action)});
+            hand_table_->setItem(row, 1, new QTableWidgetItem{display_action_text(hand.best_action)});
             hand_table_->setItem(row, 2, new QTableWidgetItem{action_text(hand.actions)});
             hand_table_->setItem(row, 3, new numeric_table_item{ev_text(hand.ev), hand.ev});
             hand_table_->setItem(row, 4, new numeric_table_item{QString::number(hand.range_weight, 'f', 3), hand.range_weight});
@@ -476,7 +513,7 @@ namespace zeta::holdem::ui::widgets {
 
         detail_title_->setText(tr("%1 | %2 | EV %3 | weight %4")
             .arg(hand_class)
-            .arg(q(found->best_action))
+            .arg(display_action_text(found->best_action))
             .arg(ev_text(found->ev))
             .arg(found->range_weight, 0, 'f', 3));
 

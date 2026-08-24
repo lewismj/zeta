@@ -354,7 +354,7 @@ namespace zeta::holdem::ui::viewmodels {
             strategy_filter_option{.filter = strategy_action_filter::fold, .label = "Fold"},
             strategy_filter_option{.filter = strategy_action_filter::check_call, .label = "Check/Call"},
             strategy_filter_option{.filter = strategy_action_filter::bet_raise, .label = "Bet/Raise"},
-            strategy_filter_option{.filter = strategy_action_filter::all_in, .label = "All-in"}
+            strategy_filter_option{.filter = strategy_action_filter::all_in, .label = "All In"}
         };
     }
 
