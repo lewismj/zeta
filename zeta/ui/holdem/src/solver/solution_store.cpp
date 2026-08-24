@@ -318,13 +318,24 @@ namespace zeta::holdem::ui::solver {
             std::map<std::string, double> frequency_totals;
             std::map<std::string, double> weighted_evs;
             std::map<std::string, double> ev_weights;
-            double total_ev = 0.0;
+
             for (const auto& row : artifact.strategy) {
-                total_ev += row.ev;
+                for (const auto& action : row.strategy) {
+                    const auto frequency = std::max(0.0, action.frequency);
+                    frequency_totals[action.action] += frequency;
+                    weighted_evs[action.action] += frequency * row.ev;
+                    ev_weights[action.action] += frequency;
+                }
             }
-            const auto overall_ev = artifact.strategy.empty()
-                ? 0.0
-                : total_ev / static_cast<double>(artifact.strategy.size());
+
+            const auto action_ev = [&](const std::string& action_label) {
+                const auto it = ev_weights.find(action_label);
+                if (it == ev_weights.end() || it->second <= 0.000001) {
+                    return 0.0;
+                }
+                return weighted_evs.at(action_label) / it->second;
+            };
+
             if (!artifact.root_strategy.empty()) {
                 std::vector<solution_action_summary> out;
                 out.reserve(artifact.root_strategy.size());
@@ -332,7 +343,7 @@ namespace zeta::holdem::ui::solver {
                     out.push_back(solution_action_summary{
                         .action = action.action,
                         .frequency = std::max(0.0, action.frequency),
-                        .average_ev = overall_ev
+                        .average_ev = action_ev(action.action)
                     });
                 }
                 std::ranges::sort(out, [](const auto& lhs, const auto& rhs) {
@@ -344,24 +355,14 @@ namespace zeta::holdem::ui::solver {
                 return out;
             }
 
-            for (const auto& row : artifact.strategy) {
-                for (const auto& action : row.strategy) {
-                    const auto frequency = std::max(0.0, action.frequency);
-                    frequency_totals[action.action] += frequency;
-                    weighted_evs[action.action] += frequency * row.ev;
-                    ev_weights[action.action] += frequency;
-                }
-            }
-
             const auto row_count = static_cast<double>(std::max<std::size_t>(artifact.strategy.size(), 1u));
             std::vector<solution_action_summary> out;
             out.reserve(frequency_totals.size());
             for (const auto& [action, total] : frequency_totals) {
-                const auto average_ev = ev_weights[action] > 0.000001 ? weighted_evs[action] / ev_weights[action] : 0.0;
                 out.push_back(solution_action_summary{
                     .action = action,
                     .frequency = total / row_count,
-                    .average_ev = average_ev
+                    .average_ev = action_ev(action)
                 });
             }
             std::ranges::sort(out, [](const auto& lhs, const auto& rhs) {
