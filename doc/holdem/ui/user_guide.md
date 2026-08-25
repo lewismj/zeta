@@ -34,7 +34,7 @@ Debug builds use:
 1. Click **New** to create a spot document.
 2. In **Spot Builder**, choose a template such as **New heads-up river** or **New 3-way flop**.
 3. Fill every visible board card. The selected street determines the required count: flop = 3, turn = 4, river = 5.
-4. Check **Players**, **Root actor**, **Hero**, pot, rake, bet size, and the seats table.
+4. Check **Players**, **Root actor**, **Hero**, pot, rake, **Betting config**, and the seats table.
 5. Open **Ranges** and enter or select each player's range.
 6. Click **Validate**. Fix any inline or dialog errors.
 7. Click **Configuration** if you want to change iterations or worker threads.
@@ -73,7 +73,7 @@ Each document workspace has:
 
 | Area | Purpose |
 |---|---|
-| **Spot Builder** | Structured controls for street, board, players, stacks, commitments, pot, rake, actor, hero, and solver spot parameters. |
+| **Spot Builder** | Structured controls for street, board, players, stacks, commitments, pot, rake, actor, hero, and betting-tree abstraction parameters. |
 | **Ranges** | Range text editor, 13x13 hand-class matrix, combo analysis, blockers, import/export, and range shortcuts. Available before a solve. |
 | **Strategy Explorer** | Action tree, aggregate strategy, hand-class strategy matrix, combo details, EVs, and strategy filtering. Available after a solve. |
 | **Spot JSON** | Raw JSON representation of the current spot. |
@@ -108,7 +108,7 @@ The **Spot Builder** provides templates for common starting points:
 | **Hero** | Seat used for hero-centered artifact metadata and EV display. |
 | **Gross pot** | Total pot before rake. Must be positive. |
 | **Rake** | Rake removed from the pot. Must be between zero and gross pot. |
-| **Bet size** | Pot fraction used for generated bet actions. `0.750` means 75% pot. |
+| **Bet size** | Compatibility/fallback pot-fraction field. In normal use this mirrors the first configured betting fraction. |
 | **Max history** | Betting-history cap used when building the game tree. |
 | **Public state** | User-defined public-state identifier stored with the spot. |
 | **Samples/combo** | Sampling budget for multiplayer/pre-river terminal estimation. Higher values reduce variance and increase runtime. |
@@ -116,6 +116,46 @@ The **Spot Builder** provides templates for common starting points:
 
 > [!WARNING]
 > A spot must have a street-consistent board and at least one live combo in every range. Board blockers can make an otherwise valid-looking range empty.
+
+### Betting config
+
+The **Betting config** panel controls the solver action abstraction used to build the betting tree.
+
+| Field | Meaning |
+|---|---|
+| **Preset** | Chooses a named abstraction profile: **Custom**, **Single-size**, **Multi-size**, **Geometric**, **Overbet**, or **All-in inclusive**. |
+| **Fractions** | Comma-separated fractions used by the selected preset. |
+| **Max raises** | Maximum number of raises per street (opening bet does not count toward this limit). |
+| **Min bet inc** | Minimum opening bet / raise increment. |
+| **All-in %** | Threshold used to collapse near-all-in actions to all-in. |
+
+Betting terms used in this panel:
+
+| Term | Meaning |
+|---|---|
+| **Pot fraction** | A size expressed as a fraction of the current live pot. Example: `0.75` = 75% pot. |
+| **Opening bet** | The first aggressive action on a street when no one has bet yet. |
+| **Raise** | An aggressive action after a bet already exists on the street. |
+| **Raise increment** | How much the table's current bet level increases when a bet/raise is made. |
+| **Overbet** | Any pot fraction greater than `1.0` (more than 100% pot). |
+| **Geometric sizing** | A generated progression of sizes from a minimum fraction up to about pot. |
+| **All-in threshold** | A percentage of full all-in commitment above which candidate sizes are treated as all-in. |
+
+> [!TIP]
+> **Max raises** counts only raises after the opening bet on a street.  
+> Opening bet = not counted, each subsequent full raise = counted.
+
+> [!TIP]
+> In this UI, fractions are **raise-to / bet-to targets** derived from pot sizing, not "add this many chips" inputs.
+
+Preset behavior:
+
+1. **Single-size**: uses the first fraction (defaults to `0.75` when empty).
+2. **Multi-size**: uses all listed fractions (defaults to `0.33, 0.67, 1.0` when empty).
+3. **Geometric**: uses the first fraction as the minimum size and the number of tokens as the geometric size count (defaults to a 3-size curve from `0.33` to `1.0` when empty).
+4. **Overbet**: uses first two values as base sizes and optional 3rd/4th values as overbets (defaults to `0.5, 1.0, 1.5, 2.0` when underspecified).
+5. **All-in inclusive**: uses listed fractions and includes all-in as part of the abstraction (defaults to `0.5, 1.0` when empty).
+6. **Custom**: writes the entered fractions directly as `fixed_pot_fractions` with your max-raise/increment/threshold controls.
 
 ### Spot JSON tab
 
@@ -193,6 +233,7 @@ Click **Validate** before solving. Validation checks:
 10. Seat labels are non-empty.
 11. Stacks and commitments are non-negative.
 12. Every seat range parses and has at least one live combo after blockers.
+13. Betting policy configuration is valid (fractions, raise limits, min increment, and thresholds).
 
 Inline errors appear near the affected **Spot Builder** section. Range parse errors appear in the **Ranges** tab with the parser position and message.
 
@@ -308,7 +349,7 @@ Use this when you want a fast, simple river solve.
 3. Set the board to a complete five-card river, for example `As Kd 7c 4h 2s`.
 4. Set **Root actor** to the acting player.
 5. Set **Hero** to the seat you want centered in artifact metadata.
-6. Set **Gross pot** to `100`, **Rake** to `0`, and **Bet size** to `0.750`.
+6. Set **Gross pot** to `100`, **Rake** to `0`, and in **Betting config** choose **Single-size** with fractions `0.75`.
 7. In **Ranges**, set BTN to `AA,AKs,AQo` and BB to `AA,KK,QQ,AKo`.
 8. Click **Validate**.
 9. Set **Iterations** in **Configuration**.
@@ -357,13 +398,13 @@ CO:  TsTc,9s9c
 6. Validate before solving.
 7. After solving, use **Hand Detail** to inspect exact combo EVs and frequencies.
 
-### Example 4: Compare two bet sizes
+### Example 4: Compare two betting presets
 
-Use duplicate documents to compare sizing assumptions.
+Use duplicate documents to compare abstraction assumptions.
 
 1. Build and validate a spot.
 2. Click **Duplicate current spot**.
-3. In the duplicate, change **Bet size** from `0.500` to `0.750`.
+3. In the duplicate, switch **Preset** from **Single-size** (`0.5`) to **Multi-size** (`0.33, 0.67, 1.0`).
 4. Solve both documents with the same iteration count and worker settings.
 5. Compare aggregate action cards, average EV, and hand-class strategy for the same root node.
 
@@ -389,6 +430,7 @@ Use this when a spot was authored for `zeta-solve`.
 | "Range has no live combos after board blockers." | Every selected combo is blocked by the board. | Add unblocked combos or change the board. |
 | Range parser shows a position error. | Invalid range token or malformed weight syntax. | Check the token at the reported position and compare with the range parser guide. |
 | **Solve** does nothing visible. | Spot parsing or validation failed. | Click **Validate** and fix reported errors. |
+| "Betting policy is invalid: ..." | Betting config values violate policy validation rules. | Check preset fractions, max raises, min bet increment, and all-in threshold values. |
 | **Cancel** does not stop the run. | Solver work had already started. | Wait for completion; use lower iterations for exploratory runs. |
 | Strategy matrix says "No node strategy." | Selected node does not have combo-level strategy data. | Select the root node for combo strategy. |
 
@@ -397,7 +439,7 @@ Use this when a spot was authored for `zeta-solve`.
 1. Create or open a spot.
 2. Choose a template if starting from scratch.
 3. Set street and complete the board.
-4. Confirm seats, root actor, hero, pot, rake, stack, and commitment values.
+4. Confirm seats, root actor, hero, pot, rake, and **Betting config** values.
 5. Enter every player's range.
 6. Check live combos and blockers in **Ranges**.
 7. Validate.
