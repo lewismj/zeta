@@ -468,28 +468,203 @@ holdem_betting_graph_config<2> tiny_river_betting_config()
     config.root_actor = 0;
     config.public_state_id = 77;
     config.max_history = 8;
-    config.abstraction.fixed_pot_fractions = {0.5};
-    config.abstraction.geometric_size_count = 1;
-    config.abstraction.stack_ratio_buckets = {0.5};
-    config.abstraction.max_raises_per_street = 0;
+    config.abstraction.fixed_pot_fractions = {0.5, 1.0};
+    config.abstraction.max_raises = 1;
     return config;
+}
+
+BOOST_AUTO_TEST_CASE(opening_bet_sets_last_raise_increment_and_keeps_raise_count_zero) {
+    holdem_betting_graph_config<2> config{};
+    config.initial_stacks = {100.0, 100.0};
+    config.root_actor = 0;
+    config.abstraction.fixed_pot_fractions = {0.5};
+
+    auto state = make_initial_betting_state(config);
+    auto actions = legal_betting_actions(state, config.abstraction);
+    auto bet = std::ranges::find_if(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::bet;
+    });
+
+    BOOST_REQUIRE(bet != actions.end());
+
+    auto next = apply_betting_action(state, *bet, config.abstraction);
+    BOOST_REQUIRE(next.has_value());
+    BOOST_CHECK_EQUAL(next->current_bet, 1.0);
+    BOOST_CHECK_EQUAL(next->last_raise_increment, 1.0);
+    BOOST_CHECK_EQUAL(next->raise_count, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(full_raise_updates_last_raise_increment_and_raise_count) {
+    holdem_betting_graph_config<3> config{};
+    config.initial_stacks = {50.0, 100.0, 100.0};
+    config.initial_committed = {50.0, 50.0, 0.0};
+    config.root_actor = 1;
+    config.abstraction.fixed_pot_fractions = {0.5};
+
+    auto state = make_initial_betting_state(config);
+    auto actions = legal_betting_actions(state, config.abstraction);
+    auto raise = std::ranges::find_if(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::raise;
+    });
+
+    BOOST_REQUIRE(raise != actions.end());
+
+    auto next = apply_betting_action(state, *raise, config.abstraction);
+    BOOST_REQUIRE(next.has_value());
+    BOOST_CHECK_EQUAL(next->current_bet, 100.0);
+    BOOST_CHECK_EQUAL(next->last_raise_increment, 50.0);
+    BOOST_CHECK_EQUAL(next->raise_count, 1u);
+}
+
+BOOST_AUTO_TEST_CASE(short_all_in_keeps_previous_increment_and_does_not_reopen) {
+    holdem_betting_graph_config<3> config{};
+    config.initial_stacks = {30.0, 100.0, 100.0};
+    config.initial_committed = {100.0, 100.0, 100.0};
+    config.root_actor = 0;
+
+    betting_state<3> state{};
+    state.actor = 0;
+    state.stacks = {30.0, 100.0, 100.0};
+    state.committed = {100.0, 100.0, 100.0};
+    state.current_bet = 100.0;
+    state.last_raise_increment = 50.0;
+    state.raise_count = 1;
+    state.acted_since_aggression = {false, true, false};
+
+    auto next = apply_betting_action(
+        state,
+        betting_action{.kind = betting_action_kind::all_in, .amount = 30.0, .target_bet = 130.0},
+        config.abstraction);
+
+    BOOST_REQUIRE(next.has_value());
+    BOOST_CHECK_EQUAL(next->current_bet, 130.0);
+    BOOST_CHECK_EQUAL(next->last_raise_increment, 50.0);
+    BOOST_CHECK_EQUAL(next->raise_count, 1u);
+    BOOST_CHECK(next->acted_since_aggression[0]);
+    BOOST_CHECK(next->acted_since_aggression[1]);
+}
+
+BOOST_AUTO_TEST_CASE(short_all_in_does_not_generate_raise_actions_when_not_reopened) {
+    holdem_betting_graph_config<3> config{};
+    config.initial_stacks = {100.0, 100.0, 100.0};
+    config.initial_committed = {100.0, 100.0, 130.0};
+    config.root_actor = 1;
+    config.abstraction.fixed_pot_fractions = {1.0};
+
+    betting_state<3> state{};
+    state.actor = 1;
+    state.stacks = {100.0, 100.0, 100.0};
+    state.committed = {100.0, 100.0, 130.0};
+    state.current_bet = 130.0;
+    state.last_raise_increment = 50.0;
+    state.raise_count = 1;
+    state.acted_since_aggression = {true, true, false};
+
+    auto actions = legal_betting_actions(state, config.abstraction);
+
+    BOOST_CHECK(std::ranges::none_of(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::bet || action.kind == betting_action_kind::raise;
+    }));
+    BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::all_in;
+    }));
+}
+
+BOOST_AUTO_TEST_CASE(targets_below_re_raise_minimum_are_filtered) {
+    holdem_betting_graph_config<3> config{};
+    config.initial_stacks = {100.0, 100.0, 100.0};
+    config.initial_committed = {100.0, 100.0, 130.0};
+    config.root_actor = 1;
+    config.abstraction.fixed_pot_fractions = {0.1};
+
+    betting_state<3> state{};
+    state.actor = 1;
+    state.stacks = {100.0, 100.0, 100.0};
+    state.committed = {100.0, 100.0, 130.0};
+    state.current_bet = 130.0;
+    state.last_raise_increment = 50.0;
+    state.raise_count = 1;
+    state.acted_since_aggression = {true, false, false};
+
+    auto actions = legal_betting_actions(state, config.abstraction);
+
+    BOOST_CHECK(std::ranges::none_of(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::bet || action.kind == betting_action_kind::raise;
+    }));
 }
 
 BOOST_AUTO_TEST_CASE(legal_actions_are_derived_from_betting_state_and_abstraction_policy) {
     auto config = tiny_river_betting_config();
-    config.abstraction.max_raises_per_street = 1;
+    config.abstraction.max_raises = 1;
     auto state = make_initial_betting_state(config);
 
     auto actions = legal_betting_actions(state, config.abstraction);
 
-    BOOST_REQUIRE_GE(actions.size(), 5u);
+    BOOST_REQUIRE_EQUAL(actions.size(), 5u);
     BOOST_CHECK(actions[0].kind == betting_action_kind::fold);
     BOOST_CHECK(actions[1].kind == betting_action_kind::call);
     BOOST_CHECK_EQUAL(actions[1].amount, 1.0);
+    const auto raise_35 = std::ranges::find_if(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::raise && action.target_bet == 3.5;
+    });
+    const auto raise_50 = std::ranges::find_if(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::raise && action.target_bet == 5.0;
+    });
+    BOOST_REQUIRE(raise_35 != actions.end());
+    BOOST_REQUIRE(raise_50 != actions.end());
     BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
-        return action.kind == betting_action_kind::raise;
+        return action.kind == betting_action_kind::all_in && action.target_bet == 100.0;
     }));
-    BOOST_CHECK(actions.back().kind == betting_action_kind::all_in);
+}
+
+BOOST_AUTO_TEST_CASE(raise_multiple_targets_use_current_bet_multipliers) {
+    betting_state<3> state{};
+    state.street = holdem_street::river;
+    state.actor = 1;
+    state.stacks = {50.0, 100.0, 100.0};
+    state.committed = {50.0, 50.0, 50.0};
+    state.current_bet = 50.0;
+    state.last_raise_increment = 50.0;
+    state.raise_count = 0;
+
+    betting_abstraction_policy policy{};
+    policy.fixed_pot_fractions.clear();
+    policy.street_actor_sizes[static_cast<std::size_t>(holdem_street::river)].resize(2);
+    policy.street_actor_sizes[static_cast<std::size_t>(holdem_street::river)][1].raise_multiples = {2.5};
+
+    auto actions = legal_betting_actions(state, policy);
+
+    BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::raise && action.target_bet == 125.0;
+    }));
+}
+
+BOOST_AUTO_TEST_CASE(snapped_size_targets_become_all_in_and_deduplicate) {
+    betting_state<3> state{};
+    state.street = holdem_street::river;
+    state.actor = 0;
+    state.stacks = {100.0, 0.0, 0.0};
+    state.committed = {100.0, 0.0, 0.0};
+    state.current_bet = 100.0;
+    state.last_raise_increment = 50.0;
+    state.raise_count = 1;
+
+    betting_abstraction_policy policy{};
+    policy.fixed_pot_fractions = {0.5};
+    policy.all_in_threshold = 0.75;
+
+    auto actions = legal_betting_actions(state, policy);
+
+    const auto all_in_count = std::ranges::count_if(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::all_in;
+    });
+    BOOST_CHECK_EQUAL(all_in_count, 1u);
+    BOOST_CHECK(std::ranges::none_of(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::bet || action.kind == betting_action_kind::raise;
+    }));
+    BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::all_in && action.target_bet == 200.0;
+    }));
 }
 
 BOOST_AUTO_TEST_CASE(betting_transitions_are_pure_and_reach_river_showdown) {
@@ -573,6 +748,26 @@ BOOST_AUTO_TEST_CASE(generated_graph_hash_is_deterministic_for_identical_configs
     BOOST_CHECK_NE(lhs->deterministic_hash, 0u);
 }
 
+BOOST_AUTO_TEST_CASE(generated_graph_binds_config_hash_into_graph_metadata_and_checkpoint_header) {
+    auto lowered = lower_betting_tree_to_graph(tiny_river_betting_config());
+    BOOST_REQUIRE(lowered.has_value());
+    BOOST_CHECK_EQUAL(lowered->annotations.betting_tree_config_hash, lowered->config_hash);
+    BOOST_CHECK_NE(lowered->annotations.betting_history_abstraction_id, 0u);
+
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+    regret_table regrets(layout);
+    strategy_sum_table strategy_sums(layout);
+    auto context = make_cfr_solver_context<2>(
+        lowered->graph,
+        lowered->annotations,
+        layout,
+        regrets,
+        strategy_sums);
+
+    const auto header = make_cfr_checkpoint_header(context, iteration_config{});
+    BOOST_CHECK_EQUAL(header.betting_tree_config_hash, lowered->config_hash);
+}
+
 BOOST_AUTO_TEST_CASE(generated_graph_preflight_rejects_memory_limits_before_materialization) {
     auto config = tiny_river_betting_config();
     config.memory_plan_limits.max_nodes = 4;
@@ -628,6 +823,54 @@ BOOST_AUTO_TEST_CASE(run_cfr_iteration_accepts_generated_river_graph_terminal_pr
     BOOST_CHECK_GT(result->diagnostics.regret_updates, 0u);
 }
 
+BOOST_AUTO_TEST_CASE(stage5_named_preset_factories_round_trip_through_json) {
+    auto single = make_single_size_policy();
+    BOOST_REQUIRE(single.has_value());
+    const auto single_json = serialize_betting_abstraction_policy(*single);
+    auto single_round_trip = deserialize_betting_abstraction_policy(single_json);
+    BOOST_REQUIRE(single_round_trip.has_value());
+    BOOST_CHECK_EQUAL(hash_betting_abstraction_policy(*single), hash_betting_abstraction_policy(*single_round_trip));
+
+    auto multi = make_multi_size_policy();
+    BOOST_REQUIRE(multi.has_value());
+    const auto multi_json = serialize_betting_abstraction_policy(*multi);
+    auto multi_round_trip = deserialize_betting_abstraction_policy(multi_json);
+    BOOST_REQUIRE(multi_round_trip.has_value());
+    BOOST_CHECK_EQUAL(hash_betting_abstraction_policy(*multi), hash_betting_abstraction_policy(*multi_round_trip));
+
+    auto geometric = make_geometric_policy();
+    BOOST_REQUIRE(geometric.has_value());
+    const auto geometric_json = serialize_betting_abstraction_policy(*geometric);
+    auto geometric_round_trip = deserialize_betting_abstraction_policy(geometric_json);
+    BOOST_REQUIRE(geometric_round_trip.has_value());
+    BOOST_CHECK_EQUAL(hash_betting_abstraction_policy(*geometric), hash_betting_abstraction_policy(*geometric_round_trip));
+
+    auto overbet = make_overbet_policy();
+    BOOST_REQUIRE(overbet.has_value());
+    const auto overbet_json = serialize_betting_abstraction_policy(*overbet);
+    auto overbet_round_trip = deserialize_betting_abstraction_policy(overbet_json);
+    BOOST_REQUIRE(overbet_round_trip.has_value());
+    BOOST_CHECK_EQUAL(hash_betting_abstraction_policy(*overbet), hash_betting_abstraction_policy(*overbet_round_trip));
+
+    auto all_in_inclusive = make_all_in_inclusive_policy();
+    BOOST_REQUIRE(all_in_inclusive.has_value());
+    const auto all_in_inclusive_json = serialize_betting_abstraction_policy(*all_in_inclusive);
+    auto all_in_inclusive_round_trip = deserialize_betting_abstraction_policy(all_in_inclusive_json);
+    BOOST_REQUIRE(all_in_inclusive_round_trip.has_value());
+    BOOST_CHECK_EQUAL(hash_betting_abstraction_policy(*all_in_inclusive), hash_betting_abstraction_policy(*all_in_inclusive_round_trip));
+
+    std::array<std::vector<actor_size_set>, 5> actor_sizes{};
+    actor_sizes[static_cast<std::size_t>(holdem_street::river)].resize(2);
+    actor_sizes[static_cast<std::size_t>(holdem_street::river)][0].fractions = {0.5, 1.0};
+    actor_sizes[static_cast<std::size_t>(holdem_street::river)][1].raise_multiples = {2.0};
+    auto actor_policy = make_actor_policy(actor_sizes);
+    BOOST_REQUIRE(actor_policy.has_value());
+    const auto actor_json = serialize_betting_abstraction_policy(*actor_policy);
+    auto actor_round_trip = deserialize_betting_abstraction_policy(actor_json);
+    BOOST_REQUIRE(actor_round_trip.has_value());
+    BOOST_CHECK_EQUAL(hash_betting_abstraction_policy(*actor_policy), hash_betting_abstraction_policy(*actor_round_trip));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(cfr_infoset_planning)
@@ -672,6 +915,8 @@ BOOST_AUTO_TEST_CASE(holdem_infoset_key_policy_exposes_explicit_abstraction_hook
     BOOST_CHECK_EQUAL(policy.private_hand_class_id(7), 7u);
     BOOST_CHECK_EQUAL(policy.public_board_abstraction_id(state), 42u);
     BOOST_CHECK_EQUAL(policy.chance_runout_class_id(11), 11u);
+    BOOST_CHECK_EQUAL(policy.betting_history_abstraction_id(0x0102030405ull), 0x02030405u);
+    BOOST_CHECK_EQUAL(policy.stack_pot_abstraction_id(99), 99u);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_infoset_lowering_assigns_dense_ids_before_table_layout) {
@@ -1056,7 +1301,7 @@ BOOST_AUTO_TEST_CASE(betting_state_tracks_side_pots_through_all_in_and_fold) {
     config.root_actor = 0;
     auto state = make_initial_betting_state(config);
     betting_abstraction_policy policy{};
-    policy.max_raises_per_street = 4;
+    policy.max_raises = 4;
 
     auto next = apply_betting_action(
         state,
@@ -3302,3 +3547,4 @@ BOOST_AUTO_TEST_CASE(validate_rejects_duplicate_destinations) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+

@@ -7,6 +7,7 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -137,6 +138,133 @@ namespace zeta::holdem::ui::widgets {
                 return fallback;
             }
             return item->text().toStdString();
+        }
+
+        [[nodiscard]] std::vector<double> parse_fraction_tokens(const QString& text)
+        {
+            std::vector<double> fractions;
+            const auto tokens = text.split(',', Qt::SkipEmptyParts);
+            fractions.reserve(tokens.size());
+            for (const auto& token : tokens) {
+                const auto trimmed = token.trimmed();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                const auto value = trimmed.toDouble();
+                if (std::isfinite(value)) {
+                    fractions.push_back(value);
+                }
+            }
+            return fractions;
+        }
+
+        [[nodiscard]] QString fraction_text(const std::vector<double>& values)
+        {
+            QStringList parts;
+            parts.reserve(static_cast<int>(values.size()));
+            for (const auto value : values) {
+                auto formatted = QString::number(value, 'f', 3);
+                while (formatted.endsWith(QLatin1Char{'0'})) {
+                    formatted.chop(1);
+                }
+                if (formatted.endsWith(QLatin1Char{'.'})) {
+                    formatted.chop(1);
+                }
+                parts << formatted;
+            }
+            return parts.join(QStringLiteral(", "));
+        }
+
+        [[nodiscard]] int betting_preset_index(const cfr::betting_abstraction_policy& policy)
+        {
+            if (policy.all_in_threshold > 0.99 && !policy.fixed_pot_fractions.empty()) {
+                return 5;
+            }
+            if (!policy.fixed_pot_fractions.empty()) {
+                const auto any_overbet = std::ranges::any_of(policy.fixed_pot_fractions, [](const double value) {
+                    return value > 1.0;
+                });
+                if (any_overbet) {
+                    return 4;
+                }
+            }
+            if (policy.fixed_pot_fractions.size() == 1u) {
+                return 1;
+            }
+            if (policy.fixed_pot_fractions.size() > 1u) {
+                return 2;
+            }
+            return 0;
+        }
+
+        [[nodiscard]] cfr::betting_abstraction_policy policy_from_betting_controls(
+            const spot& source,
+            const QComboBox* preset,
+            const QLineEdit* fractions,
+            const QSpinBox* max_raises,
+            const QDoubleSpinBox* min_bet_increment,
+            const QDoubleSpinBox* all_in_threshold)
+        {
+            auto policy = source.betting_policy;
+            const auto parsed = parse_fraction_tokens(fractions->text());
+            const auto max_raises_value = static_cast<uint16_t>(std::max(1, max_raises->value()));
+            policy.max_raises = max_raises_value;
+            policy.min_bet_increment = min_bet_increment->value();
+            policy.all_in_threshold = std::clamp(all_in_threshold->value(), 0.01, 1.0);
+
+            const auto preset_index = preset == nullptr ? 0 : preset->currentIndex();
+            switch (preset_index) {
+                case 1:
+                    if (!parsed.empty()) {
+                        policy = *cfr::make_single_size_policy(parsed.front(), max_raises_value);
+                    } else {
+                        const auto fallback = source.bet_fraction > 0.0 ? source.bet_fraction : 0.75;
+                        policy = *cfr::make_single_size_policy(fallback, max_raises_value);
+                    }
+                    break;
+                case 2:
+                    if (!parsed.empty()) {
+                        policy = *cfr::make_multi_size_policy(parsed, max_raises_value);
+                    } else {
+                        policy = *cfr::make_multi_size_policy({0.33, 0.67, 1.0}, max_raises_value);
+                    }
+                    break;
+                case 3:
+                    if (!parsed.empty()) {
+                        policy = *cfr::make_geometric_policy(parsed.front(), static_cast<uint16_t>(parsed.size()), max_raises_value);
+                    } else {
+                        policy = *cfr::make_geometric_policy(0.33, 3, max_raises_value);
+                    }
+                    break;
+                case 4:
+                    if (parsed.size() >= 2u) {
+                        const auto base = std::vector<double>{parsed.begin(), parsed.begin() + std::min<std::size_t>(2u, parsed.size())};
+                        const auto overbet = std::vector<double>{parsed.size() > 2u ? parsed[2] : 1.5, parsed.size() > 3u ? parsed[3] : 2.0};
+                        policy = *cfr::make_overbet_policy(base, overbet, max_raises_value);
+                    } else {
+                        policy = *cfr::make_overbet_policy({0.5, 1.0}, {1.5, 2.0}, max_raises_value);
+                    }
+                    break;
+                case 5:
+                    if (!parsed.empty()) {
+                        policy = *cfr::make_all_in_inclusive_policy(parsed, max_raises_value);
+                    } else {
+                        policy = *cfr::make_all_in_inclusive_policy({0.5, 1.0}, max_raises_value);
+                    }
+                    break;
+                default:
+                    if (!parsed.empty()) {
+                        policy.fixed_pot_fractions = parsed;
+                    } else {
+                        policy.fixed_pot_fractions = {source.bet_fraction > 0.0 ? source.bet_fraction : 0.75};
+                    }
+                    policy.max_raises = max_raises_value;
+                    break;
+            }
+
+            policy.min_bet_increment = min_bet_increment->value();
+            policy.all_in_threshold = std::clamp(all_in_threshold->value(), 0.01, 1.0);
+            return policy;
         }
 
         void set_first_issue(QLabel* label, const std::vector<viewmodels::spot_validation_issue>& issues, const std::initializer_list<const char*> fields)
@@ -301,6 +429,51 @@ namespace zeta::holdem::ui::widgets {
         grid->addWidget(samples_per_combo_, 8, 3);
         root->addWidget(spot_panel);
 
+        auto* betting_panel = make_panel();
+        auto* betting_layout = new QGridLayout{betting_panel};
+        betting_layout->setContentsMargins(metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin);
+        betting_layout->setSpacing(metrics_.panel_spacing);
+        betting_layout->addWidget(make_panel_title(tr("Betting config")), 0, 0, 1, 4);
+
+        betting_preset_ = new QComboBox{betting_panel};
+        betting_preset_->setObjectName("bettingPresetSelector");
+        betting_preset_->addItem(tr("Custom"), 0);
+        betting_preset_->addItem(tr("Single-size"), 1);
+        betting_preset_->addItem(tr("Multi-size"), 2);
+        betting_preset_->addItem(tr("Geometric"), 3);
+        betting_preset_->addItem(tr("Overbet"), 4);
+        betting_preset_->addItem(tr("All-in inclusive"), 5);
+        betting_layout->addWidget(new QLabel{tr("Preset"), betting_panel}, 1, 0);
+        betting_layout->addWidget(betting_preset_, 1, 1, 1, 3);
+
+        betting_fractions_ = new QLineEdit{betting_panel};
+        betting_fractions_->setObjectName("bettingFractionsField");
+        betting_fractions_->setPlaceholderText(tr("0.5, 1.0"));
+        betting_layout->addWidget(new QLabel{tr("Fractions"), betting_panel}, 2, 0);
+        betting_layout->addWidget(betting_fractions_, 2, 1, 1, 3);
+
+        betting_max_raises_ = new QSpinBox{betting_panel};
+        betting_max_raises_->setObjectName("bettingMaxRaisesField");
+        betting_max_raises_->setRange(1, 20);
+        betting_layout->addWidget(new QLabel{tr("Max raises"), betting_panel}, 3, 0);
+        betting_layout->addWidget(betting_max_raises_, 3, 1);
+
+        betting_min_bet_increment_ = make_fraction_spin(betting_panel);
+        betting_min_bet_increment_->setObjectName("bettingMinBetIncrementField");
+        betting_min_bet_increment_->setRange(0.01, 1000.0);
+        betting_layout->addWidget(new QLabel{tr("Min bet inc"), betting_panel}, 3, 2);
+        betting_layout->addWidget(betting_min_bet_increment_, 3, 3);
+
+        betting_all_in_threshold_ = make_fraction_spin(betting_panel);
+        betting_all_in_threshold_->setObjectName("bettingAllInThresholdField");
+        betting_all_in_threshold_->setRange(0.01, 1.0);
+        betting_layout->addWidget(new QLabel{tr("All-in %"), betting_panel}, 4, 0);
+        betting_layout->addWidget(betting_all_in_threshold_, 4, 1);
+
+        betting_policy_error_ = make_error_label();
+        betting_layout->addWidget(betting_policy_error_, 5, 0, 1, 4);
+        root->addWidget(betting_panel);
+
         auto* seats_panel = make_panel();
         auto* seats_layout = new QVBoxLayout{seats_panel};
         seats_layout->setContentsMargins(metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin);
@@ -366,6 +539,41 @@ namespace zeta::holdem::ui::widgets {
         connect(gross_pot_, &QDoubleSpinBox::valueChanged, this, numeric_changed);
         connect(rake_, &QDoubleSpinBox::valueChanged, this, numeric_changed);
         connect(bet_fraction_, &QDoubleSpinBox::valueChanged, this, numeric_changed);
+        connect(betting_preset_, &QComboBox::currentIndexChanged, this, [this](const int) {
+            if (!updating_) {
+                spot_ = spot_from_controls();
+                refresh_validation();
+                emit_spot_changed();
+            }
+        });
+        connect(betting_fractions_, &QLineEdit::textEdited, this, [this](const QString&) {
+            if (!updating_) {
+                spot_ = spot_from_controls();
+                refresh_validation();
+                emit_spot_changed();
+            }
+        });
+        connect(betting_max_raises_, &QSpinBox::valueChanged, this, [this](const int) {
+            if (!updating_) {
+                spot_ = spot_from_controls();
+                refresh_validation();
+                emit_spot_changed();
+            }
+        });
+        connect(betting_min_bet_increment_, &QDoubleSpinBox::valueChanged, this, [this](const double) {
+            if (!updating_) {
+                spot_ = spot_from_controls();
+                refresh_validation();
+                emit_spot_changed();
+            }
+        });
+        connect(betting_all_in_threshold_, &QDoubleSpinBox::valueChanged, this, [this](const double) {
+            if (!updating_) {
+                spot_ = spot_from_controls();
+                refresh_validation();
+                emit_spot_changed();
+            }
+        });
         connect(max_history_, &QSpinBox::valueChanged, this, numeric_changed);
         connect(public_state_id_, &QSpinBox::valueChanged, this, numeric_changed);
         connect(samples_per_combo_, &QSpinBox::valueChanged, this, numeric_changed);
@@ -405,6 +613,7 @@ namespace zeta::holdem::ui::widgets {
         seat_table_->setFixedHeight(table_height);
         refresh_board_controls();
         refresh_actor_selectors();
+        refresh_betting_policy_controls();
         updating_ = false;
         refresh_validation();
     }
@@ -436,12 +645,37 @@ namespace zeta::holdem::ui::widgets {
         hero_seat_->setCurrentIndex(std::min<std::size_t>(spot_.hero_seat, spot_.players.empty() ? 0u : spot_.players.size() - 1u));
     }
 
+    void spot_builder::refresh_betting_policy_controls()
+    {
+        const QSignalBlocker preset_blocker{betting_preset_};
+        const QSignalBlocker fractions_blocker{betting_fractions_};
+        const QSignalBlocker raises_blocker{betting_max_raises_};
+        const QSignalBlocker increment_blocker{betting_min_bet_increment_};
+        const QSignalBlocker threshold_blocker{betting_all_in_threshold_};
+
+        const auto preset_index = betting_preset_index(spot_.betting_policy);
+        betting_preset_->setCurrentIndex(preset_index);
+        betting_fractions_->setText(fraction_text(spot_.betting_policy.fixed_pot_fractions));
+        betting_max_raises_->setValue(static_cast<int>(spot_.betting_policy.max_raises));
+        betting_min_bet_increment_->setValue(spot_.betting_policy.min_bet_increment);
+        betting_all_in_threshold_->setValue(spot_.betting_policy.all_in_threshold);
+    }
+
     void spot_builder::refresh_validation()
     {
         const auto issues = viewmodels::validate_structured_spot(spot_from_controls());
         set_first_issue(board_error_, issues, {"street", "board"});
         set_first_issue(players_error_, issues, {"players", "ranges", "stacks", "contributions"});
-        set_first_issue(actor_error_, issues, {"root_actor", "hero_seat", "gross_pot", "rake", "bet_fraction", "samples_per_combo"});
+        set_first_issue(actor_error_, issues, {"root_actor", "hero_seat", "gross_pot", "rake", "bet_fraction", "samples_per_combo", "betting_policy"});
+        for (const auto& issue : issues) {
+            if (issue.field == "betting_policy") {
+                betting_policy_error_->setText(QString::fromStdString(issue.message));
+                betting_policy_error_->setVisible(true);
+                return;
+            }
+        }
+        betting_policy_error_->clear();
+        betting_policy_error_->setVisible(false);
     }
 
     void spot_builder::emit_spot_changed()
@@ -483,6 +717,18 @@ namespace zeta::holdem::ui::widgets {
         out.gross_pot = gross_pot_->value();
         out.rake = rake_->value();
         out.bet_fraction = bet_fraction_->value();
+        if (betting_preset_ != nullptr && betting_fractions_ != nullptr && betting_max_raises_ != nullptr) {
+            out.betting_policy = policy_from_betting_controls(
+                out,
+                betting_preset_,
+                betting_fractions_,
+                betting_max_raises_,
+                betting_min_bet_increment_,
+                betting_all_in_threshold_);
+            if (!out.betting_policy.fixed_pot_fractions.empty()) {
+                out.bet_fraction = out.betting_policy.fixed_pot_fractions.front();
+            }
+        }
         out.max_history = static_cast<uint16_t>(max_history_->value());
         out.public_state_id = static_cast<uint32_t>(public_state_id_->value());
         out.samples_per_combo = static_cast<uint16_t>(samples_per_combo_->value());

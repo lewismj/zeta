@@ -463,7 +463,7 @@ namespace zeta::holdem::cfr::solver {
 
     struct cfr_checkpoint_header {
         uint64_t magic = 0x5a45544143465232ull;
-        uint32_t version = 2;
+        uint32_t version = 3;
         uint32_t endian_marker = 0x01020304u;
         uint32_t player_count = 0;
         uint32_t infoset_count = 0;
@@ -478,7 +478,7 @@ namespace zeta::holdem::cfr::solver {
         checkpoint_table_storage_encoding strategy_storage = checkpoint_table_storage_encoding::float32_infoset_major;
         solver_compatibility_key compatibility{};
         uint64_t solver_config_hash = compatibility_hasher::OFFSET;
-        uint64_t graph_config_metadata_hash = compatibility_hasher::OFFSET;
+        uint64_t betting_tree_config_hash = compatibility_hasher::OFFSET;
         uint64_t infoset_action_layout_hash = compatibility_hasher::OFFSET;
         uint64_t owner_range_hash = compatibility_hasher::OFFSET;
         uint64_t terminal_state_layout_hash = compatibility_hasher::OFFSET;
@@ -1040,9 +1040,12 @@ namespace zeta::holdem::cfr::solver {
             context.numeric,
             context.reduction,
             context.chance);
+        const auto betting_tree_config_hash = context.graph_annotations == nullptr
+            ? compatibility_hasher::OFFSET
+            : context.graph_annotations->betting_tree_config_hash;
         return cfr_checkpoint_header{
             .magic = 0x5a45544143465232ull,
-            .version = 2,
+            .version = 3,
             .endian_marker = 0x01020304u,
             .player_count = static_cast<uint32_t>(N),
             .infoset_count = context.layout->infoset_count(),
@@ -1057,7 +1060,7 @@ namespace zeta::holdem::cfr::solver {
             .strategy_storage = checkpoint_table_storage_encoding::float32_infoset_major,
             .compatibility = compatibility,
             .solver_config_hash = hash_solver_config(config),
-            .graph_config_metadata_hash = hash_graph_config_metadata(compatibility),
+            .betting_tree_config_hash = betting_tree_config_hash,
             .infoset_action_layout_hash = compatibility.action_layout_hash,
             .owner_range_hash = hash_owner_ranges(context.owner_map),
             .terminal_state_layout_hash = hash_terminal_state_layout(context.terminal_provider),
@@ -1193,7 +1196,7 @@ namespace zeta::holdem::cfr::solver {
                 || loaded.value_count != expected.value_count) {
                 return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_action_layout});
             }
-            if (loaded.graph_config_metadata_hash != expected.graph_config_metadata_hash) {
+            if (loaded.betting_tree_config_hash != expected.betting_tree_config_hash) {
                 return std::unexpected(checkpoint_error{checkpoint_error_kind::incompatible_graph_metadata});
             }
             if (loaded.owner_range_hash != expected.owner_range_hash) {

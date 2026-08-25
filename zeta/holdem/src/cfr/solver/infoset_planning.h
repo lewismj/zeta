@@ -56,6 +56,17 @@ namespace zeta::holdem::cfr::solver {
         {
             return chance_event_id;
         }
+
+        [[nodiscard]] constexpr uint32_t betting_history_abstraction_id(
+            const uint64_t betting_history_hash) const noexcept
+        {
+            return static_cast<uint32_t>(betting_history_hash & 0xffffffffu);
+        }
+
+        [[nodiscard]] constexpr uint32_t stack_pot_abstraction_id(const uint32_t stack_pot_id) const noexcept
+        {
+            return stack_pot_id;
+        }
     };
 
     /**

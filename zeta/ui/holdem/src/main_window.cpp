@@ -415,8 +415,8 @@ namespace zeta::holdem::ui {
         solve_action_->setIcon(QIcon{QStringLiteral(":/icons/play.svg")});
         cancel_action_->setIcon(QIcon{QStringLiteral(":/icons/square.svg")});
         configuration_action_->setIcon(QIcon{QStringLiteral(":/icons/settings.svg")});
-        save_action_->setShortcuts(QKeySequence::Save);
-        save_as_action_->setShortcuts(QKeySequence::SaveAs);
+        save_action_->setShortcut(QKeySequence::Save);
+        save_as_action_->setShortcut(QKeySequence::SaveAs);
 
         connect(new_action_, &QAction::triggered, this, [this] { new_document(); });
         connect(open_action_, &QAction::triggered, this, [this] { open_document(); });

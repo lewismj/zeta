@@ -290,7 +290,7 @@ namespace zeta::holdem::cli {
             return out;
         }
 
-        [[nodiscard]] std::expected<void, cli_error> validate_spot_fields(const struct solve_spot& spot)
+        [[nodiscard]] std::expected<void, cli_error> validate_spot_fields(struct solve_spot& spot)
         {
             auto parsed_street = detail::parse_holdem_street(spot.street);
             if (!parsed_street) {
@@ -326,9 +326,17 @@ namespace zeta::holdem::cli {
             if (spot.rake < 0.0 || spot.rake > spot.gross_pot) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_spot, "rake must be in [0, gross_pot]."});
             }
-            if (spot.bet_fraction <= 0.0) {
-                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "bet_fraction must be positive."});
+            if (spot.betting_policy.fixed_pot_fractions.empty()) {
+                spot.betting_policy.fixed_pot_fractions = {spot.bet_fraction > 0.0 ? spot.bet_fraction : 0.75};
+                spot.betting_policy.max_raises = 1;
             }
+            if (spot.betting_policy.fixed_pot_fractions.front() <= 0.0) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "betting_policy fixed_pot_fractions must be positive."});
+            }
+            if (auto policy_validation = cfr::validate_betting_abstraction_policy(spot.betting_policy); !policy_validation) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Invalid betting policy: " + std::string{cfr::to_string(policy_validation.error().kind)}});
+            }
+            spot.bet_fraction = spot.betting_policy.fixed_pot_fractions.front();
             for (std::size_t seat = 0; seat < spot.players.size(); ++seat) {
                 if (spot.stacks[seat] < 0.0) {
                     return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Stacks must be non-negative."});
@@ -529,6 +537,23 @@ namespace zeta::holdem::cli {
         spot.rake = *rake;
         spot.bet_fraction = *bet_fraction;
 
+        if (const auto* betting_policy_value = find_value(*root, "betting_policy"); betting_policy_value != nullptr) {
+            if (!betting_policy_value->is_object()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "betting_policy must be an object."});
+            }
+            const auto policy_json = json::serialize(*betting_policy_value);
+            auto parsed_policy = cfr::deserialize_betting_abstraction_policy(policy_json);
+            if (!parsed_policy) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Invalid betting_policy: " + parsed_policy.error()});
+            }
+            spot.betting_policy = std::move(*parsed_policy);
+        } else {
+            spot.betting_policy = cfr::betting_abstraction_policy{
+                .fixed_pot_fractions = {spot.bet_fraction},
+                .max_raises = 1
+            };
+        }
+
         auto contributions = optional_number_array(*root, "contributions", spot.contributions);
         auto stacks = optional_number_array(*root, "stacks", spot.stacks);
         if (!contributions) {
@@ -607,6 +632,12 @@ namespace zeta::holdem::cli {
 
     std::string serialize_spot_json(const struct solve_spot& spot)
     {
+        const auto serialized_policy = cfr::serialize_betting_abstraction_policy(resolve_spot_betting_policy(spot));
+        const auto policy_json = json::parse(serialized_policy);
+        const auto effective_bet_fraction = resolve_spot_betting_policy(spot).fixed_pot_fractions.empty()
+            ? spot.bet_fraction
+            : resolve_spot_betting_policy(spot).fixed_pot_fractions.front();
+
         json::object out;
         out["street"] = spot.street;
         out["players"] = string_array_json(spot.players);
@@ -616,7 +647,8 @@ namespace zeta::holdem::cli {
         out["rake"] = spot.rake;
         out["contributions"] = number_array_json(spot.contributions);
         out["stacks"] = number_array_json(spot.stacks);
-        out["bet_fraction"] = spot.bet_fraction;
+        out["bet_fraction"] = effective_bet_fraction;
+        out["betting_policy"] = policy_json;
         out["max_history"] = static_cast<uint64_t>(spot.max_history);
         out["public_state_id"] = static_cast<uint64_t>(spot.public_state_id);
         out["root_actor"] = spot.root_actor < spot.players.size()

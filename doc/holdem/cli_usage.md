@@ -58,6 +58,12 @@ and `ip_range` are still accepted. For **multiway**, use the array fields.
   "contributions": [40.0, 40.0, 40.0, 40.0, 40.0],
   "stacks": [250.0, 250.0, 250.0, 250.0, 250.0],
   "bet_fraction": 0.75,
+  "betting_policy": {
+    "fixed_pot_fractions": [0.75],
+    "max_raises": 1,
+    "min_bet_increment": 1.0,
+    "all_in_threshold": 0.95
+  },
   "max_history": 8,
   "public_state_id": 0,
   "root_actor": "BB",
@@ -80,9 +86,17 @@ and `ip_range` are still accepted. For **multiway**, use the array fields.
   "ip_contribution": 50.0,
   "oop_stack": 200.0,
   "ip_stack": 200.0,
-  "bet_fraction": 0.75
+  "bet_fraction": 0.75,
+  "betting_policy": {
+    "fixed_pot_fractions": [0.75],
+    "max_raises": 1,
+    "min_bet_increment": 1.0,
+    "all_in_threshold": 0.95
+  }
 }
 ```
+
+The solver accepts either the legacy `bet_fraction` single-bet field or the richer `betting_policy` object. If the policy object is omitted, the default is a single-size policy with `fixed_pot_fractions: [0.75]` and `max_raises: 1`.
 
 ### Fields
 
@@ -96,7 +110,8 @@ and `ip_range` are still accepted. For **multiway**, use the array fields.
 | `rake`              | number   | `0.0`           | Must be in `[0, gross_pot]`                                             |
 | `contributions`     | number[] | `[50.0,50.0]`   | Must match player count                                                 |
 | `stacks`            | number[] | `[100.0,100.0]` | Must match player count                                                 |
-| `bet_fraction`      | number   | `0.75`          | Must be positive                                                        |
+| `bet_fraction`      | number   | `0.75`          | Legacy single-size shorthand; mirrored from the first policy fraction    |
+| `betting_policy`    | object   | default single-size policy | `fixed_pot_fractions`, `max_raises`, `min_bet_increment`, `all_in_threshold` |
 | `max_history`       | integer  | `8`             | Betting history cap                                                     |
 | `public_state_id`   | integer  | `0`             | User-defined public-state discriminator (advanced; leave at `0` for single-board spots) |
 | `root_actor`        | string or integer | first player | Player label (e.g. `"BB"`) or index of acting seat at root; the listed player acts first at the root node |

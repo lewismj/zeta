@@ -523,10 +523,7 @@ namespace zeta::holdem::ui::solver {
                 config.initial_committed[seat] = spot.contributions[seat];
             }
             config.root_actor = spot.root_actor;
-            config.abstraction.fixed_pot_fractions = {spot.bet_fraction};
-            config.abstraction.geometric_size_count = 1;
-            config.abstraction.stack_ratio_buckets = {spot.bet_fraction};
-            config.abstraction.max_raises_per_street = 1;
+            config.abstraction = cli::resolve_spot_betting_policy(spot);
             config.max_history = spot.max_history;
             config.public_state_id = spot.public_state_id;
 

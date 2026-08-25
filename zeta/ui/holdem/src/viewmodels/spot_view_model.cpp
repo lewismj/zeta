@@ -247,6 +247,9 @@ namespace zeta::holdem::ui::viewmodels {
         if (source.samples_per_combo == 0u) {
             issues.push_back({"samples_per_combo", "Samples per combo must be positive."});
         }
+        if (auto policy_validation = cfr::validate_betting_abstraction_policy(source.betting_policy); !policy_validation) {
+            issues.push_back({"betting_policy", "Betting policy is invalid: " + std::string{cfr::to_string(policy_validation.error().kind)}});
+        }
 
         const auto per_seat_count = std::min({source.players.size(), source.stacks.size(), source.contributions.size()});
         for (std::size_t seat = 0; seat < per_seat_count; ++seat) {

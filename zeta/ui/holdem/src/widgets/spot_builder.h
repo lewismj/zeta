@@ -13,6 +13,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QGridLayout;
 class QLabel;
+class QLineEdit;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
@@ -41,6 +42,7 @@ namespace zeta::holdem::ui::widgets {
         void refresh_from_spot();
         void refresh_board_controls();
         void refresh_actor_selectors();
+        void refresh_betting_policy_controls();
         void refresh_validation();
         void emit_spot_changed();
         void apply_template(viewmodels::spot_template_kind kind);
@@ -60,6 +62,11 @@ namespace zeta::holdem::ui::widgets {
         QDoubleSpinBox* gross_pot_ = nullptr;
         QDoubleSpinBox* rake_ = nullptr;
         QDoubleSpinBox* bet_fraction_ = nullptr;
+        QComboBox* betting_preset_ = nullptr;
+        QLineEdit* betting_fractions_ = nullptr;
+        QSpinBox* betting_max_raises_ = nullptr;
+        QDoubleSpinBox* betting_min_bet_increment_ = nullptr;
+        QDoubleSpinBox* betting_all_in_threshold_ = nullptr;
         QSpinBox* max_history_ = nullptr;
         QSpinBox* public_state_id_ = nullptr;
         QSpinBox* samples_per_combo_ = nullptr;
@@ -67,6 +74,7 @@ namespace zeta::holdem::ui::widgets {
         QLabel* board_error_ = nullptr;
         QLabel* players_error_ = nullptr;
         QLabel* actor_error_ = nullptr;
+        QLabel* betting_policy_error_ = nullptr;
     };
 
 }

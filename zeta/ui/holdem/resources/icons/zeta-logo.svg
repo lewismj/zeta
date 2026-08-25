@@ -1,11 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="zeta logo">
   <rect x="2" y="2" width="20" height="20" rx="4" fill="#000000"/>
-  <text
-    x="12"
-    y="16.8"
-    fill="#FFFFFF"
-    font-family="Arial, Helvetica, sans-serif"
-    font-size="15"
-    font-weight="700"
-    text-anchor="middle">ζ</text>
+  <path d="M6 7h12l-8 10h8" fill="none" stroke="#f5a623" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 5.5h8" fill="none" stroke="#55d67a" stroke-width="1.4" stroke-linecap="round"/>
 </svg>

@@ -5,24 +5,8 @@ Zeta closer to a GTO Wizard-style postflop analysis tool. The priority is not to
 add every UI feature first; it is to build the solver capabilities that unlock
 useful, accurate analysis.
 
-## 1. Real betting-tree configuration
 
-The biggest missing solver surface is a configurable betting abstraction.
-
-Core deliverables:
-
-- street-aware bet-size presets for flop, turn, and river
-- separate IP/OOP size sets
-- raise-size rules by previous bet size and stack depth
-- all-in threshold handling
-- check, bet, call, fold, raise legality derived from stack/pot state
-- deterministic betting-tree hash included in solve artifacts and checkpoints
-
-Why it matters: without configurable action trees, results are only useful for
-toy spots. A GTO Wizard-like workflow needs repeatable trees such as single-size,
-multi-size, geometric, overbet, and all-in-inclusive configurations.
-
-## 2. Accurate flop/turn chance and board-runout handling
+## 1. Accurate flop/turn chance and board-runout handling
 
 Zeta already has river terminal evaluation and chance-node machinery. The next
 step is making runout enumeration a first-class solver surface.
@@ -40,7 +24,7 @@ Why it matters: serious postflop analysis needs flop and turn solves, not only
 single-river terminal states. This is also the foundation for aggregated reports
 by turn/river class.
 
-## 3. Robust convergence and exploitability reporting
+## 2. Robust convergence and exploitability reporting
 
 The solver needs user-facing confidence signals, not just iteration counts.
 
@@ -56,7 +40,7 @@ Core deliverables:
 Why it matters: users need to know whether a strategy is stable enough to trust.
 This is more valuable than simply running more iterations blindly.
 
-## 4. Strategy and EV result surfaces
+## 3. Strategy and EV result surfaces
 
 The solver should emit enough structured data for detailed inspection, not just
 a flat hand/action table.
@@ -74,7 +58,7 @@ Why it matters: GTO-style analysis is driven by comparing frequencies and EVs at
 each node. The UI can only become powerful if the solver artifact carries these
 surfaces cleanly.
 
-## 5. Node locking and strategy constraints
+## 4. Node locking and strategy constraints
 
 Node locking is one of the most valuable practical solver features.
 
@@ -91,7 +75,7 @@ Why it matters: users often want to answer exploitative questions: "What if
 villain over-folds?", "What if BTN never raises?", or "How should OOP respond to
 this population strategy?"
 
-## 6. Range editing beyond preflop syntax
+## 5. Range editing beyond preflop syntax
 
 The current PokerStove parser is a good base, but solver workflows need richer
 postflop range tools.
@@ -108,7 +92,7 @@ Core deliverables:
 Why it matters: users need to construct and inspect ranges by hand properties,
 not only preflop class notation.
 
-## 7. Saved spot library and solve cache
+## 6. Saved spot library and solve cache
 
 A GTO Wizard-like tool becomes useful when spots are reusable and comparable.
 
@@ -124,7 +108,7 @@ Core deliverables:
 Why it matters: users should build a library of solved spots instead of treating
 each solve as disposable.
 
-## 8. Compare mode and reports
+## 7. Compare mode and reports
 
 After solving, the highest-value analysis is comparison.
 
@@ -141,7 +125,7 @@ Why it matters: practical study is often about differences: one sizing tree vs
 another, one range assumption vs another, or equilibrium vs locked population
 behavior.
 
-## 9. Trainer and drill mode
+## 8. Trainer and drill mode
 
 Training should come after the solver result surfaces are strong.
 
@@ -158,15 +142,14 @@ accurate per-node strategy and EV data first.
 
 ## Recommended implementation order
 
-1. Betting-tree configuration.
-2. Flop/turn chance expansion and runout cache reuse.
-3. Structured strategy/EV artifact surfaces.
-4. Convergence and quality reporting.
-5. Node locking.
-6. Postflop range tools.
-7. Saved spot library and solve cache.
-8. Compare mode and reports.
-9. Trainer/drill mode.
+1. Accurate flop/turn chance and board-runout handling.
+2. Robust convergence and exploitability reporting.
+3. Strategy and EV result surfaces.
+4. Node locking.
+5. Postflop range tools.
+6. Saved spot library and solve cache.
+7. Compare mode and reports.
+8. Trainer/drill mode.
 
 The first four items are the core solver foundation. Items five through nine are
 what make the solver feel like a complete analysis product.

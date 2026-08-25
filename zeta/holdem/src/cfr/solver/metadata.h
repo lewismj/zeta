@@ -64,6 +64,8 @@ namespace zeta::holdem::cfr::solver {
         std::vector<uint32_t> chance_event_id_by_node;
         std::vector<uint32_t> terminal_leaf_id_by_node;
         std::vector<solver_node_state_metadata> state_by_node;
+        uint64_t betting_tree_config_hash = 0;
+        uint64_t betting_history_abstraction_id = 0;
     };
 
     template <std::size_t N>

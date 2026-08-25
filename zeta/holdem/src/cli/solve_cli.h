@@ -85,12 +85,29 @@ namespace zeta::holdem::cli {
         std::vector<utility> contributions{50.0, 50.0};
         std::vector<utility> stacks{100.0, 100.0};
         double bet_fraction = 0.75;
+        cfr::betting_abstraction_policy betting_policy{
+            .fixed_pot_fractions = {0.75},
+            .max_raises = 1
+        };
         uint16_t max_history = 8;
         uint32_t public_state_id = 0;
         uint8_t root_actor = 0;
         uint8_t hero_seat = 0;
         uint16_t samples_per_combo = 64;
     };
+
+    [[nodiscard]] inline cfr::betting_abstraction_policy resolve_spot_betting_policy(const solve_spot& spot)
+    {
+        auto policy = spot.betting_policy;
+        if (policy.fixed_pot_fractions.empty()) {
+            policy.fixed_pot_fractions = {spot.bet_fraction > 0.0 ? spot.bet_fraction : 0.75};
+            policy.max_raises = 1;
+        }
+        if (!policy.fixed_pot_fractions.empty()) {
+            policy.max_raises = std::max<uint16_t>(1u, policy.max_raises);
+        }
+        return policy;
+    }
 
     enum class solve_progress_stage : uint8_t {
         graph_build,
@@ -1198,10 +1215,7 @@ namespace zeta::holdem::cli {
             config.initial_stacks = initial_stacks;
             config.initial_committed = initial_committed;
             config.root_actor = spot.root_actor;
-            config.abstraction.fixed_pot_fractions = {spot.bet_fraction};
-            config.abstraction.geometric_size_count = 1;
-            config.abstraction.stack_ratio_buckets = {spot.bet_fraction};
-            config.abstraction.max_raises_per_street = 1;
+            config.abstraction = resolve_spot_betting_policy(spot);
             config.max_history = spot.max_history;
             config.public_state_id = spot.public_state_id;
 

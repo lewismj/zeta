@@ -736,7 +736,7 @@ holdem_betting_graph_config<2> make_tiny_generated_river_config()
     config.public_state_id = 1;
     config.max_history = 8;
     config.abstraction.fixed_pot_fractions = {0.5};
-    config.abstraction.max_raises_per_street = 0;
+    config.abstraction.max_raises = 1;
     return config;
 }
 
@@ -750,9 +750,7 @@ holdem_betting_graph_config<2> make_larger_generated_hu_river_config()
     config.public_state_id = 2;
     config.max_history = 12;
     config.abstraction.fixed_pot_fractions = {0.25, 0.5, 0.75};
-    config.abstraction.geometric_size_count = 1;
-    config.abstraction.stack_ratio_buckets = {0.5, 0.8};
-    config.abstraction.max_raises_per_street = 2;
+    config.abstraction.max_raises = 2;
     return config;
 }
 
@@ -766,9 +764,7 @@ holdem_betting_graph_config<2> make_end_to_end_generated_hu_river_config()
     config.public_state_id = 4;
     config.max_history = 15;
     config.abstraction.fixed_pot_fractions = {0.25, 0.5, 0.75, 1.0};
-    config.abstraction.geometric_size_count = 2;
-    config.abstraction.stack_ratio_buckets = {0.5, 0.8};
-    config.abstraction.max_raises_per_street = 4;
+    config.abstraction.max_raises = 4;
     return config;
 }
 
@@ -782,7 +778,7 @@ holdem_betting_graph_config<3> make_generated_nway_river_config()
     config.public_state_id = 3;
     config.max_history = 10;
     config.abstraction.fixed_pot_fractions = {0.33, 0.75};
-    config.abstraction.max_raises_per_street = 1;
+    config.abstraction.max_raises = 1;
     return config;
 }
 

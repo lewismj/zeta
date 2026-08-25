@@ -146,6 +146,54 @@ BOOST_AUTO_TEST_CASE(holdem_cli_json_accepts_legacy_heads_up_fields) {
     BOOST_CHECK_EQUAL(spot->stacks[1], 110.0);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_cli_parses_betting_policy_json) {
+    constexpr const char* json = R"({
+  "players": ["BTN", "BB"],
+  "street": "river",
+  "board": ["As", "Kd", "7c", "4h", "2s"],
+  "ranges": ["AA", "AA"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "betting_policy": {
+    "fixed_pot_fractions": [0.5, 1.0],
+    "max_raises": 2,
+    "min_bet_increment": 1.0,
+    "all_in_threshold": 0.95
+  }
+})";
+
+    auto spot = zeta::holdem::cli::parse_spot_json(json);
+    BOOST_REQUIRE(spot.has_value());
+    BOOST_CHECK_EQUAL(spot->betting_policy.fixed_pot_fractions.size(), 2u);
+    BOOST_CHECK_EQUAL(spot->betting_policy.fixed_pot_fractions[0], 0.5);
+    BOOST_CHECK_EQUAL(spot->betting_policy.max_raises, 2u);
+    BOOST_CHECK_EQUAL(spot->bet_fraction, 0.5);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_defaults_legacy_betting_policy_when_missing) {
+    constexpr const char* json = R"({
+  "players": ["BTN", "BB"],
+  "street": "river",
+  "board": ["As", "Kd", "7c", "4h", "2s"],
+  "ranges": ["AA", "AA"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.75
+})";
+
+    auto spot = zeta::holdem::cli::parse_spot_json(json);
+    BOOST_REQUIRE(spot.has_value());
+    BOOST_CHECK_EQUAL(spot->betting_policy.fixed_pot_fractions.size(), 1u);
+    BOOST_CHECK_EQUAL(spot->betting_policy.fixed_pot_fractions.front(), 0.75);
+    BOOST_CHECK_EQUAL(spot->betting_policy.max_raises, 1u);
+    BOOST_CHECK_EQUAL(spot->bet_fraction, 0.75);
+}
+
 BOOST_AUTO_TEST_CASE(holdem_cli_json_rejects_wrong_types) {
     constexpr const char* wrong_string = R"({
   "players": ["BTN", 7],
