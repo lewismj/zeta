@@ -65,11 +65,6 @@ namespace zeta::holdem::ui {
         parsed_document.spot_ = std::move(parsed->spot);
         parsed_document.artifact_ = std::move(parsed->artifact);
         parsed_document.solution_ = std::move(parsed->solution);
-        if (!parsed_document.solution_ && parsed_document.artifact_) {
-            parsed_document.solution_ = solver::make_root_only_solution_store(
-                parsed_document.spot_,
-                *parsed_document.artifact_);
-        }
         if (parsed->metadata) {
             parsed_document.metadata_ = std::move(*parsed->metadata);
         }
@@ -123,7 +118,7 @@ namespace zeta::holdem::ui {
     void spot_document::replace_artifact(std::optional<solve_artifact> next_artifact)
     {
         artifact_ = std::move(next_artifact);
-        solution_ = artifact_ ? std::optional{solver::make_root_only_solution_store(spot_, *artifact_)} : std::nullopt;
+        solution_ = std::nullopt;
         metadata_.updated_utc = cli::detail::now_utc_iso8601();
         dirty_ = true;
     }

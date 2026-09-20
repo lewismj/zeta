@@ -2,6 +2,8 @@
 
 #include "board.h"
 #include "cfr/graph/graph.h"
+#include "cfr/solver/metadata.h"
+#include "terminal/reach_index.h"
 
 #include <algorithm>
 #include <cassert>
@@ -16,8 +18,17 @@
 
 namespace zeta::holdem::cfr {
 
-    inline constexpr uint32_t INVALID_CHANCE_EVENT = std::numeric_limits<uint32_t>::max();
-    inline constexpr uint32_t INVALID_BOARD_PARTITION = std::numeric_limits<uint32_t>::max();
+    using public_state_id = uint32_t;
+    using chance_event_id = uint32_t;
+    using chance_outcome_id = uint32_t;
+    using runout_id = uint32_t;
+    using board_partition_id = uint32_t;
+
+    inline constexpr public_state_id INVALID_PUBLIC_STATE_ID = std::numeric_limits<public_state_id>::max();
+    inline constexpr chance_event_id INVALID_CHANCE_EVENT = std::numeric_limits<chance_event_id>::max();
+    inline constexpr chance_outcome_id INVALID_CHANCE_OUTCOME_ID = std::numeric_limits<chance_outcome_id>::max();
+    inline constexpr runout_id INVALID_RUNOUT_ID = std::numeric_limits<runout_id>::max();
+    inline constexpr board_partition_id INVALID_BOARD_PARTITION = std::numeric_limits<board_partition_id>::max();
 
     enum class public_chance_event_kind : uint8_t {
         none = 0,
@@ -63,9 +74,63 @@ namespace zeta::holdem::cfr {
         uint16_t action_index = 0;
         float probability = 0.0f;
         uint32_t board_partition_id = INVALID_BOARD_PARTITION;
+        chance_outcome_id outcome_id = INVALID_CHANCE_OUTCOME_ID;
         card_mask cards = 0;
         card_mask dead_cards = 0;
         bool legal = true;
+    };
+
+    struct public_board_state {
+        public_state_id id = INVALID_PUBLIC_STATE_ID;
+        solver::holdem_street street = solver::holdem_street::invalid;
+        card_mask board_cards = 0;
+        public_state_id parent_state_id = INVALID_PUBLIC_STATE_ID;
+        chance_event_id chance_event_id_from_parent = INVALID_CHANCE_EVENT;
+        chance_outcome_id chance_outcome_id_from_parent = INVALID_CHANCE_OUTCOME_ID;
+        bool is_root_state = false;
+        bool is_terminal_river_state = false;
+    };
+
+    struct public_state_registry {
+        std::vector<public_board_state> states;
+        std::vector<public_state_id> state_id_by_node;
+        public_state_id root_public_state_id = INVALID_PUBLIC_STATE_ID;
+    };
+
+    struct complete_runout {
+        runout_id id = INVALID_RUNOUT_ID;
+        public_state_id root_public_state_id = INVALID_PUBLIC_STATE_ID;
+        public_state_id river_public_state_id = INVALID_PUBLIC_STATE_ID;
+        card_mask dealt_turn = 0;
+        card_mask dealt_river = 0;
+    };
+
+    struct runout_registry {
+        std::vector<complete_runout> runouts;
+        std::vector<public_state_id> river_public_state_by_runout;
+    };
+
+    struct runout_terminal_entry {
+        public_state_id public_state = INVALID_PUBLIC_STATE_ID;
+        board river_board{};
+        river_terminal_cache cache{};
+    };
+
+    struct runout_terminal_table {
+        std::vector<runout_terminal_entry> entries;
+        std::vector<public_state_id> entry_id_by_public_state;
+
+        [[nodiscard]] const runout_terminal_entry* find(const public_state_id state_id) const noexcept
+        {
+            if (state_id == INVALID_PUBLIC_STATE_ID || state_id >= entry_id_by_public_state.size()) {
+                return nullptr;
+            }
+            const auto entry_index = entry_id_by_public_state[state_id];
+            if (entry_index == INVALID_PUBLIC_STATE_ID || entry_index >= entries.size()) {
+                return nullptr;
+            }
+            return &entries[entry_index];
+        }
     };
 
     /**
@@ -151,6 +216,80 @@ namespace zeta::holdem::cfr {
         uint32_t outcome_index = std::numeric_limits<uint32_t>::max();
     };
 
+    enum class public_state_registry_error_kind : uint8_t {
+        invalid_state_id,
+        invalid_parent_state,
+        invalid_street_metadata,
+        duplicate_state_id,
+        duplicate_board_cards,
+        missing_root_state,
+        state_mapping_mismatch,
+        invalid_chance_links
+    };
+
+    struct public_state_registry_error {
+        public_state_registry_error_kind kind{};
+        public_state_id state_id = INVALID_PUBLIC_STATE_ID;
+        uint32_t node_id = game_graph::INVALID_NODE;
+    };
+
+    [[nodiscard]] constexpr const char* to_string(const public_state_registry_error_kind kind) noexcept
+    {
+        using enum public_state_registry_error_kind;
+        switch (kind) {
+            case invalid_state_id: return "public_state_registry_error_kind::invalid_state_id";
+            case invalid_parent_state: return "public_state_registry_error_kind::invalid_parent_state";
+            case invalid_street_metadata: return "public_state_registry_error_kind::invalid_street_metadata";
+            case duplicate_state_id: return "public_state_registry_error_kind::duplicate_state_id";
+            case duplicate_board_cards: return "public_state_registry_error_kind::duplicate_board_cards";
+            case missing_root_state: return "public_state_registry_error_kind::missing_root_state";
+            case state_mapping_mismatch: return "public_state_registry_error_kind::state_mapping_mismatch";
+            case invalid_chance_links: return "public_state_registry_error_kind::invalid_chance_links";
+        }
+        return "public_state_registry_error_kind::unknown";
+    }
+
+    inline std::ostream& operator<<(std::ostream& os, const public_state_registry_error_kind kind)
+    {
+        return os << to_string(kind);
+    }
+
+    enum class runout_registry_error_kind : uint8_t {
+        invalid_runout_id,
+        duplicate_runout_id,
+        invalid_root_state,
+        invalid_river_state,
+        duplicate_river_state,
+        invalid_river_path,
+        invalid_board_cards
+    };
+
+    struct runout_registry_error {
+        runout_registry_error_kind kind{};
+        runout_id runout_id = INVALID_RUNOUT_ID;
+        public_state_id state_id = INVALID_PUBLIC_STATE_ID;
+    };
+
+    [[nodiscard]] constexpr const char* to_string(const runout_registry_error_kind kind) noexcept
+    {
+        using enum runout_registry_error_kind;
+        switch (kind) {
+            case invalid_runout_id: return "runout_registry_error_kind::invalid_runout_id";
+            case duplicate_runout_id: return "runout_registry_error_kind::duplicate_runout_id";
+            case invalid_root_state: return "runout_registry_error_kind::invalid_root_state";
+            case invalid_river_state: return "runout_registry_error_kind::invalid_river_state";
+            case duplicate_river_state: return "runout_registry_error_kind::duplicate_river_state";
+            case invalid_river_path: return "runout_registry_error_kind::invalid_river_path";
+            case invalid_board_cards: return "runout_registry_error_kind::invalid_board_cards";
+        }
+        return "runout_registry_error_kind::unknown";
+    }
+
+    inline std::ostream& operator<<(std::ostream& os, const runout_registry_error_kind kind)
+    {
+        return os << to_string(kind);
+    }
+
     [[nodiscard]] constexpr const char* to_string(const chance_table_error_kind kind) noexcept
     {
         using enum chance_table_error_kind;
@@ -224,6 +363,235 @@ namespace zeta::holdem::cfr {
             const auto live_count = static_cast<uint32_t>(zeta::num_cards<zeta::default_deck>) - blocked_count;
             return combination_count(live_count, cards_to_deal);
         }
+    }
+
+    [[nodiscard]] inline std::expected<void, public_state_registry_error> validate_public_state_registry(
+       const public_state_registry& registry,
+       const uint32_t node_count = 0) noexcept
+    {
+       if (registry.root_public_state_id != INVALID_PUBLIC_STATE_ID
+           && registry.root_public_state_id >= registry.states.size()) {
+           return std::unexpected(public_state_registry_error{
+               public_state_registry_error_kind::missing_root_state,
+               registry.root_public_state_id
+           });
+       }
+
+       std::vector<card_mask> seen_boards;
+       seen_boards.reserve(registry.states.size());
+
+       for (std::size_t index = 0; index < registry.states.size(); ++index) {
+           const auto& state = registry.states[index];
+           if (state.id == INVALID_PUBLIC_STATE_ID || state.id != static_cast<public_state_id>(index)) {
+               return std::unexpected(public_state_registry_error{
+                   public_state_registry_error_kind::invalid_state_id,
+                   state.id,
+                   static_cast<uint32_t>(index)
+               });
+           }
+           if (state.street == solver::holdem_street::invalid) {
+               return std::unexpected(public_state_registry_error{
+                   public_state_registry_error_kind::invalid_street_metadata,
+                   state.id,
+                   static_cast<uint32_t>(index)
+               });
+           }
+           if (!state.is_root_state && state.parent_state_id == INVALID_PUBLIC_STATE_ID) {
+               return std::unexpected(public_state_registry_error{
+                   public_state_registry_error_kind::invalid_parent_state,
+                   state.id,
+                   static_cast<uint32_t>(index)
+               });
+           }
+           if (state.is_root_state && state.parent_state_id != INVALID_PUBLIC_STATE_ID) {
+               return std::unexpected(public_state_registry_error{
+                   public_state_registry_error_kind::invalid_parent_state,
+                   state.id,
+                   static_cast<uint32_t>(index)
+               });
+           }
+           if (!state.is_root_state && state.parent_state_id >= registry.states.size()) {
+               return std::unexpected(public_state_registry_error{
+                   public_state_registry_error_kind::invalid_parent_state,
+                   state.id,
+                   static_cast<uint32_t>(index)
+               });
+           }
+           if (state.chance_event_id_from_parent != INVALID_CHANCE_EVENT && state.is_root_state) {
+               return std::unexpected(public_state_registry_error{
+                   public_state_registry_error_kind::invalid_chance_links,
+                   state.id,
+                   static_cast<uint32_t>(index)
+               });
+           }
+           if (state.chance_outcome_id_from_parent != INVALID_CHANCE_OUTCOME_ID && state.is_root_state) {
+               return std::unexpected(public_state_registry_error{
+                   public_state_registry_error_kind::invalid_chance_links,
+                   state.id,
+                   static_cast<uint32_t>(index)
+               });
+           }
+
+           for (const auto seen : seen_boards) {
+               if (seen == state.board_cards) {
+                   return std::unexpected(public_state_registry_error{
+                       public_state_registry_error_kind::duplicate_board_cards,
+                       state.id,
+                       static_cast<uint32_t>(index)
+                   });
+               }
+           }
+           seen_boards.push_back(state.board_cards);
+       }
+
+       if (registry.root_public_state_id == INVALID_PUBLIC_STATE_ID && !registry.states.empty()) {
+           return std::unexpected(public_state_registry_error{
+               public_state_registry_error_kind::missing_root_state,
+               registry.states.front().id,
+               0
+           });
+       }
+       if (node_count != 0u && registry.state_id_by_node.size() != node_count) {
+           return std::unexpected(public_state_registry_error{
+               public_state_registry_error_kind::state_mapping_mismatch,
+               registry.root_public_state_id,
+               node_count
+           });
+       }
+       for (uint32_t node_id = 0; node_id < static_cast<uint32_t>(registry.state_id_by_node.size()); ++node_id) {
+           const auto state_id = registry.state_id_by_node[node_id];
+           if (state_id == INVALID_PUBLIC_STATE_ID || state_id >= registry.states.size()) {
+               return std::unexpected(public_state_registry_error{
+                   public_state_registry_error_kind::state_mapping_mismatch,
+                   state_id,
+                   node_id
+               });
+           }
+       }
+
+       return {};
+    }
+
+    [[nodiscard]] inline std::expected<void, runout_registry_error> validate_runout_registry(
+       const runout_registry& registry) noexcept
+    {
+       std::vector<public_state_id> seen_river_states;
+       seen_river_states.reserve(registry.runouts.size());
+
+       for (const auto& runout : registry.runouts) {
+           if (runout.id == INVALID_RUNOUT_ID || runout.id >= registry.runouts.size()) {
+               return std::unexpected(runout_registry_error{
+                   runout_registry_error_kind::invalid_runout_id,
+                   runout.id,
+                   runout.river_public_state_id
+               });
+           }
+           if (runout.root_public_state_id == INVALID_PUBLIC_STATE_ID) {
+               return std::unexpected(runout_registry_error{
+                   runout_registry_error_kind::invalid_root_state,
+                   runout.id,
+                   runout.root_public_state_id
+               });
+           }
+           if (runout.river_public_state_id == INVALID_PUBLIC_STATE_ID) {
+               return std::unexpected(runout_registry_error{
+                   runout_registry_error_kind::invalid_river_state,
+                   runout.id,
+                   runout.river_public_state_id
+               });
+           }
+           if (registry.river_public_state_by_runout.size() <= runout.id) {
+               return std::unexpected(runout_registry_error{
+                   runout_registry_error_kind::invalid_river_path,
+                   runout.id,
+                   runout.river_public_state_id
+               });
+           }
+           if (registry.river_public_state_by_runout[runout.id] != runout.river_public_state_id) {
+               return std::unexpected(runout_registry_error{
+                   runout_registry_error_kind::invalid_river_path,
+                   runout.id,
+                   runout.river_public_state_id
+               });
+           }
+           if (runout.dealt_turn != 0u && runout.dealt_river != 0u
+               && ((runout.dealt_turn & runout.dealt_river) != 0u)) {
+               return std::unexpected(runout_registry_error{
+                   runout_registry_error_kind::invalid_board_cards,
+                   runout.id,
+                   runout.river_public_state_id
+               });
+           }
+           for (const auto river_state_id : seen_river_states) {
+               if (river_state_id == runout.river_public_state_id) {
+                   return std::unexpected(runout_registry_error{
+                       runout_registry_error_kind::duplicate_river_state,
+                       runout.id,
+                       runout.river_public_state_id
+                   });
+               }
+           }
+           seen_river_states.push_back(runout.river_public_state_id);
+       }
+
+       return {};
+    }
+
+    [[nodiscard]] inline public_state_registry make_public_state_registry(
+       std::span<const public_board_state> states,
+       const public_state_id root_public_state_id = INVALID_PUBLIC_STATE_ID)
+    {
+       public_state_registry registry;
+       registry.states.assign(states.begin(), states.end());
+       registry.root_public_state_id = root_public_state_id;
+       registry.state_id_by_node.resize(registry.states.size());
+       for (std::size_t index = 0; index < registry.states.size(); ++index) {
+           registry.states[index].id = static_cast<public_state_id>(index);
+           registry.state_id_by_node[index] = static_cast<public_state_id>(index);
+       }
+       if (root_public_state_id != INVALID_PUBLIC_STATE_ID && root_public_state_id < registry.states.size()) {
+           registry.root_public_state_id = root_public_state_id;
+       }
+       return registry;
+    }
+
+    [[nodiscard]] inline runout_registry make_runout_registry(std::span<const complete_runout> runouts)
+    {
+       runout_registry registry;
+       registry.runouts.assign(runouts.begin(), runouts.end());
+       registry.river_public_state_by_runout.resize(registry.runouts.size(), INVALID_PUBLIC_STATE_ID);
+       for (std::size_t index = 0; index < registry.runouts.size(); ++index) {
+           registry.runouts[index].id = static_cast<runout_id>(index);
+           registry.river_public_state_by_runout[index] = registry.runouts[index].river_public_state_id;
+       }
+       return registry;
+    }
+
+    [[nodiscard]] inline runout_terminal_table make_runout_terminal_table(std::span<const public_board_state> states)
+    {
+       runout_terminal_table table;
+       public_state_id max_state_id = 0;
+       for (const auto& state : states) {
+           if (state.id != INVALID_PUBLIC_STATE_ID) {
+               max_state_id = std::max(max_state_id, state.id);
+           }
+       }
+       const auto mapping_size = std::max<std::size_t>(states.size(), static_cast<std::size_t>(max_state_id) + 1u);
+       table.entry_id_by_public_state.assign(mapping_size, INVALID_PUBLIC_STATE_ID);
+       for (const auto& state : states) {
+           if (!state.is_terminal_river_state || state.board_cards == 0u) {
+               continue;
+           }
+           const auto entry_index = static_cast<public_state_id>(table.entries.size());
+           const auto river_board = board{state.board_cards};
+           table.entries.push_back(runout_terminal_entry{
+               .public_state = state.id,
+               .river_board = river_board,
+               .cache = make_river_terminal_cache(river_board)
+           });
+           table.entry_id_by_public_state[state.id] = entry_index;
+       }
+       return table;
     }
 
     /**
@@ -404,7 +772,8 @@ namespace zeta::holdem::cfr {
                     .child_node = child_edge.child_node,
                     .action_index = child_edge.action_index,
                     .probability = probability,
-                    .board_partition_id = child_edge.action_index
+                    .board_partition_id = child_edge.action_index,
+                    .outcome_id = static_cast<chance_outcome_id>(table.outcomes.size())
                 });
             }
         }
@@ -483,6 +852,7 @@ namespace zeta::holdem::cfr {
                 .action_index = static_cast<uint16_t>(i),
                 .probability = probability,
                 .board_partition_id = i,
+                .outcome_id = i,
                 .cards = card_sets[i],
                 .dead_cards = dead_cards
             });
@@ -576,6 +946,7 @@ namespace zeta::holdem::cfr {
                 outcome.child_node = edges[local_index].child_node;
                 outcome.action_index = edges[local_index].action_index;
                 outcome.board_partition_id += config.board_partition_base;
+                outcome.outcome_id = first_outcome + local_index;
                 outcome.dead_cards = config.dead_cards;
                 table.outcomes.push_back(outcome);
             }

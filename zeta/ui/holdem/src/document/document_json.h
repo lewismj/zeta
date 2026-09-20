@@ -19,7 +19,7 @@ namespace zeta::holdem::ui::document {
     };
 
     /**
-     * Parses either a UI document envelope or a legacy bare solver spot JSON object.
+     * Parses a current UI document envelope.
      */
     [[nodiscard]] std::expected<document_json_payload, document_error> parse_document_json(std::string_view text);
 

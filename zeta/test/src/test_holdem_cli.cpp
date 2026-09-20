@@ -66,6 +66,24 @@ namespace {
   "samples_per_combo": 4
 })";
 
+    // Hero (seat 0, "Th9s") already holds a royal flush on the Ah Kh Qh Jh turn
+    // board, so it wins at showdown on every possible river regardless of the
+    // dealt card. This makes the runout-averaged counterfactual value exactly
+    // hand-computable and independent of the CFR machinery.
+    constexpr const char* sample_spot_golden_turn = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["Ah", "Kh", "Qh", "Jh"],
+  "ranges": ["Th9s", "2c3d"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [50.0, 50.0],
+  "bet_fraction": 0.5,
+  "max_history": 4,
+  "hero_seat": 0
+})";
+
     constexpr const char* sample_spot_asymmetric_river = R"({
   "players": ["BTN", "BB"],
   "board": ["Ah", "Kd", "Qc", "Jh", "2s"],
@@ -122,30 +140,6 @@ BOOST_AUTO_TEST_CASE(holdem_cli_json_accepts_escaped_strings_and_reordered_field
     BOOST_CHECK_EQUAL(spot->stacks[1], 120.0);
 }
 
-BOOST_AUTO_TEST_CASE(holdem_cli_json_accepts_legacy_heads_up_fields) {
-    constexpr const char* json = R"({
-  "board": ["As", "Kd", "7c", "4h", "2s"],
-  "oop_range": "AhKh",
-  "ip_range": "QdJd",
-  "oop_contribution": 35.0,
-  "ip_contribution": 65.0,
-  "oop_stack": 90.0,
-  "ip_stack": 110.0,
-  "gross_pot": 100.0
-})";
-
-    auto spot = zeta::holdem::cli::parse_spot_json(json);
-
-    BOOST_REQUIRE(spot.has_value());
-    BOOST_REQUIRE_EQUAL(spot->players.size(), 2u);
-    BOOST_CHECK_EQUAL(spot->ranges[0], "AhKh");
-    BOOST_CHECK_EQUAL(spot->ranges[1], "QdJd");
-    BOOST_CHECK_EQUAL(spot->contributions[0], 35.0);
-    BOOST_CHECK_EQUAL(spot->contributions[1], 65.0);
-    BOOST_CHECK_EQUAL(spot->stacks[0], 90.0);
-    BOOST_CHECK_EQUAL(spot->stacks[1], 110.0);
-}
-
 BOOST_AUTO_TEST_CASE(holdem_cli_parses_betting_policy_json) {
     constexpr const char* json = R"({
   "players": ["BTN", "BB"],
@@ -192,6 +186,21 @@ BOOST_AUTO_TEST_CASE(holdem_cli_defaults_legacy_betting_policy_when_missing) {
     BOOST_CHECK_EQUAL(spot->betting_policy.fixed_pot_fractions.front(), 0.75);
     BOOST_CHECK_EQUAL(spot->betting_policy.max_raises, 1u);
     BOOST_CHECK_EQUAL(spot->bet_fraction, 0.75);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_json_rejects_removed_heads_up_legacy_aliases) {
+    constexpr const char* json = R"({
+  "board": ["As", "Kd", "7c", "4h", "2s"],
+  "oop_range": "AhKh",
+  "ip_range": "QdJd",
+  "oop_contribution": 35.0,
+  "ip_contribution": 65.0,
+  "oop_stack": 90.0,
+  "ip_stack": 110.0,
+  "gross_pot": 100.0
+})";
+
+    BOOST_CHECK(!zeta::holdem::cli::parse_spot_json(json).has_value());
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_json_rejects_wrong_types) {
@@ -292,7 +301,7 @@ BOOST_AUTO_TEST_CASE(holdem_cli_solve_produces_valid_artifact) {
     BOOST_CHECK(std::ranges::all_of(output->artifact.strategy, [](const auto& row) {
         return !row.strategy.empty();
     }));
-    BOOST_CHECK_EQUAL(output->artifact.schema_version, 1u);
+    BOOST_CHECK_EQUAL(output->artifact.schema_version, 3u);
     BOOST_CHECK_EQUAL(output->artifact.game, "holdem");
     BOOST_CHECK_EQUAL(output->artifact.street, "river");
     BOOST_CHECK_EQUAL(output->artifact.players.size(), 2u);
@@ -429,4 +438,83 @@ BOOST_AUTO_TEST_CASE(holdem_cli_solve_supports_turn_and_flop_streets) {
     BOOST_CHECK_EQUAL(flop_output->artifact.street, "flop");
     BOOST_CHECK_EQUAL(flop_output->artifact.board.size(), 3u);
     BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(flop_output->artifact).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_runout_solve_matches_hand_computed_ev) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    auto output = zeta::holdem::cli::solve_spot(*spot, 1);
+    BOOST_REQUIRE(output.has_value());
+    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(output->artifact).has_value());
+    BOOST_REQUIRE_EQUAL(output->artifact.strategy.size(), 1u);
+
+    // Independent hand computation of the runout-averaged counterfactual value:
+    //   - 52 cards - 4 board - 2 hero cards = 46 rivers are live for the hero.
+    //   - The villain ("2c3d") is blocked on exactly 2 of those rivers (2c, 3d),
+    //     contributing zero counterfactual value on those runouts.
+    //   - On the remaining 44 rivers the hero's royal flush wins, paying
+    //     (gross_pot - rake) - hero_contribution = 100 - 50 = 50.
+    constexpr double win_payoff = 50.0;
+    constexpr double live_rivers = 46.0;
+    constexpr double winning_rivers = 44.0;
+    constexpr double expected_ev = win_payoff * winning_rivers / live_rivers;
+    BOOST_CHECK_CLOSE(output->artifact.strategy.front().ev, expected_ev, 0.01);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_runout_solve_is_deterministic_across_worker_counts) {
+    auto flop_spot = zeta::holdem::cli::parse_spot_json(sample_spot_flop);
+    BOOST_REQUIRE(flop_spot.has_value());
+
+    auto single = zeta::holdem::cli::solve_spot(*flop_spot, 1, {.worker_threads = 1});
+    auto parallel = zeta::holdem::cli::solve_spot(*flop_spot, 1, {.worker_threads = 8});
+    BOOST_REQUIRE(single.has_value());
+    BOOST_REQUIRE(parallel.has_value());
+    BOOST_REQUIRE_EQUAL(single->artifact.strategy.size(), parallel->artifact.strategy.size());
+
+    // Runout evaluation is distributed across worker threads, but the ordered
+    // reduction must reproduce the single-worker result exactly (bit-identical).
+    for (std::size_t i = 0; i < single->artifact.strategy.size(); ++i) {
+        BOOST_CHECK_EQUAL(single->artifact.strategy[i].hand, parallel->artifact.strategy[i].hand);
+        BOOST_CHECK_EQUAL(single->artifact.strategy[i].ev, parallel->artifact.strategy[i].ev);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_nonriver_artifact_persists_runout_graph_payload) {
+    auto flop_spot = zeta::holdem::cli::parse_spot_json(sample_spot_flop);
+    BOOST_REQUIRE(flop_spot.has_value());
+
+    auto flop_output = zeta::holdem::cli::solve_spot(*flop_spot, 1, {.worker_threads = 2});
+    BOOST_REQUIRE(flop_output.has_value());
+    BOOST_CHECK_EQUAL(flop_output->artifact.schema_version, 3u);
+    BOOST_CHECK(!flop_output->artifact.public_states.empty());
+    BOOST_CHECK(!flop_output->artifact.chance_events.empty());
+    BOOST_CHECK(!flop_output->artifact.runouts.empty());
+    BOOST_CHECK(!flop_output->artifact.solved_nodes.empty());
+
+    const auto json = zeta::holdem::cli::serialize_artifact_json(flop_output->artifact);
+    auto parsed = zeta::holdem::cli::parse_artifact_json(json);
+    BOOST_REQUIRE(parsed.has_value());
+    BOOST_CHECK_EQUAL(parsed->public_states.size(), flop_output->artifact.public_states.size());
+    BOOST_CHECK_EQUAL(parsed->chance_events.size(), flop_output->artifact.chance_events.size());
+    BOOST_CHECK_EQUAL(parsed->runouts.size(), flop_output->artifact.runouts.size());
+    BOOST_CHECK_EQUAL(parsed->solved_nodes.size(), flop_output->artifact.solved_nodes.size());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_rejects_old_artifact_schema_versions) {
+    constexpr const char* json = R"({
+  "schema_version": 2,
+  "game": "holdem",
+  "street": "river",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Kd", "7c", "4h", "2s"],
+  "hero_seat": 0,
+  "solver": {"algorithm": "cfr+", "iterations": 1, "timestamp": "2026-08-01T19:47:11Z", "git_revision": "abc1234"},
+  "root_strategy": [{"action": "check", "frequency": 1.0}],
+  "strategy": [{"hand": "AhAd", "strategy": [{"action": "check", "frequency": 1.0}], "ev": 1.0}]
+})";
+
+    auto parsed = zeta::holdem::cli::parse_artifact_json(json);
+    BOOST_REQUIRE(!parsed);
+    BOOST_CHECK(parsed.error().kind == zeta::holdem::cli::cli_error_kind::invalid_artifact);
 }

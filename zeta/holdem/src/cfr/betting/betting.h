@@ -213,6 +213,34 @@ namespace zeta::holdem::cfr {
         uint64_t config_hash = 0;
     };
 
+    template <std::size_t N>
+    struct holdem_public_game_config {
+        solver::holdem_street street = solver::holdem_street::flop;
+        card_mask board_cards = 0;
+        card_mask dead_cards = 0;
+        std::array<utility, N> initial_stacks{};
+        std::array<utility, N> initial_committed{};
+        uint8_t root_actor = 0;
+        betting_abstraction_policy abstraction{};
+        uint16_t max_history = 8;
+        uint32_t public_state_id = 0;
+        solver::cfr_memory_plan_options memory_plan_options{};
+        solver::cfr_memory_plan_limits memory_plan_limits{};
+    };
+
+    template <std::size_t N>
+    struct holdem_public_game_graph {
+        game_graph graph{};
+        solver::solver_graph_annotations annotations{};
+        public_state_registry public_states{};
+        chance_event_table chance_events{};
+        runout_registry runouts{};
+        terminal_state_table<N> terminal_states{};
+        std::vector<solver::cfr_terminal_leaf> terminal_leaves{};
+        std::vector<solver::solver_node_state_metadata> rich_state_metadata{};
+        uint64_t deterministic_hash = 0;
+    };
+
     namespace detail {
 
         [[nodiscard]] inline uint64_t hash_combine(const uint64_t value, const uint64_t input) noexcept
@@ -1262,6 +1290,261 @@ namespace zeta::holdem::cfr {
             hash = detail::hash_combine(hash, state.variant_payload_id);
         }
         return hash;
+    }
+
+    [[nodiscard]] inline card_mask public_board_after_chance(const card_mask board_cards, const card_mask cards_dealt) noexcept
+    {
+        return board_cards | cards_dealt;
+    }
+
+    /**
+     * Lower a flop or turn spot into a runout-native public game.
+     *
+     * The lowered graph is the canonical public-card scaffold:
+     *
+     *   root player -> chance node -> one river terminal per complete runout
+     *
+     * The single chance node enumerates every blocker-safe completion of the board
+     * to the river (two cards from a flop, one card from a turn). Each outcome is a
+     * distinct river public state bound to its own showdown terminal. This keeps
+     * public-state identity, chance-event identity, and complete-runout identity in
+     * exact one-to-one correspondence with the enumerated board completions, which is
+     * the correctness baseline the runout-aware solver and persistence layers consume.
+     */
+    template <std::size_t N>
+    [[nodiscard]] std::expected<holdem_public_game_graph<N>, betting_validation_error> lower_public_game_tree(
+        const holdem_public_game_config<N>& config)
+    {
+        const auto root_street = config.street;
+        if (root_street != solver::holdem_street::flop && root_street != solver::holdem_street::turn) {
+            return std::unexpected(betting_validation_error{
+                .kind = betting_validation_error_kind::invalid_terminal_state,
+                .state_id = static_cast<uint32_t>(root_street)
+            });
+        }
+
+        const auto board_count = detail::card_count(config.board_cards);
+        if ((config.board_cards & config.dead_cards) != 0u
+            || board_count + 1u > 5u
+            || board_count == 5u) {
+            return std::unexpected(betting_validation_error{
+                .kind = betting_validation_error_kind::invalid_terminal_state,
+                .state_id = 0u
+            });
+        }
+        const auto cards_to_deal = static_cast<uint8_t>(5u - board_count);
+
+        auto outcomes = enumerate_public_card_outcomes(config.board_cards, config.dead_cards, cards_to_deal);
+        if (outcomes.empty()) {
+            return std::unexpected(betting_validation_error{
+                .kind = betting_validation_error_kind::invalid_terminal_state,
+                .state_id = 0u
+            });
+        }
+
+        graph_builder builder;
+        const auto root_player = builder.add_node(node_kind::player);
+        builder.set_infoset_id(root_player, 0u);
+        builder.set_root(root_player);
+        const auto chance_node = builder.add_node(node_kind::chance);
+        builder.add_edge(root_player, chance_node, 0u);
+
+        struct river_leaf {
+            uint32_t builder_node = game_graph::INVALID_NODE;
+            card_mask board_cards = 0u;
+            card_mask dealt_cards = 0u;
+            chance_outcome_id outcome_id = INVALID_CHANCE_OUTCOME_ID;
+            float probability = 0.0f;
+        };
+        std::vector<river_leaf> leaves;
+        leaves.reserve(outcomes.size());
+        for (uint32_t outcome_index = 0; outcome_index < static_cast<uint32_t>(outcomes.size()); ++outcome_index) {
+            const auto& outcome = outcomes[outcome_index];
+            const auto leaf_node = builder.add_node(node_kind::terminal);
+            builder.add_edge(chance_node, leaf_node, static_cast<uint16_t>(outcome_index));
+            leaves.push_back(river_leaf{
+                .builder_node = leaf_node,
+                .board_cards = public_board_after_chance(config.board_cards, outcome.cards),
+                .dealt_cards = outcome.cards,
+                .outcome_id = static_cast<chance_outcome_id>(outcome_index),
+                .probability = outcome.probability
+            });
+        }
+
+        std::vector<uint32_t> node_remap;
+        auto graph_result = builder.build(node_remap);
+        if (!graph_result) {
+            return std::unexpected(betting_validation_error{
+                .kind = betting_validation_error_kind::graph_build_failed,
+                .graph_error = graph_result.error()
+            });
+        }
+
+        holdem_public_game_graph<N> lowered{};
+        lowered.graph = std::move(*graph_result);
+        const auto node_count = lowered.graph.node_count;
+        lowered.annotations.actor_by_node.assign(node_count, solver::INVALID_PLAYER);
+        lowered.annotations.chance_event_id_by_node.assign(node_count, solver::INVALID_METADATA_ID);
+        lowered.annotations.terminal_leaf_id_by_node.assign(node_count, solver::INVALID_METADATA_ID);
+        lowered.annotations.state_by_node.assign(node_count, {});
+        lowered.terminal_leaves.assign(node_count, solver::cfr_terminal_leaf{});
+        lowered.rich_state_metadata.assign(node_count, {});
+
+        const auto root_node = node_remap[root_player];
+        const auto chance_final = node_remap[chance_node];
+
+        public_state_registry registry;
+        registry.states.push_back(public_board_state{
+            .id = 0u,
+            .street = root_street,
+            .board_cards = config.board_cards,
+            .is_root_state = true,
+            .is_terminal_river_state = false
+        });
+        registry.root_public_state_id = 0u;
+        registry.state_id_by_node.assign(node_count, INVALID_PUBLIC_STATE_ID);
+
+        // Each terminal leaf maps to a distinct river public state (boards are unique
+        // by construction because outcomes enumerate disjoint card completions).
+        std::vector<public_state_id> river_state_by_final_node(node_count, INVALID_PUBLIC_STATE_ID);
+        for (const auto& leaf : leaves) {
+            const auto final_node = node_remap[leaf.builder_node];
+            const auto state_id = static_cast<public_state_id>(registry.states.size());
+
+            card_mask dealt_turn = 0u;
+            card_mask dealt_river = leaf.dealt_cards;
+            if (cards_to_deal == 2u) {
+                dealt_turn = leaf.dealt_cards & (~leaf.dealt_cards + card_mask{1});
+                dealt_river = leaf.dealt_cards ^ dealt_turn;
+            }
+
+            registry.states.push_back(public_board_state{
+                .id = state_id,
+                .street = solver::holdem_street::river,
+                .board_cards = leaf.board_cards,
+                .parent_state_id = registry.root_public_state_id,
+                .chance_event_id_from_parent = 0u,
+                .chance_outcome_id_from_parent = leaf.outcome_id,
+                .is_root_state = false,
+                .is_terminal_river_state = true
+            });
+            river_state_by_final_node[final_node] = state_id;
+
+            lowered.runouts.runouts.push_back(complete_runout{
+                .id = static_cast<runout_id>(lowered.runouts.runouts.size()),
+                .root_public_state_id = registry.root_public_state_id,
+                .river_public_state_id = state_id,
+                .dealt_turn = dealt_turn,
+                .dealt_river = dealt_river
+            });
+            lowered.runouts.river_public_state_by_runout.push_back(state_id);
+        }
+
+        // Build the single chance event with outcomes aligned to the chance node's edges.
+        chance_event_table chance_events;
+        chance_events.event_id_by_node.assign(node_count, INVALID_CHANCE_EVENT);
+        const auto chance_edges = lowered.graph.out_edges(chance_final);
+        chance_events.event_id_by_node[chance_final] = 0u;
+        chance_events.events.push_back(chance_event{
+            .node_id = chance_final,
+            .first_outcome = 0u,
+            .outcome_count = static_cast<uint32_t>(chance_edges.size()),
+            .kind = cards_to_deal == 1u ? public_chance_event_kind::river : public_chance_event_kind::none,
+            .board_cards = config.board_cards,
+            .dead_cards = config.dead_cards
+        });
+        for (const auto& edge : chance_edges) {
+            const auto river_state_id = river_state_by_final_node[edge.child_node];
+            const auto dealt_cards = river_state_id == INVALID_PUBLIC_STATE_ID
+                ? card_mask{0}
+                : (registry.states[river_state_id].board_cards ^ config.board_cards);
+            chance_events.outcomes.push_back(chance_outcome{
+                .child_node = edge.child_node,
+                .action_index = edge.action_index,
+                .probability = 1.0f / static_cast<float>(chance_edges.size()),
+                .board_partition_id = edge.action_index,
+                .outcome_id = edge.action_index,
+                .cards = dealt_cards,
+                .dead_cards = config.dead_cards,
+                .legal = true
+            });
+        }
+        lowered.chance_events = std::move(chance_events);
+
+        auto river_terminal_state = [&]() {
+            auto state = make_initial_betting_state(holdem_betting_graph_config<N>{
+                .street = solver::holdem_street::river,
+                .initial_stacks = config.initial_stacks,
+                .initial_committed = config.initial_committed,
+                .root_actor = config.root_actor,
+                .abstraction = config.abstraction,
+                .max_history = config.max_history,
+                .public_state_id = registry.root_public_state_id
+            });
+            state.terminal_kind = terminal_state_kind::showdown;
+            return detail::make_terminal_state_from_betting(state);
+        }();
+
+        for (uint32_t node_id = 0; node_id < node_count; ++node_id) {
+            const auto kind = lowered.graph.node_types[node_id];
+            const auto river_state_id = river_state_by_final_node[node_id];
+            const auto state_id = river_state_id == INVALID_PUBLIC_STATE_ID
+                ? registry.root_public_state_id
+                : river_state_id;
+
+            registry.state_id_by_node[node_id] = state_id;
+            lowered.annotations.state_by_node[node_id] = solver::solver_node_state_metadata{
+                .street = registry.states[state_id].street,
+                .public_state_id = state_id,
+                .betting_state_id = node_id
+            };
+            lowered.rich_state_metadata[node_id] = lowered.annotations.state_by_node[node_id];
+
+            if (kind == node_kind::player) {
+                lowered.annotations.actor_by_node[node_id] = config.root_actor;
+            }
+            if (kind == node_kind::chance) {
+                lowered.annotations.chance_event_id_by_node[node_id] = 0u;
+            }
+            if (kind == node_kind::terminal) {
+                const auto terminal_leaf_id = static_cast<uint32_t>(lowered.terminal_states.states.size());
+                lowered.annotations.terminal_leaf_id_by_node[node_id] = terminal_leaf_id;
+                lowered.terminal_leaves[node_id].terminal_state_id = terminal_leaf_id;
+                lowered.terminal_states.states.push_back(river_terminal_state);
+            }
+        }
+
+        lowered.public_states = std::move(registry);
+
+        if (auto registry_result = validate_public_state_registry(lowered.public_states, node_count); !registry_result) {
+            return std::unexpected(betting_validation_error{
+                .kind = betting_validation_error_kind::invalid_terminal_state,
+                .node_id = static_cast<uint32_t>(registry_result.error().state_id)
+            });
+        }
+        if (auto chance_result = validate_chance_event_table(lowered.graph, lowered.chance_events); !chance_result) {
+            return std::unexpected(betting_validation_error{
+                .kind = betting_validation_error_kind::graph_build_failed,
+                .node_id = chance_result.error().node_id,
+                .graph_error = graph_build_error{graph_build_error_kind::invalid_graph}
+            });
+        }
+        if (auto graph_view_result = validate_solver_graph_view(make_solver_graph_view<N>(lowered.graph, lowered.annotations)); !graph_view_result) {
+            return std::unexpected(betting_validation_error{
+                .kind = betting_validation_error_kind::graph_build_failed,
+                .node_id = graph_view_result.error().node_id,
+                .graph_error = graph_build_error{graph_build_error_kind::invalid_graph}
+            });
+        }
+        if (auto runout_result = validate_runout_registry(lowered.runouts); !runout_result) {
+            return std::unexpected(betting_validation_error{
+                .kind = betting_validation_error_kind::invalid_terminal_state,
+                .node_id = static_cast<uint32_t>(runout_result.error().state_id)
+            });
+        }
+
+        lowered.deterministic_hash = hash_betting_abstraction_policy(config.abstraction);
+        return lowered;
     }
 
     template <std::size_t N>

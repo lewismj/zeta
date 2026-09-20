@@ -217,22 +217,23 @@ namespace zeta::holdem::ui::document {
         boost::system::error_code ec;
         auto value = json::parse(text, ec);
         if (ec || !value.is_object()) {
-            auto parsed_spot = cli::parse_spot_json(text);
-            if (!parsed_spot) {
-                return std::unexpected(from_cli_error(parsed_spot.error()));
-            }
-            payload.spot = std::move(*parsed_spot);
-            return payload;
+            return std::unexpected(document_error{document_error_kind::parse, "Document JSON must be an object."});
         }
 
         const auto& root = value.as_object();
-        if (find_value(root, "document_schema_version") == nullptr) {
-            auto parsed_spot = cli::parse_spot_json(text);
-            if (!parsed_spot) {
-                return std::unexpected(from_cli_error(parsed_spot.error()));
-            }
-            payload.spot = std::move(*parsed_spot);
-            return payload;
+        const auto* schema_version = find_value(root, "document_schema_version");
+        if (schema_version == nullptr) {
+            return std::unexpected(document_error{document_error_kind::parse, "Missing document_schema_version field."});
+        }
+        if (!schema_version->is_int64() && !schema_version->is_uint64()) {
+            return std::unexpected(document_error{document_error_kind::parse, "document_schema_version must be an integer."});
+        }
+        const auto schema_number = schema_version->is_uint64()
+            ? schema_version->as_uint64()
+            : static_cast<uint64_t>(schema_version->as_int64());
+        if (schema_number != 3u) {
+            return std::unexpected(document_error{document_error_kind::invalid_document,
+                "Unsupported document_schema_version. Only version 3 is accepted."});
         }
 
         const auto* spot_value = find_value(root, "spot");
@@ -316,7 +317,7 @@ namespace zeta::holdem::ui::document {
         }
 
         json::object root;
-        root["document_schema_version"] = 1;
+        root["document_schema_version"] = 3;
         root["metadata"] = std::move(metadata);
         root["spot"] = parse_serialized_json(cli::serialize_spot_json(payload.spot));
         root["artifact"] = payload.artifact ? parse_serialized_json(cli::serialize_artifact_json(*payload.artifact)) : json::value{nullptr};

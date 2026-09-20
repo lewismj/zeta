@@ -291,6 +291,12 @@ namespace zeta::holdem::cfr {
 
     std::expected<game_graph, graph_build_error> graph_builder::build()
     {
+        std::vector<uint32_t> discarded_remap;
+        return build(discarded_remap);
+    }
+
+    std::expected<game_graph, graph_build_error> graph_builder::build(std::vector<uint32_t>& out_node_remap)
+    {
         if (finalized_) {
             return std::unexpected(graph_build_error{graph_build_error_kind::already_finalized});
         }
@@ -317,6 +323,7 @@ namespace zeta::holdem::cfr {
             return std::unexpected(result.error());
         }
 
+        out_node_remap = metadata_result->dfs_order;
         finalized_ = true;
         return graph;
     }

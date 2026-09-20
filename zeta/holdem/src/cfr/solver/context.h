@@ -20,6 +20,27 @@ namespace zeta::holdem::cfr::solver {
      * lifetimes for the solver loop. Iterations should traverse this context
      * directly rather than rebuilding terminal reach indices or table layouts.
      */
+    struct runout_solver_context {
+        game_graph* graph = nullptr;
+        solver_graph_annotations* graph_annotations = nullptr;
+        cfr::public_state_registry* public_states = nullptr;
+        cfr::chance_event_table* chance_events = nullptr;
+        cfr::runout_registry* runouts = nullptr;
+        cfr::runout_terminal_table* terminals = nullptr;
+        action_table_layout* layout = nullptr;
+        regret_table* regrets = nullptr;
+        strategy_sum_table* strategy_sums = nullptr;
+        const infoset_owner_map* owner_map = nullptr;
+        numeric_policy numeric{};
+        reduction_policy reduction{};
+        chance_mode chance = chance_mode::enumerate;
+
+        [[nodiscard]] const cfr::runout_terminal_entry* terminal_for_state(const cfr::public_state_id state_id) const noexcept
+        {
+            return terminals == nullptr ? nullptr : terminals->find(state_id);
+        }
+    };
+
     struct cfr_context {
         game_graph graph;
         river_solver_context river;
@@ -27,6 +48,38 @@ namespace zeta::holdem::cfr::solver {
         regret_table regrets;
         strategy_sum_table strategy_sums;
     };
+
+    [[nodiscard]] inline runout_solver_context make_runout_solver_context(
+        game_graph* graph = nullptr,
+        solver_graph_annotations* graph_annotations = nullptr,
+        cfr::public_state_registry* public_states = nullptr,
+        cfr::chance_event_table* chance_events = nullptr,
+        cfr::runout_registry* runouts = nullptr,
+        cfr::runout_terminal_table* terminals = nullptr,
+        action_table_layout* layout = nullptr,
+        regret_table* regrets = nullptr,
+        strategy_sum_table* strategy_sums = nullptr,
+        const infoset_owner_map* owner_map = nullptr,
+        const numeric_policy numeric = {},
+        const reduction_policy reduction = {},
+        const chance_mode chance = chance_mode::enumerate) noexcept
+    {
+        return runout_solver_context{
+            .graph = graph,
+            .graph_annotations = graph_annotations,
+            .public_states = public_states,
+            .chance_events = chance_events,
+            .runouts = runouts,
+            .terminals = terminals,
+            .layout = layout,
+            .regrets = regrets,
+            .strategy_sums = strategy_sums,
+            .owner_map = owner_map,
+            .numeric = numeric,
+            .reduction = reduction,
+            .chance = chance
+        };
+    }
 
     enum class cfr_context_planning_error_kind : uint8_t {
         table_layout,

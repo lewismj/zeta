@@ -13,6 +13,7 @@
 #include "cfr/solver/river_context.h"
 #include "cfr/tables/delta_buffer.h"
 #include "cfr/traversal/traversal.h"
+#include "terminal/workspace.h"
 
 #include <array>
 #include <atomic>
@@ -453,6 +454,165 @@ BOOST_AUTO_TEST_CASE(player_mask_backs_generic_terminal_masks) {
     BOOST_REQUIRE_EQUAL(pot.pots.size(), 1u);
     BOOST_CHECK(pot.pots[0].eligible[1]);
     BOOST_CHECK(pot.pots[0].eligible[3]);
+}
+
+BOOST_AUTO_TEST_CASE(public_state_registry_validates_unique_board_cards_and_root_links) {
+    public_state_registry registry;
+    registry.states = {
+        public_board_state{
+            .id = 0,
+            .street = holdem_street::flop,
+            .board_cards = card(0, 0) | card(1, 1),
+            .is_root_state = true
+        },
+        public_board_state{
+            .id = 1,
+            .street = holdem_street::turn,
+            .board_cards = card(0, 0) | card(1, 1) | card(2, 2),
+            .parent_state_id = 0,
+            .chance_event_id_from_parent = 0,
+            .chance_outcome_id_from_parent = 0
+        },
+        public_board_state{
+            .id = 2,
+            .street = holdem_street::river,
+            .board_cards = card(0, 0) | card(1, 1) | card(2, 2) | card(3, 3),
+            .parent_state_id = 1,
+            .chance_event_id_from_parent = 1,
+            .chance_outcome_id_from_parent = 1
+        }
+    };
+    registry.state_id_by_node = {0, 1, 2};
+    registry.root_public_state_id = 0;
+
+    auto valid = validate_public_state_registry(registry);
+    BOOST_REQUIRE(valid.has_value());
+
+    registry.states[2].board_cards = registry.states[0].board_cards;
+    auto duplicate = validate_public_state_registry(registry);
+    BOOST_REQUIRE(!duplicate);
+    BOOST_CHECK(duplicate.error().kind == public_state_registry_error_kind::duplicate_board_cards);
+}
+
+BOOST_AUTO_TEST_CASE(runout_registry_validates_complete_root_to_river_paths) {
+    runout_registry registry;
+    registry.runouts = {
+        complete_runout{
+            .id = 0,
+            .root_public_state_id = 0,
+            .river_public_state_id = 2,
+            .dealt_turn = card(0, 3),
+            .dealt_river = card(1, 4)
+        },
+        complete_runout{
+            .id = 1,
+            .root_public_state_id = 0,
+            .river_public_state_id = 3,
+            .dealt_turn = card(0, 5),
+            .dealt_river = card(1, 6)
+        }
+    };
+    registry.river_public_state_by_runout = {2, 3};
+
+    auto valid = validate_runout_registry(registry);
+    BOOST_REQUIRE(valid.has_value());
+
+    registry.river_public_state_by_runout[1] = 99;
+    auto mismatched = validate_runout_registry(registry);
+    BOOST_REQUIRE(!mismatched);
+    BOOST_CHECK(mismatched.error().kind == runout_registry_error_kind::invalid_river_path);
+}
+
+BOOST_AUTO_TEST_CASE(public_game_lowering_builds_public_state_and_chance_registry) {
+    holdem_public_game_config<2> config{};
+    config.street = holdem_street::flop;
+    config.board_cards = card(0, 0) | card(1, 1) | card(2, 2);
+    config.dead_cards = card(3, 5);
+    config.initial_stacks = {100.0, 100.0};
+    config.initial_committed = {0.0, 0.0};
+    config.root_actor = 0;
+    config.abstraction = make_single_size_policy(0.5).value();
+
+    auto lowered = lower_public_game_tree(config);
+    if (!lowered) {
+        BOOST_TEST_MESSAGE("lower_public_game_tree failed with kind="
+            << static_cast<int>(lowered.error().kind)
+            << " node_id=" << lowered.error().node_id
+            << " state_id=" << lowered.error().state_id);
+    }
+    BOOST_REQUIRE(lowered.has_value());
+    BOOST_REQUIRE_GE(lowered->graph.node_count, 3u);
+    BOOST_REQUIRE_EQUAL(lowered->chance_events.events.size(), 1u);
+    BOOST_REQUIRE_EQUAL(lowered->public_states.root_public_state_id, 0u);
+    BOOST_CHECK(validate_public_state_registry(lowered->public_states, lowered->graph.node_count).has_value());
+    BOOST_CHECK(validate_chance_event_table(lowered->graph, lowered->chance_events).has_value());
+    BOOST_CHECK(validate_runout_registry(lowered->runouts).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(public_game_lowering_runout_probabilities_form_valid_distribution) {
+    holdem_public_game_config<2> config{};
+    config.street = holdem_street::flop;
+    config.board_cards = card(0, 0) | card(1, 1) | card(2, 2);
+    config.dead_cards = card(3, 5);
+    config.initial_stacks = {100.0, 100.0};
+    config.initial_committed = {0.0, 0.0};
+    config.root_actor = 0;
+    config.abstraction = make_single_size_policy(0.5).value();
+
+    auto lowered = lower_public_game_tree(config);
+    BOOST_REQUIRE(lowered.has_value());
+    BOOST_REQUIRE(!lowered->runouts.runouts.empty());
+
+    // (a) Every chance event's outcome probabilities form a normalized distribution.
+    for (const auto& event : lowered->chance_events.events) {
+        double event_mass = 0.0;
+        for (const auto& outcome : lowered->chance_events.event_outcomes(event)) {
+            BOOST_CHECK_GE(outcome.probability, 0.0f);
+            event_mass += static_cast<double>(outcome.probability);
+        }
+        BOOST_CHECK_CLOSE(event_mass, 1.0, 1e-4);
+    }
+
+    const auto& events = lowered->chance_events.events;
+    auto outcome_probability = [&](const chance_event_id event_id,
+                                   const chance_outcome_id outcome_id) -> double {
+        if (event_id >= events.size()) {
+            return 0.0;
+        }
+        for (const auto& outcome : lowered->chance_events.event_outcomes(events[event_id])) {
+            if (outcome.outcome_id == outcome_id) {
+                return static_cast<double>(outcome.probability);
+            }
+        }
+        return 0.0;
+    };
+
+    // Product of chance probabilities along the root-to-river path of a runout.
+    const auto& states = lowered->public_states.states;
+    auto path_probability = [&](public_state_id river_state_id) -> double {
+        double probability = 1.0;
+        auto current = river_state_id;
+        while (current != INVALID_PUBLIC_STATE_ID && current < states.size()) {
+            const auto& state = states[current];
+            if (state.is_root_state
+                || state.chance_event_id_from_parent == INVALID_CHANCE_EVENT) {
+                break;
+            }
+            probability *= outcome_probability(
+                state.chance_event_id_from_parent,
+                state.chance_outcome_id_from_parent);
+            current = state.parent_state_id;
+        }
+        return probability;
+    };
+
+    // (b) Runout path probabilities partition the full runout distribution: summing
+    //     the product of chance probabilities over every runout recovers 1.0.
+    double total_mass = 0.0;
+    for (const auto& runout : lowered->runouts.runouts) {
+        total_mass += path_probability(runout.river_public_state_id);
+    }
+    BOOST_CHECK_CLOSE(total_mass, 1.0, 1e-4);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -1677,6 +1837,54 @@ BOOST_AUTO_TEST_CASE(traversal_rejects_invalid_terminal_state_reference) {
     BOOST_REQUIRE(!result);
     BOOST_CHECK(result.error().kind == traversal_error_kind::invalid_terminal_context);
     BOOST_CHECK_EQUAL(result.error().node_id, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(runout_terminal_table_materializes_river_cache_by_public_state) {
+    const auto river_mask = deterministic_river_board().mask;
+    const public_board_state root{
+        .id = 0,
+        .street = holdem_street::flop,
+        .board_cards = 0,
+        .is_root_state = true
+    };
+    const public_board_state river_state{
+        .id = 1,
+        .street = holdem_street::river,
+        .board_cards = river_mask,
+        .parent_state_id = 0,
+        .chance_event_id_from_parent = 5,
+        .chance_outcome_id_from_parent = 7,
+        .is_terminal_river_state = true
+    };
+
+    const auto table = make_runout_terminal_table(std::array<public_board_state, 2>{root, river_state});
+    BOOST_REQUIRE_EQUAL(table.entries.size(), 1u);
+    BOOST_REQUIRE_EQUAL(table.entry_id_by_public_state[1], 0u);
+    BOOST_CHECK_EQUAL(table.entries[0].public_state, 1u);
+    BOOST_CHECK_EQUAL(table.entries[0].river_board.mask, river_mask);
+    BOOST_CHECK_EQUAL(table.entries[0].cache.board_hash, static_cast<uint64_t>(river_mask));
+}
+
+BOOST_AUTO_TEST_CASE(runout_terminal_worker_cache_reuses_materialized_river_reach_indices) {
+    const auto river_mask = deterministic_river_board().mask;
+    const public_board_state river_state{
+        .id = 1,
+        .street = holdem_street::river,
+        .board_cards = river_mask,
+        .is_terminal_river_state = true
+    };
+
+    const auto table = make_runout_terminal_table(std::array<public_board_state, 1>{river_state});
+    std::array<zeta::holdem::reach_vector, 2> ranges{};
+    zeta::holdem::runout_terminal_worker_cache<2> worker{};
+
+    auto result = worker.get_or_materialize_reach_indices(1u, table, ranges);
+
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK_EQUAL(worker.current_public_state, 1u);
+    BOOST_REQUIRE_EQUAL(result->size(), 2u);
+    BOOST_CHECK_EQUAL((*result)[0].board_hash, static_cast<uint64_t>(river_mask));
+    BOOST_CHECK_EQUAL((*result)[1].board_hash, static_cast<uint64_t>(river_mask));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -3547,4 +3755,3 @@ BOOST_AUTO_TEST_CASE(validate_rejects_duplicate_destinations) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
-

@@ -77,6 +77,15 @@ namespace zeta::holdem::cfr {
          */
         std::expected<game_graph, graph_build_error> build();
 
+        /**
+         * Build the immutable game_graph and report the DFS post-order remapping.
+         *
+         * out_node_remap is resized to the builder node count and populated so that
+         * out_node_remap[old_id] == final_node_id. This lets callers translate
+         * pre-build node metadata (chance events, terminal boards) onto final ids.
+         */
+        std::expected<game_graph, graph_build_error> build(std::vector<uint32_t>& out_node_remap);
+
     private:
         std::vector<std::vector<edge>> edges_by_node_;  /**< Edges organized per node. */
         std::vector<node_kind> node_types_;

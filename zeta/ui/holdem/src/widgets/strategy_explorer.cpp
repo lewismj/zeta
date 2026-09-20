@@ -155,7 +155,7 @@ namespace zeta::holdem::ui::widgets {
         QWidget* parent)
         : QWidget(parent)
         , model_(viewmodels::make_strategy_view_model(source, artifact))
-        , solution_(std::move(solution).value_or(solver::make_root_only_solution_store(source, artifact)))
+        , solution_(std::move(solution).value_or(solver::make_action_tree_solution_store(source, artifact)))
         , metrics_(metrics)
         , active_node_id_(q(solution_.root_node_id))
     {
@@ -172,7 +172,7 @@ namespace zeta::holdem::ui::widgets {
         : strategy_explorer(
             source,
             artifact,
-            solver::make_root_only_solution_store(source, artifact),
+            solver::make_action_tree_solution_store(source, artifact),
             metrics,
             parent)
     {
@@ -418,8 +418,11 @@ namespace zeta::holdem::ui::widgets {
             path.push_back(display_action_text(action));
         }
         node_breadcrumb_->setText(path.join(QStringLiteral(" / ")));
-        node_state_->setText(tr("Actor %1 | pot %2 | commitments %3 | stacks %4")
+        const auto board_text = node->board.empty() ? QStringLiteral("-") : blocked_text(node->board);
+        node_state_->setText(tr("Type %1 | Actor %2 | board %3 | pot %4 | commitments %5 | stacks %6")
+            .arg(q(node->kind))
             .arg(seat_text(solution_, node->acting_seat))
+            .arg(board_text)
             .arg(node->table_state.pot, 0, 'f', 2)
             .arg(node->table_state.commitments.size())
             .arg(node->table_state.stacks.size()));
@@ -580,7 +583,8 @@ namespace zeta::holdem::ui::widgets {
 
     bool strategy_explorer::active_node_has_combo_strategy() const
     {
-        return active_node_id_.toStdString() == solution_.root_node_id;
+        const auto* node = solver::find_solution_node(solution_, active_node_id_.toStdString());
+        return node != nullptr && node->kind == "player" && active_node_id_.toStdString() == solution_.root_node_id;
     }
 
 }

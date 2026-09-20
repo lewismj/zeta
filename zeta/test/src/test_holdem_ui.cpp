@@ -333,7 +333,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_document_json_accepts_reordered_envelope_escaped_
     "players": ["BT\"N", "B\\B"],
     "street": "river"
   },
-  "document_schema_version": 1
+  "document_schema_version": 3
 })";
 
     auto parsed = zeta::holdem::ui::document::parse_document_json(json);
@@ -351,13 +351,13 @@ BOOST_AUTO_TEST_CASE(holdem_ui_document_json_accepts_reordered_envelope_escaped_
 
 BOOST_AUTO_TEST_CASE(holdem_ui_document_json_rejects_missing_spot_and_invalid_history_entries) {
     constexpr const char* missing_spot = R"({
-  "document_schema_version": 1,
+  "document_schema_version": 3,
   "metadata": {},
   "artifact": null,
   "recent_history": []
 })";
     constexpr const char* invalid_history = R"({
-  "document_schema_version": 1,
+  "document_schema_version": 3,
   "spot": {
     "players": ["BTN", "BB"],
     "board": ["As", "Kd", "7c", "4h", "2s"],
@@ -927,41 +927,38 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_filters_hands_and_formats_ev)
     BOOST_CHECK_EQUAL(zeta::holdem::ui::viewmodels::format_strategy_percent(0.625), "62.5%");
 }
 
-BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_migrates_legacy_artifact_to_root_only_fallback) {
-    const auto spot_json = zeta::holdem::cli::serialize_spot_json(sample_strategy_spot());
-    const auto artifact_json = zeta::holdem::cli::serialize_artifact_json(sample_strategy_artifact());
-    const auto document_json = std::string{R"({
-  "document_schema_version": 1,
-  "metadata": {},
-  "spot": )"} + spot_json + R"(,
-  "artifact": )" + artifact_json + R"(,
-  "recent_history": []
-})";
-
-    const auto parsed = zeta::holdem::ui::spot_document::parse_json(document_json);
-
-    BOOST_REQUIRE(parsed.has_value());
-    BOOST_REQUIRE(parsed->artifact().has_value());
-    BOOST_REQUIRE(parsed->solution().has_value());
-    BOOST_CHECK(parsed->solution()->compatibility_mode == zeta::holdem::ui::solver::solution_compatibility_mode::root_only_artifact);
-    const auto* root = zeta::holdem::ui::solver::root_solution_node(*parsed->solution());
-    BOOST_REQUIRE(root != nullptr);
-    BOOST_CHECK_EQUAL(root->node_id, "root");
-    BOOST_CHECK_EQUAL(root->acting_seat, sample_strategy_spot().root_actor);
-    BOOST_REQUIRE_EQUAL(root->average_strategy.size(), 3u);
-    BOOST_CHECK(std::ranges::any_of(root->average_strategy, [](const auto& action) {
-        return action.action == "check";
-    }));
-    BOOST_CHECK(!parsed->solution()->diagnostics.empty());
-}
-
-BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_saves_reopens_action_tree_nodes_and_root_frequencies) {
+BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_roundtrips_action_tree_without_compatibility_shims) {
     auto spot = sample_strategy_spot();
     spot.max_history = 2;
-    const auto artifact = sample_strategy_artifact();
+    auto artifact = sample_strategy_artifact();
+    artifact.solved_nodes = {
+        zeta::holdem::cli::solved_node{
+            .node_id = 0,
+            .kind = "player",
+            .public_state_id = 3,
+            .parent_node_id = zeta::holdem::cfr::game_graph::INVALID_NODE,
+            .acting_seat = spot.root_actor,
+            .terminal = false,
+            .board = artifact.board,
+            .actions = {
+                zeta::holdem::cli::solved_node_action{.action = "fold", .child_node_id = 1, .action_index = 0},
+                zeta::holdem::cli::solved_node_action{.action = "call", .child_node_id = 2, .action_index = 1},
+                zeta::holdem::cli::solved_node_action{.action = "raise_50", .child_node_id = 3, .action_index = 2}
+            },
+            .strategy = artifact.root_strategy
+        },
+        zeta::holdem::cli::solved_node{
+            .node_id = 1,
+            .kind = "terminal",
+            .public_state_id = 3,
+            .parent_node_id = 0,
+            .acting_seat = zeta::holdem::ui::solver::invalid_solution_seat,
+            .terminal = true,
+            .board = artifact.board
+        }
+    };
     auto solution = zeta::holdem::ui::solver::make_action_tree_solution_store(spot, artifact);
 
-    BOOST_CHECK(solution.compatibility_mode == zeta::holdem::ui::solver::solution_compatibility_mode::action_tree);
     const auto* root = zeta::holdem::ui::solver::root_solution_node(solution);
     BOOST_REQUIRE(root != nullptr);
     BOOST_CHECK_EQUAL(root->acting_seat, spot.root_actor);
@@ -977,13 +974,15 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_saves_reopens_action_tree_nodes_an
     const auto reopened = zeta::holdem::ui::spot_document::parse_json(document.serialize_json());
     BOOST_REQUIRE(reopened.has_value());
     BOOST_REQUIRE(reopened->solution().has_value());
-    BOOST_CHECK(reopened->solution()->compatibility_mode == zeta::holdem::ui::solver::solution_compatibility_mode::action_tree);
     const auto* reopened_root = zeta::holdem::ui::solver::root_solution_node(*reopened->solution());
     BOOST_REQUIRE(reopened_root != nullptr);
     BOOST_REQUIRE(!reopened_root->children.empty());
+    BOOST_CHECK_EQUAL(reopened_root->kind, "player");
+    BOOST_CHECK_EQUAL(reopened_root->board.size(), 5u);
     const auto* child = zeta::holdem::ui::solver::find_solution_node(*reopened->solution(), reopened_root->children.front());
     BOOST_REQUIRE(child != nullptr);
-    BOOST_REQUIRE_EQUAL(child->path.size(), 1u);
+    BOOST_CHECK_EQUAL(child->kind, "terminal");
+    BOOST_CHECK_EQUAL(child->graph_node_id, 1u);
     BOOST_CHECK_EQUAL(child->table_state.commitments.size(), spot.players.size());
 }
 
@@ -1023,6 +1022,45 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
     auto spot = sample_strategy_spot();
     spot.max_history = 2;
     auto artifact = sample_strategy_artifact();
+    artifact.solved_nodes = {
+        zeta::holdem::cli::solved_node{
+            .node_id = 0,
+            .kind = "player",
+            .public_state_id = 3,
+            .parent_node_id = zeta::holdem::cfr::game_graph::INVALID_NODE,
+            .acting_seat = spot.root_actor,
+            .terminal = false,
+            .board = artifact.board,
+            .actions = {
+                zeta::holdem::cli::solved_node_action{.action = "fold", .child_node_id = 1, .action_index = 0},
+                zeta::holdem::cli::solved_node_action{.action = "call", .child_node_id = 2, .action_index = 1},
+                zeta::holdem::cli::solved_node_action{.action = "raise_50", .child_node_id = 3, .action_index = 2}
+            },
+            .strategy = artifact.root_strategy
+        },
+        zeta::holdem::cli::solved_node{
+            .node_id = 1,
+            .kind = "chance",
+            .public_state_id = 4,
+            .parent_node_id = 0,
+            .acting_seat = zeta::holdem::cfr::solver::INVALID_PLAYER,
+            .terminal = false,
+            .board = {"2s", "3d", "4c", "5h"},
+            .actions = {
+                zeta::holdem::cli::solved_node_action{.action = "deal", .child_node_id = 2, .action_index = 0, .probability = 0.5f, .chance_event_id = 0, .board_partition_id = 0, .chance_outcome_id = 0, .dealt_cards = {"6s"}},
+                zeta::holdem::cli::solved_node_action{.action = "deal", .child_node_id = 3, .action_index = 1, .probability = 0.5f, .chance_event_id = 0, .board_partition_id = 1, .chance_outcome_id = 1, .dealt_cards = {"6d"}}
+            }
+        },
+        zeta::holdem::cli::solved_node{
+            .node_id = 2,
+            .kind = "terminal",
+            .public_state_id = 5,
+            .parent_node_id = 1,
+            .acting_seat = zeta::holdem::ui::solver::invalid_solution_seat,
+            .terminal = true,
+            .board = artifact.board
+        }
+    };
     auto solution = zeta::holdem::ui::solver::make_action_tree_solution_store(spot, artifact);
 
     zeta::holdem::ui::widgets::strategy_explorer explorer{
@@ -1050,12 +1088,32 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
     BOOST_REQUIRE(tree->topLevelItem(0)->childCount() > 0);
     BOOST_CHECK_EQUAL(node_actions->rowCount(), 3);
     BOOST_CHECK(state->text().contains(QStringLiteral("BB")));
+    BOOST_CHECK(state->text().contains(QStringLiteral("board")));
 
     tree->setCurrentItem(tree->topLevelItem(0)->child(0));
     app.processEvents();
 
     BOOST_CHECK(breadcrumb->text().contains(QStringLiteral("Root /")));
     BOOST_CHECK_EQUAL(hand_table->rowCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_document_rejects_old_schema_versions) {
+    constexpr const char* json = R"({
+  "document_schema_version": 2,
+  "spot": {
+    "street": "river",
+    "players": ["BTN", "BB"],
+    "board": ["As", "Kd", "7c", "4h", "2s"],
+    "ranges": ["AA", "AA"]
+  },
+  "artifact": null,
+  "solution": null,
+  "recent_history": []
+})";
+
+    auto parsed = zeta::holdem::ui::document::parse_document_json(json);
+    BOOST_REQUIRE(!parsed);
+    BOOST_CHECK(parsed.error().kind == zeta::holdem::ui::document_error_kind::invalid_document);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_theme_registry_exposes_required_stage2_themes_and_tokens) {
@@ -1371,7 +1429,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_main_window_spot_json_paste_formats_and_syncs_str
     auto* raw_editor = qobject_cast<QPlainTextEdit*>(sub_tabs->widget(raw_index));
     BOOST_REQUIRE(raw_editor != nullptr);
     const auto before_paste = raw_editor->toPlainText();
-    QApplication::clipboard()->setText(QStringLiteral("{\"players\":[\"BTN\",\"BB\"],\"board\":[\"Ah\",\"Kd\",\"Qc\",\"Jh\",\"2s\"],\"oop_range\":\"AA,AKs,AQo\",\"ip_range\":\"AA,KK,QQ,AKo\",\"gross_pot\":100.0,\"rake\":0.0,\"oop_contribution\":50.0,\"ip_contribution\":50.0,\"oop_stack\":200.0,\"ip_stack\":200.0,\"bet_fraction\":0.75}"));
+    QApplication::clipboard()->setText(QStringLiteral("{\"players\":[\"BTN\",\"BB\"],\"board\":[\"Ah\",\"Kd\",\"Qc\",\"Jh\",\"2s\"],\"ranges\":[\"AA,AKs,AQo\",\"AA,KK,QQ,AKo\"],\"gross_pot\":100.0,\"rake\":0.0,\"contributions\":[50.0,50.0],\"stacks\":[200.0,200.0],\"bet_fraction\":0.75}"));
     raw_editor->selectAll();
     raw_editor->paste();
     app.processEvents();

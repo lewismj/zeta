@@ -175,6 +175,28 @@ namespace zeta::holdem::ui::widgets {
             return parts.join(QStringLiteral(", "));
         }
 
+        [[nodiscard]] bool is_geometric_policy(const cfr::betting_abstraction_policy& policy)
+        {
+            if (policy.fixed_pot_fractions.size() < 2u) {
+                return false;
+            }
+            if (policy.all_in_threshold > 0.99 && !policy.fixed_pot_fractions.empty()) {
+                return false;
+            }
+            if (std::ranges::any_of(policy.fixed_pot_fractions, [](const double value) {
+                    return value > 1.0;
+                })) {
+                return false;
+            }
+            if (policy.fixed_pot_fractions.front() <= 0.0) {
+                return false;
+            }
+            const auto is_monotonic = std::ranges::is_sorted(policy.fixed_pot_fractions, std::less<>{});
+            const auto ends_at_one = std::abs(policy.fixed_pot_fractions.back() - 1.0) <= 1.0e-6;
+            const auto increases_after_min = policy.fixed_pot_fractions.front() < policy.fixed_pot_fractions.back();
+            return is_monotonic && ends_at_one && increases_after_min;
+        }
+
         [[nodiscard]] int betting_preset_index(const cfr::betting_abstraction_policy& policy)
         {
             if (policy.all_in_threshold > 0.99 && !policy.fixed_pot_fractions.empty()) {
@@ -187,6 +209,9 @@ namespace zeta::holdem::ui::widgets {
                 if (any_overbet) {
                     return 4;
                 }
+            }
+            if (is_geometric_policy(policy)) {
+                return 3;
             }
             if (policy.fixed_pot_fractions.size() == 1u) {
                 return 1;

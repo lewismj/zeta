@@ -412,6 +412,76 @@ namespace zeta::holdem::cli {
             return row;
         }
 
+        [[nodiscard]] std::expected<uint32_t, cli_error> nullable_uint32(
+            const json::object& object,
+            const std::string_view key,
+            const uint32_t fallback)
+        {
+            const auto* value = find_value(object, key);
+            if (value == nullptr || value->is_null()) {
+                return fallback;
+            }
+            return required_uint<uint32_t>(object, key);
+        }
+
+        [[nodiscard]] std::expected<uint16_t, cli_error> nullable_uint16(
+            const json::object& object,
+            const std::string_view key,
+            const uint16_t fallback)
+        {
+            const auto* value = find_value(object, key);
+            if (value == nullptr || value->is_null()) {
+                return fallback;
+            }
+            return required_uint<uint16_t>(object, key);
+        }
+
+        [[nodiscard]] std::expected<uint8_t, cli_error> nullable_uint8(
+            const json::object& object,
+            const std::string_view key,
+            const uint8_t fallback)
+        {
+            const auto* value = find_value(object, key);
+            if (value == nullptr || value->is_null()) {
+                return fallback;
+            }
+            return required_uint<uint8_t>(object, key);
+        }
+
+        [[nodiscard]] std::expected<solved_node_action, cli_error> parse_solved_node_action(const json::value& value)
+        {
+            if (!value.is_object()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "Solved node action must be an object."});
+            }
+            const auto& object = value.as_object();
+            auto action = required_string(object, "action");
+            auto child_node_id = nullable_uint32(object, "child_node_id", cfr::game_graph::INVALID_NODE);
+            auto action_index = nullable_uint16(object, "action_index", 0u);
+            auto probability = optional_double(object, "probability", 0.0);
+            auto chance_event_id = nullable_uint32(object, "chance_event_id", cfr::INVALID_CHANCE_EVENT);
+            auto board_partition_id = nullable_uint32(object, "board_partition_id", cfr::INVALID_BOARD_PARTITION);
+            auto chance_outcome_id = nullable_uint32(object, "chance_outcome_id", cfr::INVALID_CHANCE_OUTCOME_ID);
+            auto dealt_cards = optional_string_array(object, "dealt_cards", {});
+            if (!action) return std::unexpected(action.error());
+            if (!child_node_id) return std::unexpected(child_node_id.error());
+            if (!action_index) return std::unexpected(action_index.error());
+            if (!probability) return std::unexpected(probability.error());
+            if (!chance_event_id) return std::unexpected(chance_event_id.error());
+            if (!board_partition_id) return std::unexpected(board_partition_id.error());
+            if (!chance_outcome_id) return std::unexpected(chance_outcome_id.error());
+            if (!dealt_cards) return std::unexpected(dealt_cards.error());
+            return solved_node_action{
+                .action = std::move(*action),
+                .child_node_id = *child_node_id,
+                .action_index = *action_index,
+                .probability = static_cast<float>(*probability),
+                .chance_event_id = *chance_event_id,
+                .board_partition_id = *board_partition_id,
+                .chance_outcome_id = *chance_outcome_id,
+                .dealt_cards = std::move(*dealt_cards)
+            };
+        }
+
         [[nodiscard]] json::object solver_json(const solver_metadata& solver)
         {
             json::object out;
@@ -435,6 +505,33 @@ namespace zeta::holdem::cli {
             return actions;
         }
 
+        [[nodiscard]] json::array solved_node_action_json(const std::vector<solved_node_action>& actions)
+        {
+            json::array out;
+            out.reserve(actions.size());
+            for (const auto& action : actions) {
+                json::object object;
+                object["action"] = action.action;
+                object["child_node_id"] = action.child_node_id == cfr::game_graph::INVALID_NODE
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(action.child_node_id)};
+                object["action_index"] = action.action_index;
+                object["probability"] = action.probability;
+                object["chance_event_id"] = action.chance_event_id == cfr::INVALID_CHANCE_EVENT
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(action.chance_event_id)};
+                object["board_partition_id"] = action.board_partition_id == cfr::INVALID_BOARD_PARTITION
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(action.board_partition_id)};
+                object["chance_outcome_id"] = action.chance_outcome_id == cfr::INVALID_CHANCE_OUTCOME_ID
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(action.chance_outcome_id)};
+                object["dealt_cards"] = string_array_json(action.dealt_cards);
+                out.emplace_back(std::move(object));
+            }
+            return out;
+        }
+
         [[nodiscard]] json::array strategy_json(const std::vector<hand_strategy>& strategy)
         {
             json::array rows;
@@ -447,6 +544,90 @@ namespace zeta::holdem::cli {
                 rows.emplace_back(std::move(row_object));
             }
             return rows;
+        }
+
+        [[nodiscard]] json::array public_states_json(const std::vector<solve_artifact_public_state>& states)
+        {
+            json::array out;
+            out.reserve(states.size());
+            for (const auto& state : states) {
+                json::object object;
+                object["id"] = state.id;
+                object["street"] = state.street;
+                object["board"] = string_array_json(state.board);
+                object["parent_state_id"] = state.parent_state_id == cfr::INVALID_PUBLIC_STATE_ID
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(state.parent_state_id)};
+                object["chance_event_id_from_parent"] = state.chance_event_id_from_parent == cfr::INVALID_CHANCE_EVENT
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(state.chance_event_id_from_parent)};
+                object["chance_outcome_id_from_parent"] = state.chance_outcome_id_from_parent == cfr::INVALID_CHANCE_OUTCOME_ID
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(state.chance_outcome_id_from_parent)};
+                object["is_root_state"] = state.is_root_state;
+                object["is_terminal_river_state"] = state.is_terminal_river_state;
+                out.emplace_back(std::move(object));
+            }
+            return out;
+        }
+
+        [[nodiscard]] json::array chance_events_json(const std::vector<solve_artifact_chance_event>& events)
+        {
+            json::array out;
+            out.reserve(events.size());
+            for (const auto& event : events) {
+                json::object object;
+                object["id"] = event.id;
+                object["node_id"] = event.node_id;
+                object["kind"] = event.kind;
+                object["board"] = string_array_json(event.board);
+                object["outcomes"] = solved_node_action_json(event.outcomes);
+                out.emplace_back(std::move(object));
+            }
+            return out;
+        }
+
+        [[nodiscard]] json::array runouts_json(const std::vector<solve_artifact_runout>& runouts)
+        {
+            json::array out;
+            out.reserve(runouts.size());
+            for (const auto& runout : runouts) {
+                json::object object;
+                object["id"] = runout.id;
+                object["root_public_state_id"] = runout.root_public_state_id;
+                object["river_public_state_id"] = runout.river_public_state_id;
+                object["dealt_turn"] = string_array_json(runout.dealt_turn);
+                object["dealt_river"] = string_array_json(runout.dealt_river);
+                out.emplace_back(std::move(object));
+            }
+            return out;
+        }
+
+        [[nodiscard]] json::array solved_nodes_json(const std::vector<solved_node>& nodes)
+        {
+            json::array out;
+            out.reserve(nodes.size());
+            for (const auto& node : nodes) {
+                json::object object;
+                object["node_id"] = node.node_id;
+                object["kind"] = node.kind;
+                object["public_state_id"] = node.public_state_id == cfr::INVALID_PUBLIC_STATE_ID
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(node.public_state_id)};
+                object["parent_node_id"] = node.parent_node_id == cfr::game_graph::INVALID_NODE
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(node.parent_node_id)};
+                object["acting_seat"] = node.acting_seat == cfr::solver::INVALID_PLAYER
+                    ? json::value{nullptr}
+                    : json::value{static_cast<uint64_t>(node.acting_seat)};
+                object["terminal"] = node.terminal;
+                object["board"] = string_array_json(node.board);
+                object["actions"] = solved_node_action_json(node.actions);
+                object["strategy"] = action_strategy_json(node.strategy);
+                object["strategy_rows"] = strategy_json(node.strategy_rows);
+                out.emplace_back(std::move(object));
+            }
+            return out;
         }
 
     }
@@ -499,26 +680,16 @@ namespace zeta::holdem::cli {
             return std::unexpected(ranges.error());
         }
         spot.ranges = std::move(*ranges);
-
-        if (const auto* oop_range_value = find_value(*root, "oop_range"); oop_range_value != nullptr) {
-            auto oop_range = string_value(*oop_range_value, "oop_range");
-            if (!oop_range) {
-                return std::unexpected(oop_range.error());
-            }
-            if (spot.ranges.size() < 2u) {
-                spot.ranges.assign(2u, "AA");
-            }
-            spot.ranges[0] = std::move(*oop_range);
-        }
-        if (const auto* ip_range_value = find_value(*root, "ip_range"); ip_range_value != nullptr) {
-            auto ip_range = string_value(*ip_range_value, "ip_range");
-            if (!ip_range) {
-                return std::unexpected(ip_range.error());
-            }
-            if (spot.ranges.size() < 2u) {
-                spot.ranges.assign(2u, "AA");
-            }
-            spot.ranges[1] = std::move(*ip_range);
+        if (find_value(*root, "oop_range") != nullptr
+            || find_value(*root, "ip_range") != nullptr
+            || find_value(*root, "oop_contribution") != nullptr
+            || find_value(*root, "ip_contribution") != nullptr
+            || find_value(*root, "oop_stack") != nullptr
+            || find_value(*root, "ip_stack") != nullptr) {
+            return std::unexpected(cli_error{
+                cli_error_kind::parse,
+                "Legacy heads-up aliases are no longer accepted. Use players/ranges/contributions/stacks arrays."
+            });
         }
 
         auto gross_pot = optional_double(*root, "gross_pot", spot.gross_pot);
@@ -564,39 +735,6 @@ namespace zeta::holdem::cli {
         }
         spot.contributions = std::move(*contributions);
         spot.stacks = std::move(*stacks);
-
-        if (auto oop = optional_double(*root, "oop_contribution", std::numeric_limits<double>::quiet_NaN()); !oop) {
-            return std::unexpected(oop.error());
-        } else if (!std::isnan(*oop)) {
-            if (spot.contributions.size() < 2u) {
-                spot.contributions.assign(2u, 0.0);
-            }
-            spot.contributions[0] = *oop;
-        }
-        if (auto ip = optional_double(*root, "ip_contribution", std::numeric_limits<double>::quiet_NaN()); !ip) {
-            return std::unexpected(ip.error());
-        } else if (!std::isnan(*ip)) {
-            if (spot.contributions.size() < 2u) {
-                spot.contributions.assign(2u, 0.0);
-            }
-            spot.contributions[1] = *ip;
-        }
-        if (auto oop = optional_double(*root, "oop_stack", std::numeric_limits<double>::quiet_NaN()); !oop) {
-            return std::unexpected(oop.error());
-        } else if (!std::isnan(*oop)) {
-            if (spot.stacks.size() < 2u) {
-                spot.stacks.assign(2u, 100.0);
-            }
-            spot.stacks[0] = *oop;
-        }
-        if (auto ip = optional_double(*root, "ip_stack", std::numeric_limits<double>::quiet_NaN()); !ip) {
-            return std::unexpected(ip.error());
-        } else if (!std::isnan(*ip)) {
-            if (spot.stacks.size() < 2u) {
-                spot.stacks.assign(2u, 100.0);
-            }
-            spot.stacks[1] = *ip;
-        }
 
         auto max_history = optional_uint<uint16_t>(*root, "max_history", spot.max_history);
         auto public_state_id = optional_uint<uint32_t>(*root, "public_state_id", spot.public_state_id);
@@ -672,6 +810,10 @@ namespace zeta::holdem::cli {
         auto street = required_string(*root, "street");
         if (!schema_version) {
             return std::unexpected(schema_version.error());
+        }
+        if (*schema_version != current_artifact_schema_version) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
+                "Unsupported schema_version. Only version " + std::to_string(current_artifact_schema_version) + " is accepted."});
         }
         if (!game) {
             return std::unexpected(game.error());
@@ -762,6 +904,182 @@ namespace zeta::holdem::cli {
             }
             artifact.strategy.push_back(std::move(*row));
         }
+
+        if (const auto* public_states_value = find_value(*root, "public_states"); public_states_value != nullptr) {
+            if (!public_states_value->is_array()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "public_states must be an array."});
+            }
+            for (const auto& state_value : public_states_value->as_array()) {
+                if (!state_value.is_object()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "public_states entries must be objects."});
+                }
+                const auto& object = state_value.as_object();
+                auto id = required_uint<uint32_t>(object, "id");
+                auto street = required_string(object, "street");
+                auto board = required_string_array(object, "board");
+                auto parent = nullable_uint32(object, "parent_state_id", cfr::INVALID_PUBLIC_STATE_ID);
+                auto event = nullable_uint32(object, "chance_event_id_from_parent", cfr::INVALID_CHANCE_EVENT);
+                auto outcome = nullable_uint32(object, "chance_outcome_id_from_parent", cfr::INVALID_CHANCE_OUTCOME_ID);
+                if (!id) return std::unexpected(id.error());
+                if (!street) return std::unexpected(street.error());
+                if (!board) return std::unexpected(board.error());
+                if (!parent) return std::unexpected(parent.error());
+                if (!event) return std::unexpected(event.error());
+                if (!outcome) return std::unexpected(outcome.error());
+                artifact.public_states.push_back(solve_artifact_public_state{
+                    .id = *id,
+                    .street = std::move(*street),
+                    .board = std::move(*board),
+                    .parent_state_id = *parent,
+                    .chance_event_id_from_parent = *event,
+                    .chance_outcome_id_from_parent = *outcome,
+                    .is_root_state = object.if_contains("is_root_state") != nullptr && object.at("is_root_state").as_bool(),
+                    .is_terminal_river_state = object.if_contains("is_terminal_river_state") != nullptr && object.at("is_terminal_river_state").as_bool()
+                });
+            }
+        }
+
+        if (const auto* chance_events_value = find_value(*root, "chance_events"); chance_events_value != nullptr) {
+            if (!chance_events_value->is_array()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "chance_events must be an array."});
+            }
+            for (const auto& event_value : chance_events_value->as_array()) {
+                if (!event_value.is_object()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "chance_events entries must be objects."});
+                }
+                const auto& object = event_value.as_object();
+                auto id = required_uint<uint32_t>(object, "id");
+                auto node_id = required_uint<uint32_t>(object, "node_id");
+                auto kind = required_string(object, "kind");
+                auto board = required_string_array(object, "board");
+                if (!id) return std::unexpected(id.error());
+                if (!node_id) return std::unexpected(node_id.error());
+                if (!kind) return std::unexpected(kind.error());
+                if (!board) return std::unexpected(board.error());
+                solve_artifact_chance_event event_record{
+                    .id = *id,
+                    .node_id = *node_id,
+                    .kind = std::move(*kind),
+                    .board = std::move(*board)
+                };
+                if (const auto* outcomes = find_value(object, "outcomes"); outcomes != nullptr) {
+                    if (!outcomes->is_array()) {
+                        return std::unexpected(cli_error{cli_error_kind::parse, "chance_events.outcomes must be an array."});
+                    }
+                    for (const auto& outcome_value : outcomes->as_array()) {
+                        auto parsed = parse_solved_node_action(outcome_value);
+                        if (!parsed) {
+                            return std::unexpected(parsed.error());
+                        }
+                        event_record.outcomes.push_back(std::move(*parsed));
+                    }
+                }
+                artifact.chance_events.push_back(std::move(event_record));
+            }
+        }
+
+        if (const auto* runouts_value = find_value(*root, "runouts"); runouts_value != nullptr) {
+            if (!runouts_value->is_array()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "runouts must be an array."});
+            }
+            for (const auto& runout_value : runouts_value->as_array()) {
+                if (!runout_value.is_object()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "runouts entries must be objects."});
+                }
+                const auto& object = runout_value.as_object();
+                auto id = required_uint<uint32_t>(object, "id");
+                auto root_state = required_uint<uint32_t>(object, "root_public_state_id");
+                auto river_state = required_uint<uint32_t>(object, "river_public_state_id");
+                auto dealt_turn = required_string_array(object, "dealt_turn");
+                auto dealt_river = required_string_array(object, "dealt_river");
+                if (!id) return std::unexpected(id.error());
+                if (!root_state) return std::unexpected(root_state.error());
+                if (!river_state) return std::unexpected(river_state.error());
+                if (!dealt_turn) return std::unexpected(dealt_turn.error());
+                if (!dealt_river) return std::unexpected(dealt_river.error());
+                artifact.runouts.push_back(solve_artifact_runout{
+                    .id = *id,
+                    .root_public_state_id = *root_state,
+                    .river_public_state_id = *river_state,
+                    .dealt_turn = std::move(*dealt_turn),
+                    .dealt_river = std::move(*dealt_river)
+                });
+            }
+        }
+
+        if (const auto* solved_nodes_value = find_value(*root, "solved_nodes"); solved_nodes_value != nullptr) {
+            if (!solved_nodes_value->is_array()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes must be an array."});
+            }
+            for (const auto& node_value : solved_nodes_value->as_array()) {
+                if (!node_value.is_object()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes entries must be objects."});
+                }
+                const auto& object = node_value.as_object();
+                auto node_id = required_uint<uint32_t>(object, "node_id");
+                auto kind = required_string(object, "kind");
+                auto public_state_id = nullable_uint32(object, "public_state_id", cfr::INVALID_PUBLIC_STATE_ID);
+                auto parent_node_id = nullable_uint32(object, "parent_node_id", cfr::game_graph::INVALID_NODE);
+                auto acting_seat = nullable_uint8(object, "acting_seat", cfr::solver::INVALID_PLAYER);
+                auto board = required_string_array(object, "board");
+                if (!node_id) return std::unexpected(node_id.error());
+                if (!kind) return std::unexpected(kind.error());
+                if (!public_state_id) return std::unexpected(public_state_id.error());
+                if (!parent_node_id) return std::unexpected(parent_node_id.error());
+                if (!acting_seat) return std::unexpected(acting_seat.error());
+                if (!board) return std::unexpected(board.error());
+                solved_node node{
+                    .node_id = *node_id,
+                    .kind = std::move(*kind),
+                    .public_state_id = *public_state_id,
+                    .parent_node_id = *parent_node_id,
+                    .acting_seat = *acting_seat,
+                    .terminal = object.if_contains("terminal") != nullptr && object.at("terminal").as_bool(),
+                    .board = std::move(*board)
+                };
+                if (const auto* actions_value = find_value(object, "actions"); actions_value != nullptr) {
+                    if (!actions_value->is_array()) {
+                        return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.actions must be an array."});
+                    }
+                    for (const auto& action_value : actions_value->as_array()) {
+                        auto parsed = parse_solved_node_action(action_value);
+                        if (!parsed) {
+                            return std::unexpected(parsed.error());
+                        }
+                        node.actions.push_back(std::move(*parsed));
+                    }
+                }
+                if (const auto* strategy_value = find_value(object, "strategy"); strategy_value != nullptr) {
+                    if (!strategy_value->is_array()) {
+                        return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.strategy must be an array."});
+                    }
+                    for (const auto& action_value : strategy_value->as_array()) {
+                        auto action = parse_action_strategy(action_value);
+                        if (!action) {
+                            return std::unexpected(action.error());
+                        }
+                        node.strategy.push_back(std::move(*action));
+                    }
+                }
+                if (const auto* rows_value = find_value(object, "strategy_rows"); rows_value != nullptr) {
+                    if (!rows_value->is_array()) {
+                        return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.strategy_rows must be an array."});
+                    }
+                    for (const auto& row_value : rows_value->as_array()) {
+                        auto row = parse_hand_strategy(row_value);
+                        if (!row) {
+                            return std::unexpected(row.error());
+                        }
+                        node.strategy_rows.push_back(std::move(*row));
+                    }
+                }
+                artifact.solved_nodes.push_back(std::move(node));
+            }
+        }
+
+        if (auto validation = validate_artifact(artifact); !validation) {
+            return std::unexpected(validation.error());
+        }
         return artifact;
     }
 
@@ -777,6 +1095,10 @@ namespace zeta::holdem::cli {
         out["solver"] = solver_json(artifact.solver);
         out["root_strategy"] = action_strategy_json(artifact.root_strategy);
         out["strategy"] = strategy_json(artifact.strategy);
+        out["public_states"] = public_states_json(artifact.public_states);
+        out["chance_events"] = chance_events_json(artifact.chance_events);
+        out["runouts"] = runouts_json(artifact.runouts);
+        out["solved_nodes"] = solved_nodes_json(artifact.solved_nodes);
         return json::serialize(out);
     }
 

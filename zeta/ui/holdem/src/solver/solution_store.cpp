@@ -277,26 +277,6 @@ namespace zeta::holdem::ui::solver {
             return out;
         }
 
-        [[nodiscard]] std::string compatibility_text(const solution_compatibility_mode mode)
-        {
-            return std::string{to_string(mode)};
-        }
-
-        [[nodiscard]] std::expected<solution_compatibility_mode, solution_store_error> parse_compatibility_mode(
-            const std::string& text)
-        {
-            if (text == "root-only-artifact") {
-                return solution_compatibility_mode::root_only_artifact;
-            }
-            if (text == "action-tree") {
-                return solution_compatibility_mode::action_tree;
-            }
-            return std::unexpected(solution_store_error{
-                solution_store_error_kind::parse,
-                "Unsupported solution compatibility mode."
-            });
-        }
-
         [[nodiscard]] solution_source_summary make_source_summary(
             const struct cli::solve_spot& spot,
             const cli::solve_artifact& artifact)
@@ -426,9 +406,14 @@ namespace zeta::holdem::ui::solver {
             return solution_node{
                 .node_id = "root",
                 .path = {},
+                .kind = "player",
+                .graph_node_id = 0,
+                .public_state_id = spot.public_state_id,
+                .parent_graph_node_id = 0,
                 .acting_seat = spot.root_actor,
                 .terminal = false,
                 .truncated = false,
+                .board = spot.board,
                 .legal_actions = root_action_labels_from_artifact(artifact),
                 .average_strategy = aggregate_root_strategy(artifact),
                 .seat_evs = aggregate_root_evs(artifact),
@@ -537,33 +522,54 @@ namespace zeta::holdem::ui::solver {
             return !store.nodes.empty();
         }
 
-        [[nodiscard]] bool populate_action_tree_nodes_for_player_count(solution_store& store, const struct cli::solve_spot& spot)
+        [[nodiscard]] solution_table_state solution_table_state_from_solved_node(const cli::solved_node& node, const struct cli::solve_spot& spot)
         {
-            switch (spot.players.size()) {
-                case 2: return populate_action_tree_nodes<2>(store, spot);
-                case 3: return populate_action_tree_nodes<3>(store, spot);
-                case 4: return populate_action_tree_nodes<4>(store, spot);
-                case 5: return populate_action_tree_nodes<5>(store, spot);
-                case 6: return populate_action_tree_nodes<6>(store, spot);
-                default:
-                    store.diagnostics.push_back("Player count is outside the supported solution range.");
-                    return false;
+            auto table = root_table_state_from_spot(spot);
+            if (node.terminal) {
+                table.pot = spot.gross_pot;
             }
+            return table;
         }
 
-        void apply_root_artifact_data(solution_store& store, const cli::solve_artifact& artifact)
+        [[nodiscard]] solution_node make_solution_node_from_artifact_node(
+            const cli::solved_node& node,
+            const struct cli::solve_spot& spot,
+            const cli::solve_artifact& artifact)
         {
-            auto root = std::ranges::find_if(store.nodes, [&store](const auto& node) {
-                return node.node_id == store.root_node_id;
-            });
-            if (root == store.nodes.end()) {
-                return;
+            solution_node out;
+            out.node_id = node.node_id == 0 ? "root" : ("node-" + std::to_string(node.node_id));
+            out.kind = node.kind;
+            out.graph_node_id = node.node_id;
+            out.public_state_id = node.public_state_id;
+            out.parent_graph_node_id = node.parent_node_id;
+            out.acting_seat = node.acting_seat;
+            out.terminal = node.terminal;
+            out.truncated = false;
+            out.board = node.board;
+            out.table_state = solution_table_state_from_solved_node(node, spot);
+            if (node.node_id == 0) {
+                out.average_strategy = aggregate_root_strategy(artifact);
+                out.seat_evs = aggregate_root_evs(artifact);
+            } else {
+                out.average_strategy.reserve(node.strategy.size());
+                for (const auto& action : node.strategy) {
+                    out.average_strategy.push_back(solution_action_summary{
+                        .action = action.action,
+                        .frequency = action.frequency,
+                        .average_ev = 0.0
+                    });
+                }
             }
-            root->average_strategy = aggregate_root_strategy(artifact);
-            root->seat_evs = aggregate_root_evs(artifact);
-            if (root->legal_actions.empty()) {
-                root->legal_actions = root_action_labels_from_artifact(artifact);
+            out.legal_actions.reserve(node.actions.size());
+            for (const auto& action : node.actions) {
+                out.legal_actions.push_back(action.action);
             }
+            for (const auto& action : node.actions) {
+                if (action.child_node_id != cfr::game_graph::INVALID_NODE) {
+                    out.children.push_back(action.child_node_id == 0 ? "root" : ("node-" + std::to_string(action.child_node_id)));
+                }
+            }
+            return out;
         }
 
         [[nodiscard]] std::expected<solution_action_summary, solution_store_error> parse_action_summary(
@@ -702,6 +708,34 @@ namespace zeta::holdem::ui::solver {
             solution_node node;
             node.node_id = std::move(*node_id);
             node.path = std::move(*path);
+            if (const auto* kind = find_value(object, "kind"); kind != nullptr) {
+                auto parsed = string_value(*kind, "kind");
+                if (!parsed) {
+                    return std::unexpected(parsed.error());
+                }
+                node.kind = std::move(*parsed);
+            }
+            if (const auto* graph_node_id = find_value(object, "graph_node_id"); graph_node_id != nullptr) {
+                auto parsed = uint64_value(*graph_node_id, "graph_node_id");
+                if (!parsed) {
+                    return std::unexpected(parsed.error());
+                }
+                node.graph_node_id = static_cast<uint32_t>(*parsed);
+            }
+            if (const auto* public_state_id = find_value(object, "public_state_id"); public_state_id != nullptr) {
+                auto parsed = uint64_value(*public_state_id, "public_state_id");
+                if (!parsed) {
+                    return std::unexpected(parsed.error());
+                }
+                node.public_state_id = static_cast<uint32_t>(*parsed);
+            }
+            if (const auto* parent_graph_node_id = find_value(object, "parent_graph_node_id"); parent_graph_node_id != nullptr) {
+                auto parsed = uint64_value(*parent_graph_node_id, "parent_graph_node_id");
+                if (!parsed) {
+                    return std::unexpected(parsed.error());
+                }
+                node.parent_graph_node_id = static_cast<uint32_t>(*parsed);
+            }
             node.acting_seat = acting_seat;
             if (const auto* terminal = find_value(object, "terminal"); terminal != nullptr) {
                 if (!terminal->is_bool()) {
@@ -724,6 +758,13 @@ namespace zeta::holdem::ui::solver {
             node.legal_actions = std::move(*legal_actions);
             node.table_state = std::move(*table_state);
             node.children = std::move(*children);
+            if (const auto* board = find_value(object, "board"); board != nullptr) {
+                auto parsed = string_array(*board, "board");
+                if (!parsed) {
+                    return std::unexpected(parsed.error());
+                }
+                node.board = std::move(*parsed);
+            }
 
             if (const auto* strategy = find_value(object, "average_strategy"); strategy != nullptr) {
                 if (!strategy->is_array()) {
@@ -907,11 +948,16 @@ namespace zeta::holdem::ui::solver {
                 json::object object;
                 object["node_id"] = node.node_id;
                 object["path"] = string_array_json(node.path);
+                object["kind"] = node.kind;
+                object["graph_node_id"] = node.graph_node_id;
+                object["public_state_id"] = node.public_state_id;
+                object["parent_graph_node_id"] = node.parent_graph_node_id;
                 object["acting_seat"] = node.acting_seat == invalid_solution_seat
                     ? json::value{nullptr}
                     : json::value{static_cast<uint64_t>(node.acting_seat)};
                 object["terminal"] = node.terminal;
                 object["truncated"] = node.truncated;
+                object["board"] = string_array_json(node.board);
                 object["legal_actions"] = string_array_json(node.legal_actions);
                 object["average_strategy"] = action_summary_json(node.average_strategy);
                 object["seat_evs"] = seat_evs_json(node.seat_evs);
@@ -924,28 +970,46 @@ namespace zeta::holdem::ui::solver {
 
     }
 
-    solution_store make_root_only_solution_store(const struct cli::solve_spot& spot, const cli::solve_artifact& artifact)
-    {
-        solution_store store;
-        store.compatibility_mode = solution_compatibility_mode::root_only_artifact;
-        store.source = make_source_summary(spot, artifact);
-        store.nodes.push_back(make_root_node_from_artifact(spot, artifact));
-        store.diagnostics.push_back("Loaded root-only artifact; node descendants and non-root strategies are unavailable.");
-        return store;
-    }
-
     solution_store make_action_tree_solution_store(const struct cli::solve_spot& spot, const cli::solve_artifact& artifact)
     {
         solution_store store;
-        store.compatibility_mode = solution_compatibility_mode::action_tree;
         store.source = make_source_summary(spot, artifact);
-        if (!populate_action_tree_nodes_for_player_count(store, spot)) {
-            auto fallback = make_root_only_solution_store(spot, artifact);
-            fallback.diagnostics.push_back("Betting-tree extraction failed; saved root-only solution data.");
-            return fallback;
+        store.root_node_id = "root";
+        if (!artifact.solved_nodes.empty()) {
+            store.nodes.reserve(artifact.solved_nodes.size());
+            for (const auto& node : artifact.solved_nodes) {
+                store.nodes.push_back(make_solution_node_from_artifact_node(node, spot, artifact));
+            }
+            const auto find_solved_node = [&artifact](const uint32_t node_id) -> const cli::solved_node* {
+                const auto found = std::ranges::find_if(artifact.solved_nodes, [node_id](const auto& candidate) {
+                    return candidate.node_id == node_id;
+                });
+                return found == artifact.solved_nodes.end() ? nullptr : &*found;
+            };
+            for (std::size_t index = 0; index < artifact.solved_nodes.size(); ++index) {
+                std::vector<std::string> reversed_path;
+                const cli::solved_node* current = &artifact.solved_nodes[index];
+                while (current->parent_node_id != cfr::game_graph::INVALID_NODE) {
+                    const cli::solved_node* parent = find_solved_node(current->parent_node_id);
+                    if (parent == nullptr) {
+                        break;
+                    }
+                    for (const auto& action : parent->actions) {
+                        if (action.child_node_id == current->node_id) {
+                            reversed_path.push_back(action.action);
+                            break;
+                        }
+                    }
+                    current = parent;
+                }
+                std::ranges::reverse(reversed_path);
+                store.nodes[index].path = std::move(reversed_path);
+            }
+            store.diagnostics.push_back("Solution store was loaded from solved graph payload.");
+            return store;
         }
-        apply_root_artifact_data(store, artifact);
-        store.diagnostics.push_back("Average strategy is available for the root node in the current solver artifact.");
+        store.nodes.push_back(make_root_node_from_artifact(spot, artifact));
+        store.diagnostics.push_back("Solved graph payload is required for full tree inspection.");
         return store;
     }
 
@@ -957,7 +1021,6 @@ namespace zeta::holdem::ui::solver {
         }
 
         auto schema_version = required_uint<uint32_t>(*root, "solution_schema_version");
-        auto compatibility = required_string(*root, "compatibility");
         auto root_node_id = required_string(*root, "root_node_id");
         const auto* source_value = find_value(*root, "source");
         const auto* nodes_value = find_value(*root, "nodes");
@@ -969,13 +1032,6 @@ namespace zeta::holdem::ui::solver {
                 solution_store_error_kind::invalid_solution,
                 "Unsupported solution_schema_version."
             });
-        }
-        if (!compatibility) {
-            return std::unexpected(compatibility.error());
-        }
-        auto parsed_mode = parse_compatibility_mode(*compatibility);
-        if (!parsed_mode) {
-            return std::unexpected(parsed_mode.error());
         }
         if (!root_node_id) {
             return std::unexpected(root_node_id.error());
@@ -994,7 +1050,6 @@ namespace zeta::holdem::ui::solver {
 
         solution_store store;
         store.schema_version = *schema_version;
-        store.compatibility_mode = *parsed_mode;
         store.root_node_id = std::move(*root_node_id);
         store.source = std::move(*source);
         store.nodes.reserve(nodes_value->as_array().size());
@@ -1026,7 +1081,6 @@ namespace zeta::holdem::ui::solver {
     {
         json::object root;
         root["solution_schema_version"] = static_cast<uint64_t>(current_solution_schema_version);
-        root["compatibility"] = compatibility_text(store.compatibility_mode);
         root["root_node_id"] = store.root_node_id;
         root["source"] = source_json(store.source);
         root["nodes"] = nodes_json(store.nodes);
@@ -1045,15 +1099,6 @@ namespace zeta::holdem::ui::solver {
     const solution_node* root_solution_node(const solution_store& store) noexcept
     {
         return find_solution_node(store, store.root_node_id);
-    }
-
-    std::string_view to_string(const solution_compatibility_mode mode) noexcept
-    {
-        switch (mode) {
-            case solution_compatibility_mode::root_only_artifact: return "root-only-artifact";
-            case solution_compatibility_mode::action_tree: return "action-tree";
-        }
-        return "root-only-artifact";
     }
 
 }

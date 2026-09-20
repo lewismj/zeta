@@ -11,7 +11,7 @@
 
 namespace zeta::holdem::ui::solver {
 
-    inline constexpr uint32_t current_solution_schema_version = 2;
+    inline constexpr uint32_t current_solution_schema_version = 3;
     inline constexpr uint8_t invalid_solution_seat = 255;
 
     enum class solution_store_error_kind : uint8_t {
@@ -22,11 +22,6 @@ namespace zeta::holdem::ui::solver {
     struct solution_store_error {
         solution_store_error_kind kind = solution_store_error_kind::parse;
         std::string message;
-    };
-
-    enum class solution_compatibility_mode : uint8_t {
-        root_only_artifact,
-        action_tree
     };
 
     struct solution_action_summary {
@@ -49,9 +44,14 @@ namespace zeta::holdem::ui::solver {
     struct solution_node {
         std::string node_id;
         std::vector<std::string> path;
+        std::string kind = "player";
+        uint32_t graph_node_id = 0;
+        uint32_t public_state_id = 0;
+        uint32_t parent_graph_node_id = 0;
         uint8_t acting_seat = invalid_solution_seat;
         bool terminal = false;
         bool truncated = false;
+        std::vector<std::string> board;
         std::vector<std::string> legal_actions;
         std::vector<solution_action_summary> average_strategy;
         std::vector<solution_seat_ev> seat_evs;
@@ -71,19 +71,11 @@ namespace zeta::holdem::ui::solver {
 
     struct solution_store {
         uint32_t schema_version = current_solution_schema_version;
-        solution_compatibility_mode compatibility_mode = solution_compatibility_mode::root_only_artifact;
         std::string root_node_id = "root";
         solution_source_summary source;
         std::vector<solution_node> nodes;
         std::vector<std::string> diagnostics;
     };
-
-    /**
-     * Builds an honest root-only compatibility store from a legacy root artifact.
-     */
-    [[nodiscard]] solution_store make_root_only_solution_store(
-        const struct cli::solve_spot& spot,
-        const cli::solve_artifact& artifact);
 
     /**
      * Builds a solution store with betting-tree nodes and root strategy extracted from the artifact.
@@ -111,7 +103,5 @@ namespace zeta::holdem::ui::solver {
      * Finds the root node when it is present.
      */
     [[nodiscard]] const solution_node* root_solution_node(const solution_store& store) noexcept;
-
-    [[nodiscard]] std::string_view to_string(solution_compatibility_mode mode) noexcept;
 
 }
