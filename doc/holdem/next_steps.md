@@ -6,23 +6,56 @@ add every UI feature first; it is to build the solver capabilities that unlock
 useful, accurate analysis.
 
 
-## 1. Accurate flop/turn chance and board-runout handling
+## 1. Per-street betting expansion for flop/turn solves
 
-Zeta already has river terminal evaluation and chance-node machinery. The next
-step is making runout enumeration a first-class solver surface.
+The runout / chance-expansion infrastructure is complete: blocker-aware
+public-card enumeration, the public-state / chance-event / runout identity model
+and registries, combined-runout lowering for flop and turn spots, per-runout
+terminal cache reuse, deterministic board partitioning with multi-worker
+determinism, and schema-3 runout-aware persistence and inspection are all
+implemented and tested.
+
+What remains is the capability those pieces exist to deliver: an actual
+game-theoretic flop/turn solve. Today a non-river spot lowers to a single combined
+chance node that deals straight to the river, so the solver only reports the
+blocker-aware runout-averaged showdown EV per hero hand with a trivial root
+strategy. It does not model betting on the flop, turn, or river, and because there
+is no regret minimization to run, the `iterations` count is inert for non-river
+spots. This makes flop/turn "solving" a check-down equity rollout rather than a
+solve, and it is why the non-river path currently reads as a separate methodology
+instead of the river solve with its terminal evaluation optimized.
 
 Core deliverables:
 
-- complete turn and river chance expansion from any flop/turn spot
-- blocker-aware public-card enumeration from current board and live ranges
-- deterministic board partitioning for parallel CFR
-- optional board abstraction/bucketing for large multiway solves
-- per-runout terminal cache reuse
-- artifacts that preserve board/runout IDs for later inspection
+- interleave a betting round on every street between chance nodes
+  (flop bet round -> turn card -> turn bet round -> river card -> river bet round
+  -> showdown), replacing the single combined-runout pass-through
+- one unified CFR solve path for river, turn, and flop, where the existing
+  vectorized/templated river terminal evaluation is only a low-level leaf
+  optimization and not a distinct solve path
+- regret and average-strategy accumulation across streets so `iterations`
+  meaningfully drives convergence for flop/turn spots
+- multi-way (N > 2) non-river spots either solved or rejected with a clear
+  unsupported-solver error
+- optional board abstraction/bucketing for large multiway solves (deferred until
+  the exact heads-up betting solve is in place)
 
-Why it matters: serious postflop analysis needs flop and turn solves, not only
-single-river terminal states. This is also the foundation for aggregated reports
-by turn/river class.
+Required tests (explicit, not optional):
+
+- a convergence / correctness test for a small flop and a small turn spot that
+  asserts betting frequencies and per-hand EV against an independent computation
+  or a known equilibrium, replacing the interim runout-average characterization
+- a test asserting `iterations` changes non-river solve output once betting
+  exists; the current "iterations is inert" behavior is retired by this step, so
+  no separate characterization test should be pinned against the interim
+  runout-average path
+- a multi-way (N > 2) non-river test asserting the supported / rejected contract
+- an end-to-end test asserting the lowered flop/turn graph produces exactly the
+  legal set of streets, betting nodes, and runouts (each legal board once)
+
+Why it matters: serious postflop analysis needs real flop and turn solves with
+betting, not single-river terminal states or check-down equity. This is also the
+foundation for aggregated reports by turn/river class.
 
 ## 2. Robust convergence and exploitability reporting
 
@@ -142,7 +175,7 @@ accurate per-node strategy and EV data first.
 
 ## Recommended implementation order
 
-1. Accurate flop/turn chance and board-runout handling.
+1. Per-street betting expansion for flop/turn solves.
 2. Robust convergence and exploitability reporting.
 3. Strategy and EV result surfaces.
 4. Node locking.

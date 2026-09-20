@@ -908,9 +908,137 @@ namespace zeta::holdem::cli {
             }
         }
 
+        // Blocker-aware opponent mass for a fold terminal on any street. Aggregates the
+        // opponent's path reach over combos that are not blocked by the (partial or full)
+        // board, so a hero combo's compatible mass follows the same inclusion-exclusion
+        // the river fold kernel uses, but without a five-card terminal cache.
+        struct fold_opponent_aggregate {
+            double total = 0.0;
+            std::array<double, 52> mass_by_card{};
+        };
+
+        [[nodiscard]] inline fold_opponent_aggregate accumulate_fold_opponent_mass(
+            const reach_vector& opponent_reach,
+            const std::vector<combination_index>& opponent_active,
+            const card_mask board_mask)
+        {
+            fold_opponent_aggregate aggregate{};
+            for (const auto combo : opponent_active) {
+                const auto weight = opponent_reach[combo];
+                if (weight <= 0.0f) {
+                    continue;
+                }
+                const auto mask = combination_mask(combo);
+                if ((mask & board_mask) != 0) {
+                    continue;
+                }
+                aggregate.total += static_cast<double>(weight);
+                const auto [first, second] = extract_combo_cards(mask);
+                aggregate.mass_by_card[first] += static_cast<double>(weight);
+                aggregate.mass_by_card[second] += static_cast<double>(weight);
+            }
+            return aggregate;
+        }
+
+        // Back up counterfactual values for the updating player over the exact
+        // multi-street public game. Terminal leaves dispatch to the per-river terminal
+        // cache (showdown) or a blocker-aware fold evaluation (any street); chance nodes
+        // weight each child by its outcome probability; player nodes fold in the current
+        // strategy for the updating player and sum for the opponent.
+        template <std::size_t N>
+        inline void evaluate_multi_street_combo_profile(
+            const cfr::holdem_public_game_graph<N>& lowered,
+            const combo_action_table& strategy_profile,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const std::vector<std::array<reach_vector, N>>& node_reach,
+            const cfr::runout_terminal_table& terminal_table,
+            const std::vector<std::array<river_reach_index, N>>& river_base_index_by_state,
+            const uint8_t updating_player,
+            std::vector<reach_vector>& node_values,
+            const uint16_t samples_per_combo)
+        {
+            static_assert(N == 2, "multi-street public-game CFR is heads-up only");
+            node_values.assign(lowered.graph.node_count, {});
+            const terminal_engine<N> engine{};
+            const auto opponent = static_cast<uint8_t>(1u - updating_player);
+            for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
+                const auto kind = lowered.graph.node_types[node_id];
+                if (kind == cfr::node_kind::terminal) {
+                    const auto state_id = lowered.annotations.state_by_node[node_id].public_state_id;
+                    const auto terminal_state_id = lowered.terminal_leaves[node_id].terminal_state_id;
+                    const auto& terminal_state = lowered.terminal_states[terminal_state_id];
+                    if (terminal_state.kind == terminal_state_kind::showdown) {
+                        const auto* entry = terminal_table.find(state_id);
+                        assert(entry != nullptr);
+                        const auto opponent_index = make_river_reach_index(entry->cache, node_reach[node_id][opponent]);
+                        const auto values = updating_player == 0u
+                            ? engine.evaluate_terminal_values(
+                                entry->cache, river_base_index_by_state[state_id][0], opponent_index,
+                                terminal_state, samples_per_combo)
+                            : engine.evaluate_terminal_values(
+                                entry->cache, opponent_index, river_base_index_by_state[state_id][1],
+                                terminal_state, samples_per_combo);
+                        for (const auto combo : active_combos[updating_player]) {
+                            node_values[node_id][combo] = values[updating_player][combo];
+                        }
+                    } else {
+                        const auto board_mask = lowered.public_states.states[state_id].board_cards;
+                        const auto payoff = ::zeta::holdem::detail::fold_payoff(terminal_state);
+                        const auto aggregate = accumulate_fold_opponent_mass(
+                            node_reach[node_id][opponent], active_combos[opponent], board_mask);
+                        for (const auto combo : active_combos[updating_player]) {
+                            const auto mask = combination_mask(combo);
+                            if ((mask & board_mask) != 0) {
+                                continue;
+                            }
+                            const auto [first, second] = extract_combo_cards(mask);
+                            const auto self_weight = std::max(0.0f, node_reach[node_id][opponent][combo]);
+                            const auto compatible = clamp_compatible_mass(
+                                aggregate.total - aggregate.mass_by_card[first] - aggregate.mass_by_card[second]
+                                    + static_cast<double>(self_weight));
+                            node_values[node_id][combo] = static_cast<float>(
+                                compatible * payoff[updating_player]);
+                        }
+                    }
+                    continue;
+                }
+
+                const auto edges = lowered.graph.out_edges(node_id);
+                if (kind == cfr::node_kind::chance) {
+                    for (const auto& edge : edges) {
+                        const auto probability = lowered.chance_events.probability_for_edge(node_id, edge);
+                        for (const auto combo : active_combos[updating_player]) {
+                            node_values[node_id][combo] += probability * node_values[edge.child_node][combo];
+                        }
+                    }
+                    continue;
+                }
+
+                const auto actor = lowered.annotations.actor_by_node[node_id];
+                const auto infoset_id = lowered.graph.infoset_id[node_id];
+                if (actor == updating_player) {
+                    for (const auto combo : active_combos[updating_player]) {
+                        float total = 0.0f;
+                        for (const auto& edge : edges) {
+                            total += strategy_profile.value(combo, infoset_id, edge.action_index)
+                                * node_values[edge.child_node][combo];
+                        }
+                        node_values[node_id][combo] = total;
+                    }
+                } else {
+                    for (const auto& edge : edges) {
+                        for (const auto combo : active_combos[updating_player]) {
+                            node_values[node_id][combo] += node_values[edge.child_node][combo];
+                        }
+                    }
+                }
+            }
+        }
+
         template <std::size_t N>
         inline void update_combo_cfr_tables(
-            const cfr::holdem_betting_graph<N>& lowered,
+            const cfr::game_graph& graph,
+            const cfr::solver::solver_graph_annotations& annotations,
             const combo_action_table& current_strategy,
             const std::array<std::vector<combination_index>, N>& active_combos,
             const uint8_t updating_player,
@@ -919,16 +1047,16 @@ namespace zeta::holdem::cli {
             combo_action_table& regrets,
             combo_action_table& strategy_sums)
         {
-            for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
-                if (!lowered.graph.is_player_node(node_id)) {
+            for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+                if (!graph.is_player_node(node_id)) {
                     continue;
                 }
-                const auto actor = lowered.annotations.actor_by_node[node_id];
+                const auto actor = annotations.actor_by_node[node_id];
                 if (actor != updating_player) {
                     continue;
                 }
-                const auto infoset_id = lowered.graph.infoset_id[node_id];
-                const auto edges = lowered.graph.out_edges(node_id);
+                const auto infoset_id = graph.infoset_id[node_id];
+                const auto edges = graph.out_edges(node_id);
                 for (const auto combo : active_combos[updating_player]) {
                     const auto node_value = node_values[node_id][combo];
                     const auto path_weight = node_reach[node_id][updating_player][combo];
@@ -1099,23 +1227,32 @@ namespace zeta::holdem::cli {
             }
         }
 
-        // Evaluates a lowered multi-street public game (flop/turn) by enumerating its
-        // combined runouts to the river and averaging blocker-aware showdown value per
-        // hero combo. The public game root carries a single pass-through action into one
-        // chance node that deals the complete runout, so no betting recursion or CFR
-        // iteration is required: the strategic content lives entirely in the terminal
-        // showdown evaluation. Heads-up only; higher seat counts are rejected because the
-        // exact showdown kernel is defined for two players.
+        // Runs the unified heads-up CFR+ solve over the exact multi-street public game
+        // (flop/turn). CFR+ traverses the interleaved betting/chance tree across every
+        // street; terminal leaves dispatch to the per-river terminal cache (showdown) or a
+        // blocker-aware fold evaluation (any street), keeping the expensive hand evaluation
+        // outside the regret-matching hot loop. Heads-up only; higher seat counts are
+        // rejected because the exact terminal kernels are defined for two players.
         template <std::size_t N>
-        [[nodiscard]] inline std::expected<void, cli_error> solve_public_game_runout(
+        [[nodiscard]] inline std::expected<void, cli_error> solve_multi_street_public_game(
             const solve_spot& spot,
             const uint64_t iterations,
             const solve_runtime_options& runtime,
             const cfr::holdem_public_game_graph<N>& public_game,
+            const cfr::action_table_layout& layout,
+            const cfr::holdem_betting_graph_config<N>& config,
             const std::array<reach_vector, N>& reach_vectors,
             solve_output& output)
         {
             if constexpr (N != 2) {
+                (void)spot;
+                (void)iterations;
+                (void)runtime;
+                (void)public_game;
+                (void)layout;
+                (void)config;
+                (void)reach_vectors;
+                (void)output;
                 return std::unexpected(cli_error{
                     cli_error_kind::solver,
                     "Flop and turn solving currently supports heads-up play (2 seats) only."
@@ -1124,128 +1261,108 @@ namespace zeta::holdem::cli {
                 if (solve_cancel_requested(runtime)) {
                     return std::unexpected(solve_cancelled_error());
                 }
-                const auto& runouts = public_game.runouts.runouts;
-                if (runouts.empty()) {
+
+                const auto& graph = public_game.graph;
+                const auto& annotations = public_game.annotations;
+
+                combo_action_table regrets(layout);
+                combo_action_table strategy_sums(layout);
+                combo_action_table current_strategy(layout);
+                combo_action_table average_strategy(layout);
+                const auto active_combos = active_combos_by_player(reach_vectors);
+
+                // Materialize one river terminal cache per distinct river board and, for
+                // each seat, the range-weighted reach index into that cache. These stay
+                // outside the CFR loop so showdown leaves reuse the vectorized river
+                // terminal evaluation instead of rebuilding equity every iteration.
+                const auto terminal_table =
+                    cfr::make_runout_terminal_table(public_game.public_states.states);
+                std::vector<std::array<river_reach_index, N>> river_base_index_by_state(
+                    public_game.public_states.states.size());
+                for (const auto& state : public_game.public_states.states) {
+                    if (!state.is_terminal_river_state) {
+                        continue;
+                    }
+                    const auto* entry = terminal_table.find(state.id);
+                    if (entry == nullptr) {
+                        return std::unexpected(cli_error{
+                            cli_error_kind::solver,
+                            "River public state is missing its materialized terminal cache."
+                        });
+                    }
+                    for (std::size_t seat = 0; seat < N; ++seat) {
+                        river_base_index_by_state[state.id][seat] =
+                            make_river_reach_index(entry->cache, reach_vectors[seat]);
+                    }
+                }
+
+                auto initial_state = cfr::make_initial_betting_state(config);
+                const auto root_actions = cfr::legal_betting_actions(initial_state, config.abstraction);
+                const auto root_infoset = graph.infoset_id[graph.root_node];
+                if (!graph.is_player_node(graph.root_node)
+                    || root_actions.empty()
+                    || root_actions.size() != layout.action_count(root_infoset)) {
                     return std::unexpected(cli_error{
                         cli_error_kind::solver,
-                        "Public game lowering produced no runouts to evaluate."
+                        "Root action shape does not match strategy table shape."
                     });
                 }
 
                 const auto iter_begin = std::chrono::steady_clock::now();
-                emit_progress(
-                    runtime,
-                    solve_progress_stage::cfr,
-                    0,
-                    iterations,
-                    0,
-                    static_cast<uint8_t>(N),
-                    0.0,
-                    "Evaluating runout terminals.");
-
-                auto terminal_table = cfr::make_runout_terminal_table(public_game.public_states.states);
-
-                terminal_context<N> terminal{};
-                terminal.gross_pot = spot.gross_pot;
-                terminal.rake = spot.rake;
-                for (std::size_t seat = 0; seat < N; ++seat) {
-                    terminal.contribution[seat] = spot.contributions[seat];
-                }
-
-                std::array<std::array<double, combination_count>, N> ev_sum{};
-                std::array<std::array<double, combination_count>, N> ev_weight{};
-
-                // Evaluate each runout's river terminal independently across worker
-                // threads, then reduce sequentially in canonical runout order. The
-                // per-runout results are written to disjoint slots so the parallel
-                // computation is race-free, and the ordered reduction keeps the solved
-                // output bit-identical regardless of the configured worker count.
-                std::vector<terminal_values<N>> runout_values(runouts.size());
-                std::vector<card_mask> runout_masks(runouts.size(), card_mask{0});
-                std::atomic<bool> terminal_missing{false};
-                std::atomic<bool> runout_cancelled{false};
-
-                auto evaluate_runout_task =
-                    [&](const cfr::scheduler::scheduler_worker_state&,
-                        const cfr::scheduler::board_partition_task& task)
-                        -> std::expected<void, cfr::scheduler::scheduler_error> {
+                const auto progress_batch = std::max<uint64_t>(1, runtime.progress_batch_iterations);
+                std::vector<std::array<reach_vector, N>> node_reach;
+                std::vector<reach_vector> node_values;
+                for (uint64_t i = 0; i < iterations; ++i) {
                     if (solve_cancel_requested(runtime)) {
-                        runout_cancelled.store(true, std::memory_order_relaxed);
-                        return std::unexpected(cfr::scheduler::scheduler_error{
-                            cfr::scheduler::scheduler_error_kind::task_failed});
+                        return std::unexpected(solve_cancelled_error());
                     }
-                    const auto runout_index = task.board_index;
-                    const auto& runout = runouts[runout_index];
-                    const auto* entry = terminal_table.find(runout.river_public_state_id);
-                    if (entry == nullptr) {
-                        terminal_missing.store(true, std::memory_order_relaxed);
-                        return std::unexpected(cfr::scheduler::scheduler_error{
-                            cfr::scheduler::scheduler_error_kind::task_failed});
-                    }
-                    const auto oop_index = make_river_reach_index(entry->cache, reach_vectors[0]);
-                    const auto ip_index = make_river_reach_index(entry->cache, reach_vectors[1]);
-                    runout_values[runout_index] =
-                        evaluate_showdown(entry->cache, oop_index, ip_index, terminal).values;
-                    runout_masks[runout_index] = entry->river_board.mask;
-                    return {};
-                };
-
-                const std::array<cfr::scheduler::graph_partition, 1> runout_partitions{
-                    cfr::scheduler::graph_partition{
-                        .begin_node = 0u,
-                        .end_node = 0u,
-                        .node_count = 0u,
-                        .terminal_count = 0u,
-                        .action_count = 0u,
-                        .min_depth = 0u,
-                        .max_depth = 0u,
-                        .estimated_work = 1u
-                    }};
-                auto runout_plan = cfr::scheduler::make_board_partition_plan(
-                    static_cast<uint32_t>(runouts.size()), runout_partitions);
-                if (!runout_plan) {
-                    return std::unexpected(cli_error{
-                        cli_error_kind::solver,
-                        "Failed to build the runout scheduling plan."
-                    });
-                }
-
-                cfr::scheduler::scheduler_runtime_config runout_scheduler_config{};
-                runout_scheduler_config.worker_count = std::clamp<uint32_t>(runtime.worker_threads, 1u, 64u);
-                runout_scheduler_config.task_chunk_size = 1u;
-                auto scheduler_run = cfr::scheduler::run_board_partition_scheduler(
-                    *runout_plan, runout_scheduler_config, evaluate_runout_task);
-
-                if (runout_cancelled.load(std::memory_order_relaxed)) {
-                    return std::unexpected(solve_cancelled_error());
-                }
-                if (terminal_missing.load(std::memory_order_relaxed)) {
-                    return std::unexpected(cli_error{
-                        cli_error_kind::solver,
-                        "Runout references a river public state without a materialized terminal cache."
-                    });
-                }
-                if (!scheduler_run) {
-                    return std::unexpected(cli_error{
-                        cli_error_kind::solver,
-                        "Runout scheduler failed to evaluate every runout terminal."
-                    });
-                }
-
-                for (std::size_t runout_index = 0; runout_index < runouts.size(); ++runout_index) {
-                    const auto& values = runout_values[runout_index];
-                    const auto river_mask = runout_masks[runout_index];
-                    for (std::size_t seat = 0; seat < N; ++seat) {
-                        for (combination_index combo = 0; combo < combination_count; ++combo) {
-                            if (reach_vectors[seat][combo] <= 0.0f) {
-                                continue;
-                            }
-                            if ((combination_mask(combo) & river_mask) != 0) {
-                                continue;
-                            }
-                            ev_sum[seat][combo] += static_cast<double>(values[seat][combo]);
-                            ev_weight[seat][combo] += 1.0;
+                    for (uint8_t updating_player = 0; updating_player < N; ++updating_player) {
+                        if ((i % progress_batch) == 0) {
+                            emit_progress(
+                                runtime,
+                                solve_progress_stage::cfr,
+                                i,
+                                iterations,
+                                updating_player,
+                                static_cast<uint8_t>(N),
+                                std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - iter_begin).count(),
+                                "Multi-street CFR+ player update.");
                         }
+                        normalize_combo_action_table(graph, annotations, regrets, current_strategy, active_combos);
+                        build_node_reach_vectors(graph, annotations, current_strategy, reach_vectors, active_combos, node_reach);
+                        evaluate_multi_street_combo_profile(
+                            public_game,
+                            current_strategy,
+                            active_combos,
+                            node_reach,
+                            terminal_table,
+                            river_base_index_by_state,
+                            updating_player,
+                            node_values,
+                            spot.samples_per_combo);
+                        update_combo_cfr_tables(
+                            graph,
+                            annotations,
+                            current_strategy,
+                            active_combos,
+                            updating_player,
+                            node_reach,
+                            node_values,
+                            regrets,
+                            strategy_sums);
+                    }
+                    if (((i + 1) % progress_batch) == 0 || (i + 1) == iterations) {
+                        emit_progress(
+                            runtime,
+                            solve_progress_stage::cfr,
+                            i + 1,
+                            iterations,
+                            static_cast<uint8_t>(N - 1),
+                            static_cast<uint8_t>(N),
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - iter_begin).count(),
+                            "Multi-street CFR+ iteration batch complete.");
                     }
                 }
                 output.timing.cfr_iterations_ms = std::chrono::duration<double, std::milli>(
@@ -1264,53 +1381,93 @@ namespace zeta::holdem::cli {
                     0,
                     static_cast<uint8_t>(N),
                     0.0,
-                    "Assembling runout artifact.");
+                    "Extracting combo strategies.");
+
+                normalize_combo_action_table(graph, annotations, strategy_sums, average_strategy, active_combos);
+                build_node_reach_vectors(graph, annotations, average_strategy, reach_vectors, active_combos, node_reach);
+                const auto hero = static_cast<uint8_t>(spot.hero_seat);
+                evaluate_multi_street_combo_profile(
+                    public_game,
+                    average_strategy,
+                    active_combos,
+                    node_reach,
+                    terminal_table,
+                    river_base_index_by_state,
+                    hero,
+                    node_values,
+                    spot.samples_per_combo);
 
                 solve_artifact artifact{};
                 artifact.players.assign(spot.players.begin(), std::next(spot.players.begin(), N));
                 artifact.board = spot.board;
                 artifact.street = spot.street;
                 artifact.hero_seat = spot.hero_seat;
-                artifact.solver.algorithm = "runout-enumeration";
+                artifact.solver.algorithm = "cfr+";
                 artifact.solver.iterations = iterations;
                 artifact.solver.timestamp = runtime.timestamp_utc.empty() ? now_utc_iso8601() : runtime.timestamp_utc;
                 artifact.solver.git_revision = runtime.git_revision;
+                artifact.root_strategy = aggregate_root_strategy_for_actor(
+                    average_strategy,
+                    root_infoset,
+                    root_actions,
+                    reach_vectors[hero],
+                    spot.gross_pot);
 
-                const auto hero = static_cast<std::size_t>(spot.hero_seat);
-                for (combination_index combo = 0; combo < combination_count; ++combo) {
-                    if (reach_vectors[hero][combo] <= 0.0f) {
-                        continue;
+                for (const auto combo : active_combos[hero]) {
+                    std::vector<action_strategy> combo_strategy;
+                    combo_strategy.reserve(root_actions.size());
+                    for (std::size_t action_index = 0; action_index < root_actions.size(); ++action_index) {
+                        combo_strategy.push_back(action_strategy{
+                            .action = artifact.root_strategy[action_index].action,
+                            .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
+                        });
                     }
                     artifact.strategy.push_back(hand_strategy{
                         .hand = hand_text_from_combo(combo),
-                        .ev = ev_weight[hero][combo] > 0.0
-                            ? ev_sum[hero][combo] / ev_weight[hero][combo]
-                            : 0.0
+                        .strategy = std::move(combo_strategy),
+                        .ev = node_values[graph.root_node][combo]
                     });
                 }
 
-                const auto& graph = public_game.graph;
                 std::vector<std::vector<action_strategy>> node_strategies(graph.node_count);
-                if (graph.is_player_node(graph.root_node)) {
-                    const auto root_edges = graph.out_edges(graph.root_node);
-                    auto& root_strategy = node_strategies[graph.root_node];
-                    root_strategy.reserve(root_edges.size());
-                    const auto frequency = root_edges.empty()
-                        ? 0.0
-                        : 1.0 / static_cast<double>(root_edges.size());
-                    for (uint32_t action_index = 0; action_index < root_edges.size(); ++action_index) {
-                        root_strategy.push_back(action_strategy{
-                            .action = "runout",
-                            .frequency = frequency
+                for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+                    if (!graph.is_player_node(node_id)) {
+                        continue;
+                    }
+                    const auto actor = annotations.actor_by_node[node_id];
+                    const auto infoset_id = graph.infoset_id[node_id];
+                    const auto edges = graph.out_edges(node_id);
+                    std::vector<double> weighted(edges.size(), 0.0);
+                    double total = 0.0;
+                    for (const auto combo : active_combos[actor]) {
+                        const auto weight = std::max(0.0f, node_reach[node_id][actor][combo]);
+                        if (weight <= 0.0f) {
+                            continue;
+                        }
+                        total += static_cast<double>(weight);
+                        for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
+                            weighted[action_index] += static_cast<double>(weight)
+                                * static_cast<double>(average_strategy.value(combo, infoset_id, action_index));
+                        }
+                    }
+                    auto& node_strategy = node_strategies[node_id];
+                    node_strategy.reserve(edges.size());
+                    for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
+                        node_strategy.push_back(action_strategy{
+                            .action = (node_id == graph.root_node && action_index < artifact.root_strategy.size())
+                                ? artifact.root_strategy[action_index].action
+                                : std::to_string(action_index),
+                            .frequency = total > 0.0
+                                ? weighted[action_index] / total
+                                : (edges.empty() ? 0.0 : 1.0 / static_cast<double>(edges.size()))
                         });
                     }
-                    artifact.root_strategy = root_strategy;
                 }
 
                 append_solved_graph_payload(
                     artifact,
                     graph,
-                    public_game.annotations,
+                    annotations,
                     &public_game.public_states,
                     &public_game.chance_events,
                     &public_game.runouts,
@@ -1326,7 +1483,7 @@ namespace zeta::holdem::cli {
                     0,
                     static_cast<uint8_t>(N),
                     output.timing.extraction_ms,
-                    "Runout extraction complete.");
+                    "Combo extraction complete.");
 
                 if (auto validation = validate_artifact(output.artifact); !validation) {
                     return std::unexpected(validation.error());
@@ -1420,7 +1577,8 @@ namespace zeta::holdem::cli {
                         node_values,
                         spot.samples_per_combo);
                     update_combo_cfr_tables(
-                        lowered,
+                        lowered.graph,
+                        lowered.annotations,
                         current_strategy,
                         active_combos,
                         updating_player,
@@ -1644,11 +1802,18 @@ namespace zeta::holdem::cli {
                 public_config.abstraction = config.abstraction;
                 public_config.max_history = spot.max_history;
                 public_config.public_state_id = spot.public_state_id;
-                auto lowered_public = cfr::lower_public_game_tree(public_config);
+                auto lowered_public = cfr::lower_multi_street_public_game(public_config);
                 if (!lowered_public) {
                     return std::unexpected(cli_error{
                         cli_error_kind::solver,
-                        "Failed to lower the public game graph from the input spot."
+                        "Failed to lower the multi-street public game graph from the input spot."
+                    });
+                }
+                auto public_layout = cfr::make_action_table_layout(lowered_public->graph);
+                if (!public_layout) {
+                    return std::unexpected(cli_error{
+                        cli_error_kind::solver,
+                        "Failed to build CFR action layout for the multi-street public game."
                     });
                 }
                 output.timing.graph_build_ms = std::chrono::duration<double, std::milli>(
@@ -1662,11 +1827,13 @@ namespace zeta::holdem::cli {
                     static_cast<uint8_t>(N),
                     output.timing.graph_build_ms,
                     "Public game graph built.");
-                if (auto solved = solve_public_game_runout<N>(
+                if (auto solved = solve_multi_street_public_game<N>(
                         spot,
                         iterations,
                         runtime,
                         *lowered_public,
+                        *public_layout,
+                        config,
                         reach_vectors,
                         output);
                     !solved) {

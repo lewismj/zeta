@@ -2,8 +2,11 @@
 
 #include "cli/solve_cli.h"
 
+#include <array>
 #include <cmath>
 #include <ranges>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -422,83 +425,219 @@ BOOST_AUTO_TEST_CASE(holdem_cli_solve_multiway_produces_valid_artifact) {
     BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(output->artifact).has_value());
 }
 
-BOOST_AUTO_TEST_CASE(holdem_cli_solve_supports_turn_and_flop_streets) {
+BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_solve_supports_turn_street) {
     auto turn_spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
     BOOST_REQUIRE(turn_spot.has_value());
-    auto turn_output = zeta::holdem::cli::solve_spot(*turn_spot, 1);
+    auto turn_output = zeta::holdem::cli::solve_spot(*turn_spot, 4);
     BOOST_REQUIRE(turn_output.has_value());
     BOOST_CHECK_EQUAL(turn_output->artifact.street, "turn");
     BOOST_CHECK_EQUAL(turn_output->artifact.board.size(), 4u);
+    BOOST_CHECK_EQUAL(turn_output->artifact.solver.algorithm, "cfr+");
+    BOOST_CHECK(!turn_output->artifact.root_strategy.empty());
+    BOOST_CHECK(std::ranges::all_of(turn_output->artifact.strategy, [](const auto& row) {
+        return !row.strategy.empty();
+    }));
     BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(turn_output->artifact).has_value());
-
-    auto flop_spot = zeta::holdem::cli::parse_spot_json(sample_spot_flop);
-    BOOST_REQUIRE(flop_spot.has_value());
-    auto flop_output = zeta::holdem::cli::solve_spot(*flop_spot, 1);
-    BOOST_REQUIRE(flop_output.has_value());
-    BOOST_CHECK_EQUAL(flop_output->artifact.street, "flop");
-    BOOST_CHECK_EQUAL(flop_output->artifact.board.size(), 3u);
-    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(flop_output->artifact).has_value());
 }
 
-BOOST_AUTO_TEST_CASE(holdem_cli_runout_solve_matches_hand_computed_ev) {
-    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_flop_solve_backs_up_two_chance_layers) {
+    namespace cli = zeta::holdem::cli;
+    namespace detail = cli::detail;
+    namespace cfr = zeta::holdem::cfr;
+
+    // A full-deck flop solve enumerates every remaining river runout and is
+    // intractable at this stage (Stage 3 adds the memory/isomorphism controls
+    // that make it feasible). To exercise the flop-specific two-chance-layer
+    // value backup here, restrict the live deck to a single turn/river pair so
+    // the interleaved turn+river tree stays tiny while still driving both chance
+    // layers of the unified CFR+ solve.
+    auto spot = cli::parse_spot_json(sample_spot_flop);
     BOOST_REQUIRE(spot.has_value());
 
-    auto output = zeta::holdem::cli::solve_spot(*spot, 1);
-    BOOST_REQUIRE(output.has_value());
-    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(output->artifact).has_value());
-    BOOST_REQUIRE_EQUAL(output->artifact.strategy.size(), 1u);
+    const auto street = detail::parse_holdem_street(spot->street);
+    BOOST_REQUIRE(street.has_value());
+    BOOST_REQUIRE(*street == cfr::solver::holdem_street::flop);
 
-    // Independent hand computation of the runout-averaged counterfactual value:
-    //   - 52 cards - 4 board - 2 hero cards = 46 rivers are live for the hero.
-    //   - The villain ("2c3d") is blocked on exactly 2 of those rivers (2c, 3d),
-    //     contributing zero counterfactual value on those runouts.
-    //   - On the remaining 44 rivers the hero's royal flush wins, paying
-    //     (gross_pot - rake) - hero_contribution = 100 - 50 = 50.
-    constexpr double win_payoff = 50.0;
-    constexpr double live_rivers = 46.0;
-    constexpr double winning_rivers = 44.0;
-    constexpr double expected_ev = win_payoff * winning_rivers / live_rivers;
-    BOOST_CHECK_CLOSE(output->artifact.strategy.front().ev, expected_ev, 0.01);
-}
+    const auto flop_board = detail::board_from_cards(spot->board, *street);
+    BOOST_REQUIRE(flop_board.has_value());
 
-BOOST_AUTO_TEST_CASE(holdem_cli_runout_solve_is_deterministic_across_worker_counts) {
-    auto flop_spot = zeta::holdem::cli::parse_spot_json(sample_spot_flop);
-    BOOST_REQUIRE(flop_spot.has_value());
+    // Leave exactly two community cards (2h, 3h) live for the turn and river deals.
+    const auto full_board = detail::board_from_cards(
+        std::vector<std::string>{"As", "Kd", "7c", "2h", "3h"},
+        cfr::solver::holdem_street::river);
+    BOOST_REQUIRE(full_board.has_value());
+    constexpr zeta::card_mask full_deck = (zeta::card_mask{1} << 52) - 1;
+    const zeta::card_mask live_runout = full_board->mask & ~flop_board->mask;
 
-    auto single = zeta::holdem::cli::solve_spot(*flop_spot, 1, {.worker_threads = 1});
-    auto parallel = zeta::holdem::cli::solve_spot(*flop_spot, 1, {.worker_threads = 8});
-    BOOST_REQUIRE(single.has_value());
-    BOOST_REQUIRE(parallel.has_value());
-    BOOST_REQUIRE_EQUAL(single->artifact.strategy.size(), parallel->artifact.strategy.size());
+    std::array<zeta::holdem::hand_range, 2> ranges{};
+    std::array<zeta::holdem::reach_vector, 2> reach_vectors{};
+    for (std::size_t seat = 0; seat < 2; ++seat) {
+        BOOST_REQUIRE(detail::parse_range_checked(
+            spot->ranges[seat], ranges[seat], "seat").has_value());
+        ranges[seat].remove_dead(flop_board->mask);
+        reach_vectors[seat] = zeta::holdem::make_reach_vector(ranges[seat]);
+    }
 
-    // Runout evaluation is distributed across worker threads, but the ordered
-    // reduction must reproduce the single-worker result exactly (bit-identical).
-    for (std::size_t i = 0; i < single->artifact.strategy.size(); ++i) {
-        BOOST_CHECK_EQUAL(single->artifact.strategy[i].hand, parallel->artifact.strategy[i].hand);
-        BOOST_CHECK_EQUAL(single->artifact.strategy[i].ev, parallel->artifact.strategy[i].ev);
+    cfr::holdem_betting_graph_config<2> config{};
+    config.street = *street;
+    config.initial_stacks = {spot->stacks[0], spot->stacks[1]};
+    config.initial_committed = {spot->contributions[0], spot->contributions[1]};
+    config.root_actor = spot->root_actor;
+    config.abstraction = cli::resolve_spot_betting_policy(*spot);
+    config.max_history = spot->max_history;
+    config.public_state_id = spot->public_state_id;
+
+    cfr::holdem_public_game_config<2> public_config{};
+    public_config.street = *street;
+    public_config.board_cards = flop_board->mask;
+    public_config.dead_cards = full_deck & ~flop_board->mask & ~live_runout;
+    public_config.initial_stacks = config.initial_stacks;
+    public_config.initial_committed = config.initial_committed;
+    public_config.root_actor = config.root_actor;
+    public_config.abstraction = config.abstraction;
+    public_config.max_history = config.max_history;
+    public_config.public_state_id = config.public_state_id;
+
+    auto lowered = cfr::lower_multi_street_public_game(public_config);
+    BOOST_REQUIRE(lowered.has_value());
+    auto layout = cfr::make_action_table_layout(lowered->graph);
+    BOOST_REQUIRE(layout.has_value());
+
+    // The restricted deck deals exactly one (turn, river) ordering, so the tree
+    // interleaves a turn chance layer and a river chance layer above the river
+    // showdown terminals: both flop-root and turn public states must be present.
+    bool has_turn_state = false;
+    bool has_river_state = false;
+    for (const auto& state : lowered->public_states.states) {
+        if (state.street == cfr::solver::holdem_street::turn) {
+            has_turn_state = true;
+        }
+        if (state.street == cfr::solver::holdem_street::river) {
+            has_river_state = true;
+        }
+    }
+    BOOST_CHECK(has_turn_state);
+    BOOST_CHECK(has_river_state);
+
+    cli::solve_output output{};
+    auto solved = detail::solve_multi_street_public_game<2>(
+        *spot, 8, {}, *lowered, *layout, config, reach_vectors, output);
+    BOOST_REQUIRE(solved.has_value());
+
+    BOOST_CHECK_EQUAL(output.artifact.solver.algorithm, "cfr+");
+    BOOST_CHECK(!output.artifact.root_strategy.empty());
+    BOOST_REQUIRE(!output.artifact.strategy.empty());
+    for (const auto& row : output.artifact.strategy) {
+        BOOST_CHECK(std::isfinite(row.ev));
+        BOOST_CHECK(!row.strategy.empty());
     }
 }
 
-BOOST_AUTO_TEST_CASE(holdem_cli_nonriver_artifact_persists_runout_graph_payload) {
-    auto flop_spot = zeta::holdem::cli::parse_spot_json(sample_spot_flop);
-    BOOST_REQUIRE(flop_spot.has_value());
+BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_solve_matches_hand_computed_nuts_ev) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+    BOOST_REQUIRE(spot.has_value());
 
-    auto flop_output = zeta::holdem::cli::solve_spot(*flop_spot, 1, {.worker_threads = 2});
-    BOOST_REQUIRE(flop_output.has_value());
-    BOOST_CHECK_EQUAL(flop_output->artifact.schema_version, 3u);
-    BOOST_CHECK(!flop_output->artifact.public_states.empty());
-    BOOST_CHECK(!flop_output->artifact.chance_events.empty());
-    BOOST_CHECK(!flop_output->artifact.runouts.empty());
-    BOOST_CHECK(!flop_output->artifact.solved_nodes.empty());
+    auto output = zeta::holdem::cli::solve_spot(*spot, 600);
+    BOOST_REQUIRE(output.has_value());
+    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(output->artifact).has_value());
+    BOOST_CHECK_EQUAL(output->artifact.solver.algorithm, "cfr+");
+    BOOST_REQUIRE_EQUAL(output->artifact.strategy.size(), 1u);
 
-    const auto json = zeta::holdem::cli::serialize_artifact_json(flop_output->artifact);
+    // Independent equilibrium computation. The hero ("Th9s") already holds a royal
+    // flush on the Ah Kh Qh Jh turn and is unbeatable on every river, while the
+    // villain ("2c3d") is drawing dead. The villain's loss-minimizing equilibrium
+    // response is to commit no further chips (fold to any bet / never bet into the
+    // nuts), so the hero simply collects the existing 100 pot on every runout:
+    //   counterfactual value = (gross_pot - rake) - hero_contribution = 100 - 50 = 50.
+    // The villain's single combo is never blocked by the hero, so the opponent reach
+    // mass is exactly 1.0 and the counterfactual value is undivided.
+    constexpr double expected_ev = 50.0;
+    BOOST_CHECK_CLOSE(output->artifact.strategy.front().ev, expected_ev, 1.0);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_solve_converges_with_iterations) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    auto coarse = zeta::holdem::cli::solve_spot(*spot, 1);
+    auto refined = zeta::holdem::cli::solve_spot(*spot, 600);
+    BOOST_REQUIRE(coarse.has_value());
+    BOOST_REQUIRE(refined.has_value());
+    BOOST_REQUIRE_EQUAL(coarse->artifact.solver.iterations, 1u);
+    BOOST_REQUIRE_EQUAL(refined->artifact.solver.iterations, 600u);
+    BOOST_REQUIRE_EQUAL(coarse->artifact.strategy.size(), 1u);
+    BOOST_REQUIRE_EQUAL(refined->artifact.strategy.size(), 1u);
+
+    // The averaged strategy after a single iteration has not yet reached the nuts
+    // equilibrium, so its counterfactual value is measurably further from the
+    // hand-computed target than the well-converged solve.
+    constexpr double equilibrium_ev = 50.0;
+    const double coarse_error = std::fabs(coarse->artifact.strategy.front().ev - equilibrium_ev);
+    const double refined_error = std::fabs(refined->artifact.strategy.front().ev - equilibrium_ev);
+    BOOST_CHECK_LT(refined_error, coarse_error);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_solve_is_deterministic_across_worker_counts) {
+    auto turn_spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
+    BOOST_REQUIRE(turn_spot.has_value());
+
+    auto single = zeta::holdem::cli::solve_spot(*turn_spot, 32, {.worker_threads = 1});
+    auto parallel = zeta::holdem::cli::solve_spot(*turn_spot, 32, {.worker_threads = 8});
+    BOOST_REQUIRE(single.has_value());
+    BOOST_REQUIRE(parallel.has_value());
+    BOOST_REQUIRE(!single->artifact.strategy.empty());
+    BOOST_REQUIRE_EQUAL(single->artifact.strategy.size(), parallel->artifact.strategy.size());
+
+    // The unified CFR+ solve is worker-count independent: the same converged
+    // strategy and per-combo EV are produced regardless of the configured threads.
+    for (std::size_t i = 0; i < single->artifact.strategy.size(); ++i) {
+        BOOST_CHECK_EQUAL(single->artifact.strategy[i].hand, parallel->artifact.strategy[i].hand);
+        BOOST_CHECK_EQUAL(single->artifact.strategy[i].ev, parallel->artifact.strategy[i].ev);
+        BOOST_REQUIRE_EQUAL(single->artifact.strategy[i].strategy.size(),
+            parallel->artifact.strategy[i].strategy.size());
+        for (std::size_t action = 0; action < single->artifact.strategy[i].strategy.size(); ++action) {
+            BOOST_CHECK_EQUAL(single->artifact.strategy[i].strategy[action].frequency,
+                parallel->artifact.strategy[i].strategy[action].frequency);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_nonriver_artifact_persists_multi_street_graph_payload) {
+    auto turn_spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
+    BOOST_REQUIRE(turn_spot.has_value());
+
+    auto turn_output = zeta::holdem::cli::solve_spot(*turn_spot, 16, {.worker_threads = 2});
+    BOOST_REQUIRE(turn_output.has_value());
+    BOOST_CHECK_EQUAL(turn_output->artifact.schema_version, 3u);
+    BOOST_CHECK_EQUAL(turn_output->artifact.solver.algorithm, "cfr+");
+    BOOST_CHECK(!turn_output->artifact.public_states.empty());
+    BOOST_CHECK(!turn_output->artifact.chance_events.empty());
+    BOOST_CHECK(!turn_output->artifact.runouts.empty());
+    BOOST_CHECK(!turn_output->artifact.solved_nodes.empty());
+
+    // A turn solve interleaves the turn betting round with the river deal: the
+    // public-state registry must carry the turn root plus the dealt river boards,
+    // and each river public state must own a complete-runout entry.
+    bool has_turn_state = false;
+    bool has_river_state = false;
+    for (const auto& state : turn_output->artifact.public_states) {
+        if (state.street == "turn") {
+            has_turn_state = true;
+        }
+        if (state.street == "river") {
+            has_river_state = true;
+        }
+    }
+    BOOST_CHECK(has_turn_state);
+    BOOST_CHECK(has_river_state);
+
+    const auto json = zeta::holdem::cli::serialize_artifact_json(turn_output->artifact);
     auto parsed = zeta::holdem::cli::parse_artifact_json(json);
     BOOST_REQUIRE(parsed.has_value());
-    BOOST_CHECK_EQUAL(parsed->public_states.size(), flop_output->artifact.public_states.size());
-    BOOST_CHECK_EQUAL(parsed->chance_events.size(), flop_output->artifact.chance_events.size());
-    BOOST_CHECK_EQUAL(parsed->runouts.size(), flop_output->artifact.runouts.size());
-    BOOST_CHECK_EQUAL(parsed->solved_nodes.size(), flop_output->artifact.solved_nodes.size());
+    BOOST_CHECK_EQUAL(parsed->public_states.size(), turn_output->artifact.public_states.size());
+    BOOST_CHECK_EQUAL(parsed->chance_events.size(), turn_output->artifact.chance_events.size());
+    BOOST_CHECK_EQUAL(parsed->runouts.size(), turn_output->artifact.runouts.size());
+    BOOST_CHECK_EQUAL(parsed->solved_nodes.size(), turn_output->artifact.solved_nodes.size());
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_rejects_old_artifact_schema_versions) {

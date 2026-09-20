@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cmath>
 #include <future>
+#include <set>
 #include <sstream>
 #include <type_traits>
 
@@ -456,7 +457,7 @@ BOOST_AUTO_TEST_CASE(player_mask_backs_generic_terminal_masks) {
     BOOST_CHECK(pot.pots[0].eligible[3]);
 }
 
-BOOST_AUTO_TEST_CASE(public_state_registry_validates_unique_board_cards_and_root_links) {
+BOOST_AUTO_TEST_CASE(public_state_registry_validates_unique_paths_and_root_links) {
     public_state_registry registry;
     registry.states = {
         public_board_state{
@@ -488,10 +489,17 @@ BOOST_AUTO_TEST_CASE(public_state_registry_validates_unique_board_cards_and_root
     auto valid = validate_public_state_registry(registry);
     BOOST_REQUIRE(valid.has_value());
 
+    // Ordered per-street dealing legitimately reaches the same board via distinct
+    // events, so a shared board is accepted while a repeated (event, outcome) path
+    // is rejected.
     registry.states[2].board_cards = registry.states[0].board_cards;
+    BOOST_CHECK(validate_public_state_registry(registry).has_value());
+
+    registry.states[2].chance_event_id_from_parent = registry.states[1].chance_event_id_from_parent;
+    registry.states[2].chance_outcome_id_from_parent = registry.states[1].chance_outcome_id_from_parent;
     auto duplicate = validate_public_state_registry(registry);
     BOOST_REQUIRE(!duplicate);
-    BOOST_CHECK(duplicate.error().kind == public_state_registry_error_kind::duplicate_board_cards);
+    BOOST_CHECK(duplicate.error().kind == public_state_registry_error_kind::duplicate_public_state_path);
 }
 
 BOOST_AUTO_TEST_CASE(runout_registry_validates_complete_root_to_river_paths) {
@@ -523,96 +531,286 @@ BOOST_AUTO_TEST_CASE(runout_registry_validates_complete_root_to_river_paths) {
     BOOST_CHECK(mismatched.error().kind == runout_registry_error_kind::invalid_river_path);
 }
 
-BOOST_AUTO_TEST_CASE(public_game_lowering_builds_public_state_and_chance_registry) {
-    holdem_public_game_config<2> config{};
-    config.street = holdem_street::flop;
-    config.board_cards = card(0, 0) | card(1, 1) | card(2, 2);
-    config.dead_cards = card(3, 5);
-    config.initial_stacks = {100.0, 100.0};
-    config.initial_committed = {0.0, 0.0};
-    config.root_actor = 0;
-    config.abstraction = make_single_size_policy(0.5).value();
+namespace {
+    zeta::card_mask full_deck_mask()
+    {
+        zeta::card_mask deck = 0;
+        for (int suit = 0; suit < 4; ++suit) {
+            for (int rank = 0; rank < 13; ++rank) {
+                deck |= card(suit, rank);
+            }
+        }
+        return deck;
+    }
 
-    auto lowered = lower_public_game_tree(config);
+    uint32_t popcount_mask(const zeta::card_mask mask)
+    {
+        uint32_t count = 0;
+        auto bits = static_cast<uint64_t>(mask);
+        while (bits != 0u) {
+            bits &= bits - 1u;
+            ++count;
+        }
+        return count;
+    }
+
+    holdem_public_game_config<2> tiny_multi_street_config(
+        const holdem_street street,
+        const zeta::card_mask board,
+        const zeta::card_mask live_runout_cards)
+    {
+        holdem_public_game_config<2> config{};
+        config.street = street;
+        config.board_cards = board;
+        config.dead_cards = full_deck_mask() & ~board & ~live_runout_cards;
+        config.initial_stacks = {100.0, 100.0};
+        config.initial_committed = {1.0, 1.0};
+        config.root_actor = 0;
+        config.max_history = 4;
+        config.abstraction = make_single_size_policy(1.0, 1).value();
+        return config;
+    }
+
+    // Verify the graph obeys the Step 1 structural invariants: chance only at a
+    // non-river end-of-round, betting never crossing a street, and every edge moving
+    // forward in street order.
+    void check_multi_street_invariants(const holdem_public_game_graph<2>& lowered)
+    {
+        const auto& graph = lowered.graph;
+        const auto& streets = lowered.annotations.state_by_node;
+        for (uint32_t node = 0; node < graph.node_count; ++node) {
+            const auto node_street = streets[node].street;
+            BOOST_CHECK(node_street != holdem_street::invalid);
+            const auto kind = graph.node_types[node];
+            for (const auto& edge : graph.out_edges(node)) {
+                const auto child_street = streets[edge.child_node].street;
+                BOOST_CHECK(static_cast<int>(child_street) >= static_cast<int>(node_street));
+                if (kind == node_kind::player) {
+                    BOOST_CHECK(child_street == node_street);
+                } else if (kind == node_kind::chance) {
+                    BOOST_CHECK(node_street != holdem_street::river);
+                    BOOST_CHECK(static_cast<int>(child_street) == static_cast<int>(node_street) + 1);
+                }
+            }
+            if (kind == node_kind::terminal) {
+                BOOST_CHECK_EQUAL(graph.out_edges(node).size(), 0u);
+            }
+        }
+    }
+
+    void check_shape_matches_graph(const holdem_public_game_graph<2>& lowered,
+                                   const multi_street_public_game_shape& shape)
+    {
+        const auto& graph = lowered.graph;
+        uint64_t players = 0;
+        uint64_t chances = 0;
+        uint64_t terminals = 0;
+        for (uint32_t node = 0; node < graph.node_count; ++node) {
+            switch (graph.node_types[node]) {
+                case node_kind::player: ++players; break;
+                case node_kind::chance: ++chances; break;
+                case node_kind::terminal: ++terminals; break;
+                default: break;
+            }
+        }
+
+        BOOST_CHECK_EQUAL(shape.node_count, graph.node_count);
+        BOOST_CHECK_EQUAL(shape.edge_count, static_cast<uint64_t>(graph.edges.size()));
+        BOOST_CHECK_EQUAL(shape.player_node_count, players);
+        BOOST_CHECK_EQUAL(shape.chance_node_count, chances);
+        BOOST_CHECK_EQUAL(shape.terminal_node_count, terminals);
+        BOOST_CHECK_EQUAL(shape.chance_node_count, lowered.chance_events.events.size());
+        BOOST_CHECK_EQUAL(shape.chance_outcome_count, lowered.chance_events.outcomes.size());
+        BOOST_CHECK_EQUAL(shape.infoset_count, static_cast<uint64_t>(graph.infoset_count));
+        BOOST_CHECK_EQUAL(shape.infoset_count, players);
+        BOOST_CHECK_EQUAL(shape.public_state_count, lowered.public_states.states.size());
+        BOOST_CHECK_EQUAL(shape.runout_count, lowered.runouts.runouts.size());
+
+        uint64_t turn_states = 0;
+        uint64_t river_states = 0;
+        for (const auto& state : lowered.public_states.states) {
+            if (state.street == holdem_street::turn) {
+                ++turn_states;
+            } else if (state.street == holdem_street::river) {
+                ++river_states;
+            }
+        }
+        BOOST_CHECK_EQUAL(shape.turn_public_state_count, turn_states);
+        BOOST_CHECK_EQUAL(shape.river_public_state_count, river_states);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(multi_street_turn_lowering_deals_a_single_street) {
+    const auto board = card(0, 0) | card(1, 1) | card(2, 2) | card(3, 3);
+    const auto live = card(0, 5) | card(1, 6);
+    auto config = tiny_multi_street_config(holdem_street::turn, board, live);
+
+    auto lowered = lower_multi_street_public_game(config);
     if (!lowered) {
-        BOOST_TEST_MESSAGE("lower_public_game_tree failed with kind="
-            << static_cast<int>(lowered.error().kind)
-            << " node_id=" << lowered.error().node_id
-            << " state_id=" << lowered.error().state_id);
+        BOOST_TEST_MESSAGE("turn lowering failed kind=" << static_cast<int>(lowered.error().kind)
+            << " node_id=" << lowered.error().node_id << " state_id=" << lowered.error().state_id);
     }
     BOOST_REQUIRE(lowered.has_value());
-    BOOST_REQUIRE_GE(lowered->graph.node_count, 3u);
-    BOOST_REQUIRE_EQUAL(lowered->chance_events.events.size(), 1u);
-    BOOST_REQUIRE_EQUAL(lowered->public_states.root_public_state_id, 0u);
+
+    // A turn root deals only the river. Restricting the live deck to two cards leaves
+    // exactly two completable five-card boards; boards are shared across every betting
+    // line, so there are exactly two river public states and two runouts.
+    BOOST_CHECK_EQUAL(lowered->runouts.runouts.size(), 2u);
+    std::set<zeta::card_mask> river_boards;
+    for (const auto& runout : lowered->runouts.runouts) {
+        const auto& river_state = lowered->public_states.states[runout.river_public_state_id];
+        BOOST_CHECK_EQUAL(popcount_mask(river_state.board_cards), 5u);
+        river_boards.insert(river_state.board_cards);
+        BOOST_CHECK_EQUAL(runout.dealt_turn, zeta::card_mask{0});
+        BOOST_CHECK_EQUAL(popcount_mask(runout.dealt_river), 1u);
+    }
+    BOOST_CHECK_EQUAL(river_boards.size(), 2u);
+
+    // Every chance event on a turn root is a river deal; no turn public state exists.
+    for (const auto& event : lowered->chance_events.events) {
+        BOOST_CHECK(event.kind == public_chance_event_kind::river);
+    }
+
+    check_multi_street_invariants(*lowered);
     BOOST_CHECK(validate_public_state_registry(lowered->public_states, lowered->graph.node_count).has_value());
     BOOST_CHECK(validate_chance_event_table(lowered->graph, lowered->chance_events).has_value());
     BOOST_CHECK(validate_runout_registry(lowered->runouts).has_value());
+
+    auto shape = estimate_multi_street_public_game_shape(config);
+    BOOST_REQUIRE(shape.has_value());
+    check_shape_matches_graph(*lowered, *shape);
+    BOOST_CHECK_EQUAL(shape->turn_public_state_count, 1u);
+    BOOST_CHECK_GT(shape->player_node_count, 0u);
 }
 
-BOOST_AUTO_TEST_CASE(public_game_lowering_runout_probabilities_form_valid_distribution) {
-    holdem_public_game_config<2> config{};
-    config.street = holdem_street::flop;
-    config.board_cards = card(0, 0) | card(1, 1) | card(2, 2);
-    config.dead_cards = card(3, 5);
-    config.initial_stacks = {100.0, 100.0};
-    config.initial_committed = {0.0, 0.0};
-    config.root_actor = 0;
-    config.abstraction = make_single_size_policy(0.5).value();
+BOOST_AUTO_TEST_CASE(multi_street_flop_lowering_interleaves_two_streets) {
+    const auto board = card(0, 0) | card(1, 1) | card(2, 2);
+    const auto live = card(3, 5) | card(3, 6);
+    auto config = tiny_multi_street_config(holdem_street::flop, board, live);
 
-    auto lowered = lower_public_game_tree(config);
+    auto lowered = lower_multi_street_public_game(config);
+    if (!lowered) {
+        BOOST_TEST_MESSAGE("flop lowering failed kind=" << static_cast<int>(lowered.error().kind)
+            << " node_id=" << lowered.error().node_id << " state_id=" << lowered.error().state_id);
+    }
     BOOST_REQUIRE(lowered.has_value());
-    BOOST_REQUIRE(!lowered->runouts.runouts.empty());
 
-    // (a) Every chance event's outcome probabilities form a normalized distribution.
+    // A flop root interleaves a turn deal and a river deal. Both the turn and river
+    // public states must be present, and both chance-event kinds must appear.
+    uint32_t turn_states = 0;
+    uint32_t river_states = 0;
+    for (const auto& state : lowered->public_states.states) {
+        if (state.street == holdem_street::turn) {
+            ++turn_states;
+        } else if (state.street == holdem_street::river) {
+            ++river_states;
+        }
+    }
+
+    bool saw_turn_event = false;
+    bool saw_river_event = false;
     for (const auto& event : lowered->chance_events.events) {
-        double event_mass = 0.0;
-        for (const auto& outcome : lowered->chance_events.event_outcomes(event)) {
-            BOOST_CHECK_GE(outcome.probability, 0.0f);
-            event_mass += static_cast<double>(outcome.probability);
-        }
-        BOOST_CHECK_CLOSE(event_mass, 1.0, 1e-4);
+        saw_turn_event = saw_turn_event || event.kind == public_chance_event_kind::turn;
+        saw_river_event = saw_river_event || event.kind == public_chance_event_kind::river;
     }
+    BOOST_CHECK(saw_turn_event);
+    BOOST_CHECK(saw_river_event);
 
-    const auto& events = lowered->chance_events.events;
-    auto outcome_probability = [&](const chance_event_id event_id,
-                                   const chance_outcome_id outcome_id) -> double {
-        if (event_id >= events.size()) {
-            return 0.0;
-        }
-        for (const auto& outcome : lowered->chance_events.event_outcomes(events[event_id])) {
-            if (outcome.outcome_id == outcome_id) {
-                return static_cast<double>(outcome.probability);
-            }
-        }
-        return 0.0;
-    };
-
-    // Product of chance probabilities along the root-to-river path of a runout.
-    const auto& states = lowered->public_states.states;
-    auto path_probability = [&](public_state_id river_state_id) -> double {
-        double probability = 1.0;
-        auto current = river_state_id;
-        while (current != INVALID_PUBLIC_STATE_ID && current < states.size()) {
-            const auto& state = states[current];
-            if (state.is_root_state
-                || state.chance_event_id_from_parent == INVALID_CHANCE_EVENT) {
-                break;
-            }
-            probability *= outcome_probability(
-                state.chance_event_id_from_parent,
-                state.chance_outcome_id_from_parent);
-            current = state.parent_state_id;
-        }
-        return probability;
-    };
-
-    // (b) Runout path probabilities partition the full runout distribution: summing
-    //     the product of chance probabilities over every runout recovers 1.0.
-    double total_mass = 0.0;
+    // With only two live cards the sole completable five-card board is reached through
+    // both turn/river orderings and every betting line, and board-keyed identity shares
+    // it, so there is exactly one river public state and one runout -- the key
+    // ordered-deal deduplication case.
+    BOOST_CHECK_EQUAL(lowered->runouts.runouts.size(), 1u);
+    std::set<zeta::card_mask> river_boards;
     for (const auto& runout : lowered->runouts.runouts) {
-        total_mass += path_probability(runout.river_public_state_id);
+        const auto& river_state = lowered->public_states.states[runout.river_public_state_id];
+        BOOST_CHECK_EQUAL(popcount_mask(river_state.board_cards), 5u);
+        river_boards.insert(river_state.board_cards);
+        BOOST_CHECK_EQUAL(popcount_mask(runout.dealt_turn), 1u);
+        BOOST_CHECK_EQUAL(popcount_mask(runout.dealt_river), 1u);
     }
-    BOOST_CHECK_CLOSE(total_mass, 1.0, 1e-4);
+    BOOST_CHECK_EQUAL(river_boards.size(), 1u);
+
+    // The two live cards yield two distinct turn boards, each a shared turn public state.
+    BOOST_CHECK_EQUAL(turn_states, 2u);
+    BOOST_CHECK_EQUAL(river_states, 1u);
+
+    // A real betting round runs on each street before its deal.
+    bool saw_player_node = false;
+    for (const auto kind : lowered->graph.node_types) {
+        saw_player_node = saw_player_node || kind == node_kind::player;
+    }
+    BOOST_CHECK(saw_player_node);
+
+    check_multi_street_invariants(*lowered);
+    BOOST_CHECK(validate_public_state_registry(lowered->public_states, lowered->graph.node_count).has_value());
+    BOOST_CHECK(validate_chance_event_table(lowered->graph, lowered->chance_events).has_value());
+    BOOST_CHECK(validate_runout_registry(lowered->runouts).has_value());
+
+    auto shape = estimate_multi_street_public_game_shape(config);
+    BOOST_REQUIRE(shape.has_value());
+    check_shape_matches_graph(*lowered, *shape);
+    BOOST_CHECK_GT(shape->turn_public_state_count, 0u);
+    BOOST_CHECK_GT(shape->player_node_count, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(multi_street_lowering_rejects_multiway) {
+    holdem_public_game_config<3> config{};
+    config.street = holdem_street::turn;
+    config.board_cards = card(0, 0) | card(1, 1) | card(2, 2) | card(3, 3);
+    config.initial_stacks = {100.0, 100.0, 100.0};
+    config.initial_committed = {1.0, 1.0, 1.0};
+    config.abstraction = make_single_size_policy(1.0, 1).value();
+
+    auto lowered = lower_multi_street_public_game(config);
+    BOOST_REQUIRE(!lowered);
+    BOOST_CHECK(lowered.error().kind == betting_validation_error_kind::unsupported_player_count);
+
+    auto shape = estimate_multi_street_public_game_shape(config);
+    BOOST_REQUIRE(!shape);
+    BOOST_CHECK(shape.error().kind == betting_validation_error_kind::unsupported_player_count);
+}
+
+BOOST_AUTO_TEST_CASE(multi_street_lowering_rejects_non_postflop_root) {
+    const auto board = card(0, 0) | card(1, 1) | card(2, 2) | card(3, 3) | card(0, 5);
+    auto config = tiny_multi_street_config(holdem_street::river, board, 0);
+    config.street = holdem_street::river;
+
+    auto lowered = lower_multi_street_public_game(config);
+    BOOST_REQUIRE(!lowered);
+}
+
+BOOST_AUTO_TEST_CASE(suit_permutation_relabels_card_lanes) {
+    BOOST_CHECK(is_identity_suit_permutation(identity_suit_permutation()));
+    BOOST_CHECK_EQUAL(apply_suit_permutation(card(0, 3), identity_suit_permutation()), card(0, 3));
+
+    // Swap spades (0) and hearts (1); ranks are preserved within each lane.
+    const suit_permutation swap_spades_hearts{1, 0, 2, 3};
+    BOOST_CHECK(!is_identity_suit_permutation(swap_spades_hearts));
+    BOOST_CHECK_EQUAL(apply_suit_permutation(card(0, 4), swap_spades_hearts), card(1, 4));
+    BOOST_CHECK_EQUAL(apply_suit_permutation(card(1, 7), swap_spades_hearts), card(0, 7));
+    BOOST_CHECK_EQUAL(
+        apply_suit_permutation(card(0, 4) | card(1, 7) | card(2, 2), swap_spades_hearts),
+        card(1, 4) | card(0, 7) | card(2, 2));
+}
+
+BOOST_AUTO_TEST_CASE(canonicalize_public_card_outcomes_exact_is_identity) {
+    std::vector<chance_outcome> outcomes = {
+        chance_outcome{.outcome_id = 0, .cards = card(0, 3)},
+        chance_outcome{.outcome_id = 1, .cards = card(2, 9)}
+    };
+    outcomes[0].probability = 0.5f;
+    outcomes[1].probability = 0.5f;
+
+    auto canonical = canonicalize_public_card_outcomes(outcomes, public_card_isomorphism_mode::exact);
+    BOOST_REQUIRE_EQUAL(canonical.size(), outcomes.size());
+    for (std::size_t index = 0; index < canonical.size(); ++index) {
+        BOOST_CHECK_EQUAL(canonical[index].representative_cards, outcomes[index].cards);
+        BOOST_CHECK_CLOSE(canonical[index].probability, outcomes[index].probability, 1e-5);
+        BOOST_CHECK(is_identity_suit_permutation(canonical[index].public_permutation));
+        BOOST_REQUIRE_EQUAL(canonical[index].members.size(), 1u);
+        BOOST_CHECK_EQUAL(canonical[index].members[0], outcomes[index].outcome_id);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

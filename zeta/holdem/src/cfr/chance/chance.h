@@ -6,6 +6,7 @@
 #include "terminal/reach_index.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <bit>
 #include <cmath>
@@ -14,6 +15,7 @@
 #include <limits>
 #include <ostream>
 #include <span>
+#include <unordered_set>
 #include <vector>
 
 namespace zeta::holdem::cfr {
@@ -221,7 +223,7 @@ namespace zeta::holdem::cfr {
         invalid_parent_state,
         invalid_street_metadata,
         duplicate_state_id,
-        duplicate_board_cards,
+        duplicate_public_state_path,
         missing_root_state,
         state_mapping_mismatch,
         invalid_chance_links
@@ -241,7 +243,7 @@ namespace zeta::holdem::cfr {
             case invalid_parent_state: return "public_state_registry_error_kind::invalid_parent_state";
             case invalid_street_metadata: return "public_state_registry_error_kind::invalid_street_metadata";
             case duplicate_state_id: return "public_state_registry_error_kind::duplicate_state_id";
-            case duplicate_board_cards: return "public_state_registry_error_kind::duplicate_board_cards";
+            case duplicate_public_state_path: return "public_state_registry_error_kind::duplicate_public_state_path";
             case missing_root_state: return "public_state_registry_error_kind::missing_root_state";
             case state_mapping_mismatch: return "public_state_registry_error_kind::state_mapping_mismatch";
             case invalid_chance_links: return "public_state_registry_error_kind::invalid_chance_links";
@@ -377,8 +379,8 @@ namespace zeta::holdem::cfr {
            });
        }
 
-       std::vector<card_mask> seen_boards;
-       seen_boards.reserve(registry.states.size());
+       std::unordered_set<uint64_t> seen_paths;
+       seen_paths.reserve(registry.states.size());
 
        for (std::size_t index = 0; index < registry.states.size(); ++index) {
            const auto& state = registry.states[index];
@@ -432,16 +434,22 @@ namespace zeta::holdem::cfr {
                });
            }
 
-           for (const auto seen : seen_boards) {
-               if (seen == state.board_cards) {
+           // Public-state identity is the board: each reachable board is registered
+           // once and shared by every betting line and dealing order that reaches it,
+           // so its stored (chance-event, chance-outcome) link is the first arrival.
+           // Every chance event is unique to one end-of-round node, so a repeated
+           // (event, outcome) pair means a board was mistakenly registered twice.
+           if (!state.is_root_state) {
+               const auto path_key = (static_cast<uint64_t>(state.chance_event_id_from_parent) << 32)
+                   | static_cast<uint64_t>(state.chance_outcome_id_from_parent);
+               if (!seen_paths.insert(path_key).second) {
                    return std::unexpected(public_state_registry_error{
-                       public_state_registry_error_kind::duplicate_board_cards,
+                       public_state_registry_error_kind::duplicate_public_state_path,
                        state.id,
                        static_cast<uint32_t>(index)
                    });
                }
            }
-           seen_boards.push_back(state.board_cards);
        }
 
        if (registry.root_public_state_id == INVALID_PUBLIC_STATE_ID && !registry.states.empty()) {
@@ -888,6 +896,89 @@ namespace zeta::holdem::cfr {
         const card_mask dead_cards)
     {
         return enumerate_public_card_outcomes(turn_board_cards, dead_cards, 1);
+    }
+
+    /**
+     * Suit relabeling used by public-card isomorphism. Entry s carries the canonical
+     * suit that deck suit s maps to. Suits occupy contiguous 13-bit rank lanes in a
+     * card_mask (spades=0, hearts=1, diamonds=2, clubs=3), so a permutation simply
+     * relabels those lanes.
+     */
+    using suit_permutation = std::array<uint8_t, 4>;
+
+    [[nodiscard]] inline constexpr suit_permutation identity_suit_permutation() noexcept
+    {
+        return suit_permutation{0, 1, 2, 3};
+    }
+
+    [[nodiscard]] inline constexpr bool is_identity_suit_permutation(const suit_permutation& permutation) noexcept
+    {
+        return permutation[0] == 0u && permutation[1] == 1u
+            && permutation[2] == 2u && permutation[3] == 3u;
+    }
+
+    /** Relabel the suit of every card in the mask according to the permutation. */
+    [[nodiscard]] inline card_mask apply_suit_permutation(
+        const card_mask mask,
+        const suit_permutation& permutation) noexcept
+    {
+        constexpr uint64_t rank_lane = 0x1FFFull; // 13 rank bits per suit lane
+        uint64_t result = 0;
+        for (uint8_t suit = 0; suit < 4u; ++suit) {
+            const auto lane = (static_cast<uint64_t>(mask) >> (static_cast<uint64_t>(suit) * 13u)) & rank_lane;
+            result |= lane << (static_cast<uint64_t>(permutation[suit]) * 13u);
+        }
+        return static_cast<card_mask>(result);
+    }
+
+    /**
+     * One canonical public-card outcome.
+     *
+     * Under exact enumeration this is a 1:1 image of a raw chance outcome. The type
+     * also carries everything a suit-isomorphic reduction needs: the combined
+     * probability of every collapsed member, the public-card suit permutation that
+     * maps a member's board onto the representative, and (through that permutation)
+     * the induced private-combo relabeling. This keeps the isomorphism contract
+     * fully expressed even while exact enumeration is the only active lowering path.
+     */
+    struct canonical_public_outcome {
+        card_mask representative_cards = 0;                       /**< Dealt cards of the representative. */
+        float probability = 0.0f;                                /**< Summed probability of collapsed members. */
+        suit_permutation public_permutation = identity_suit_permutation();
+        std::vector<chance_outcome_id> members{};                /**< Raw outcome ids folded into this one. */
+    };
+
+    enum class public_card_isomorphism_mode : uint8_t {
+        exact = 0 /**< No collapsing: one canonical outcome per raw outcome. */
+    };
+
+    /**
+     * Canonicalize enumerated public-card outcomes.
+     *
+     * Exact mode performs no reduction: every raw outcome becomes its own canonical
+     * outcome with the identity suit permutation and its own probability. This is the
+     * correctness baseline the multi-street lowering builds on; a suit-isomorphic
+     * collapsing mode is introduced later without reshaping this contract.
+     */
+    [[nodiscard]] inline std::vector<canonical_public_outcome> canonicalize_public_card_outcomes(
+        const std::span<const chance_outcome> outcomes,
+        const public_card_isomorphism_mode mode = public_card_isomorphism_mode::exact)
+    {
+        std::vector<canonical_public_outcome> canonical;
+        switch (mode) {
+            case public_card_isomorphism_mode::exact:
+                canonical.reserve(outcomes.size());
+                for (const auto& outcome : outcomes) {
+                    canonical.push_back(canonical_public_outcome{
+                        .representative_cards = outcome.cards,
+                        .probability = outcome.probability,
+                        .public_permutation = identity_suit_permutation(),
+                        .members = {outcome.outcome_id}
+                    });
+                }
+                break;
+        }
+        return canonical;
     }
 
     [[nodiscard]] inline std::expected<chance_event_table, chance_table_error> make_public_card_chance_event_table(
