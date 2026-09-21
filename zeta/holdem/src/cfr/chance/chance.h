@@ -15,6 +15,7 @@
 #include <limits>
 #include <ostream>
 #include <span>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -145,6 +146,7 @@ namespace zeta::holdem::cfr {
         public_chance_event_kind kind = public_chance_event_kind::none;
         card_mask board_cards = 0;
         card_mask dead_cards = 0;
+        bool is_canonical = false; /**< Outcomes collapsed by suit isomorphism (fewer than full enumeration). */
 
         [[nodiscard]] uint32_t end_outcome() const noexcept
         {
@@ -652,16 +654,25 @@ namespace zeta::holdem::cfr {
                     event_id
                 });
             }
-            if (event.kind != public_chance_event_kind::none
-                && event.outcome_count != detail::public_chance_outcome_count(
+            if (event.kind != public_chance_event_kind::none) {
+                const auto full_outcome_count = detail::public_chance_outcome_count(
                     event.kind,
                     event.board_cards,
-                    event.dead_cards)) {
-                return std::unexpected(chance_table_error{
-                    chance_table_error_kind::outcome_count_mismatch,
-                    event.node_id,
-                    event_id
-                });
+                    event.dead_cards);
+                // A canonical (suit-isomorphism-collapsed) event carries one outcome per
+                // equivalence class, so it must never exceed - and generally is fewer than
+                // - the full enumeration count. A non-canonical event must enumerate every
+                // legal card exactly.
+                const bool count_ok = event.is_canonical
+                    ? (event.outcome_count > 0u && event.outcome_count <= full_outcome_count)
+                    : (event.outcome_count == full_outcome_count);
+                if (!count_ok) {
+                    return std::unexpected(chance_table_error{
+                        chance_table_error_kind::outcome_count_mismatch,
+                        event.node_id,
+                        event_id
+                    });
+                }
             }
 
             const auto outcomes = table.event_outcomes(event);
@@ -931,52 +942,163 @@ namespace zeta::holdem::cfr {
         return static_cast<card_mask>(result);
     }
 
+    /** The 24 suit permutations of a four-suit deck, computed once. */
+    [[nodiscard]] inline const std::array<suit_permutation, 24>& all_suit_permutations() noexcept
+    {
+        static const std::array<suit_permutation, 24> permutations = [] {
+            std::array<suit_permutation, 24> out{};
+            std::array<uint8_t, 4> base{0u, 1u, 2u, 3u};
+            std::size_t index = 0;
+            do {
+                out[index++] = suit_permutation{base[0], base[1], base[2], base[3]};
+            } while (std::next_permutation(base.begin(), base.end()));
+            return out;
+        }();
+        return permutations;
+    }
+
+    /**
+     * Map a two-card private combo through a suit permutation, returning the combo
+     * index of the relabelled combo. This is the private-combo permutation induced
+     * by a public-card suit permutation.
+     */
+    [[nodiscard]] inline combination_index apply_suit_permutation_to_combo(
+        const combination_index combo,
+        const suit_permutation& permutation) noexcept
+    {
+        static const auto index_by_mask = [] {
+            std::unordered_map<card_mask, combination_index> table;
+            table.reserve(combination_count * 2u);
+            for (combination_index i = 0; i < static_cast<combination_index>(combination_count); ++i) {
+                table.emplace(combination_masks[i], i);
+            }
+            return table;
+        }();
+        const auto permuted = apply_suit_permutation(combination_masks[combo], permutation);
+        const auto found = index_by_mask.find(permuted);
+        return found == index_by_mask.end()
+            ? static_cast<combination_index>(combination_count)
+            : found->second;
+    }
+
+    /**
+     * One member of a canonical public-card outcome: a raw outcome that was folded
+     * into the representative together with the suit permutation that maps the
+     * member's board onto the representative's board.
+     */
+    struct canonical_outcome_member {
+        chance_outcome_id outcome_id = INVALID_CHANCE_OUTCOME_ID; /**< Raw outcome id. */
+        card_mask cards = 0;                                     /**< Member's dealt cards. */
+        suit_permutation permutation = identity_suit_permutation(); /**< Member board -> representative board. */
+    };
+
     /**
      * One canonical public-card outcome.
      *
-     * Under exact enumeration this is a 1:1 image of a raw chance outcome. The type
-     * also carries everything a suit-isomorphic reduction needs: the combined
-     * probability of every collapsed member, the public-card suit permutation that
-     * maps a member's board onto the representative, and (through that permutation)
-     * the induced private-combo relabeling. This keeps the isomorphism contract
-     * fully expressed even while exact enumeration is the only active lowering path.
+     * Under exact enumeration this is a 1:1 image of a raw chance outcome. Under the
+     * suit-isomorphic reduction it is the representative of an equivalence class of
+     * raw outcomes that are identical up to a suit permutation fixing the current
+     * board and dead cards. It carries the combined probability of every collapsed
+     * member and, per member, the public-card suit permutation that maps the
+     * member's board onto the representative (and, through that permutation, the
+     * induced private-combo relabeling).
      */
     struct canonical_public_outcome {
         card_mask representative_cards = 0;                       /**< Dealt cards of the representative. */
         float probability = 0.0f;                                /**< Summed probability of collapsed members. */
-        suit_permutation public_permutation = identity_suit_permutation();
-        std::vector<chance_outcome_id> members{};                /**< Raw outcome ids folded into this one. */
+        std::vector<canonical_outcome_member> members{};         /**< Raw outcomes folded into this one. */
     };
 
     enum class public_card_isomorphism_mode : uint8_t {
-        exact = 0 /**< No collapsing: one canonical outcome per raw outcome. */
+        exact = 0,          /**< No collapsing: one canonical outcome per raw outcome. */
+        suit_isomorphic = 1 /**< Collapse outcomes equivalent under a board-fixing suit permutation. */
     };
+
+    [[nodiscard]] constexpr const char* to_string(const public_card_isomorphism_mode mode) noexcept
+    {
+        switch (mode) {
+            case public_card_isomorphism_mode::exact:           return "public_card_isomorphism_mode::exact";
+            case public_card_isomorphism_mode::suit_isomorphic: return "public_card_isomorphism_mode::suit_isomorphic";
+        }
+        return "public_card_isomorphism_mode::unknown";
+    }
 
     /**
      * Canonicalize enumerated public-card outcomes.
      *
      * Exact mode performs no reduction: every raw outcome becomes its own canonical
-     * outcome with the identity suit permutation and its own probability. This is the
-     * correctness baseline the multi-street lowering builds on; a suit-isomorphic
-     * collapsing mode is introduced later without reshaping this contract.
+     * outcome with the identity suit permutation and its own probability.
+     *
+     * Suit-isomorphic mode collapses outcomes that are equivalent under the group of
+     * suit permutations that fix both the current board and the dead-card set. Every
+     * class is reduced to one representative (its canonically minimal dealt cards),
+     * the class probability is summed, and each member records the permutation that
+     * maps its board onto the representative. Because that stabilizer is a subgroup,
+     * every member of a class canonicalizes to the same representative. The reduction
+     * is lossless whenever the private ranges are invariant under the recorded
+     * permutations; that condition is verified separately by the solver.
      */
     [[nodiscard]] inline std::vector<canonical_public_outcome> canonicalize_public_card_outcomes(
         const std::span<const chance_outcome> outcomes,
+        const card_mask board,
+        const card_mask dead_cards,
         const public_card_isomorphism_mode mode = public_card_isomorphism_mode::exact)
     {
         std::vector<canonical_public_outcome> canonical;
-        switch (mode) {
-            case public_card_isomorphism_mode::exact:
-                canonical.reserve(outcomes.size());
-                for (const auto& outcome : outcomes) {
-                    canonical.push_back(canonical_public_outcome{
-                        .representative_cards = outcome.cards,
-                        .probability = outcome.probability,
-                        .public_permutation = identity_suit_permutation(),
-                        .members = {outcome.outcome_id}
-                    });
+        if (mode == public_card_isomorphism_mode::exact) {
+            canonical.reserve(outcomes.size());
+            for (const auto& outcome : outcomes) {
+                canonical.push_back(canonical_public_outcome{
+                    .representative_cards = outcome.cards,
+                    .probability = outcome.probability,
+                    .members = {canonical_outcome_member{
+                        .outcome_id = outcome.outcome_id,
+                        .cards = outcome.cards,
+                        .permutation = identity_suit_permutation()
+                    }}
+                });
+            }
+            return canonical;
+        }
+
+        std::vector<suit_permutation> stabilizer;
+        for (const auto& permutation : all_suit_permutations()) {
+            if (apply_suit_permutation(board, permutation) == board
+                && apply_suit_permutation(dead_cards, permutation) == dead_cards) {
+                stabilizer.push_back(permutation);
+            }
+        }
+
+        std::unordered_map<card_mask, std::size_t> index_by_representative;
+        canonical.reserve(outcomes.size());
+        for (const auto& outcome : outcomes) {
+            card_mask representative = outcome.cards;
+            suit_permutation to_representative = identity_suit_permutation();
+            for (const auto& permutation : stabilizer) {
+                const auto mapped = apply_suit_permutation(outcome.cards, permutation);
+                if (mapped < representative) {
+                    representative = mapped;
+                    to_representative = permutation;
                 }
-                break;
+            }
+            canonical_outcome_member member{
+                .outcome_id = outcome.outcome_id,
+                .cards = outcome.cards,
+                .permutation = to_representative
+            };
+            const auto found = index_by_representative.find(representative);
+            if (found == index_by_representative.end()) {
+                index_by_representative.emplace(representative, canonical.size());
+                canonical.push_back(canonical_public_outcome{
+                    .representative_cards = representative,
+                    .probability = outcome.probability,
+                    .members = {member}
+                });
+            } else {
+                auto& entry = canonical[found->second];
+                entry.probability += outcome.probability;
+                entry.members.push_back(member);
+            }
         }
         return canonical;
     }

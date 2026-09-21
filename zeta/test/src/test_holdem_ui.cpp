@@ -476,6 +476,61 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_completes_and_carries_timing_artif
     BOOST_CHECK_GE(result.timing.extraction_ms, 0.0);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_surfaces_real_multi_street_solve_metadata) {
+    // A non-river (turn) solve is run end to end through the UI solver session. The
+    // interim runout special-casing has been retired, so the completed solve must
+    // surface genuine CFR+ solve output: real per-node strategies, the multi-street
+    // graph payload (public states and chance events), and "cfr+" metadata that the
+    // strategy view model reflects unchanged.
+    auto turn_spot = zeta::holdem::cli::parse_spot_json(R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Kd", "7c", "4h"],
+  "ranges": ["AhKh", "QdJd"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "max_history": 6,
+  "public_state_id": 5,
+  "samples_per_combo": 8
+})");
+    BOOST_REQUIRE(turn_spot.has_value());
+
+    zeta::holdem::ui::solver::solver_session session{
+        zeta::holdem::ui::solver::solver_session_request{
+            .spot_snapshot = *turn_spot,
+            .iterations = 32,
+            .runtime = zeta::holdem::cli::solve_runtime_options{
+                .timestamp_utc = "2026-08-03T20:00:00Z",
+                .git_revision = "abc1234"
+            }
+        }
+    };
+
+    const auto result = session.run();
+
+    BOOST_CHECK(result.terminal_state == zeta::holdem::ui::solver::solver_session_terminal_state::completed);
+    BOOST_REQUIRE(result.artifact.has_value());
+    BOOST_CHECK_EQUAL(result.artifact->street, "turn");
+    BOOST_CHECK_EQUAL(result.artifact->solver.algorithm, "cfr+");
+    BOOST_CHECK_EQUAL(result.artifact->solver.iterations, 32u);
+    BOOST_CHECK(!result.artifact->strategy.empty());
+    // The multi-street graph payload proves the solve traversed the real river
+    // chance layer instead of a rollout shortcut.
+    BOOST_CHECK(!result.artifact->solved_nodes.empty());
+    BOOST_CHECK(!result.artifact->public_states.empty());
+    BOOST_CHECK(!result.artifact->chance_events.empty());
+
+    const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(
+        result.spot_snapshot, *result.artifact);
+    BOOST_CHECK_EQUAL(model.metadata.algorithm, "cfr+");
+    BOOST_CHECK_EQUAL(model.metadata.iterations, 32u);
+    BOOST_CHECK_EQUAL(model.metadata.player_count, 2u);
+    BOOST_CHECK(!model.hands.empty());
+}
+
 BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_completes_three_way_spot) {
     zeta::holdem::ui::solver::solver_session session{
         zeta::holdem::ui::solver::solver_session_request{

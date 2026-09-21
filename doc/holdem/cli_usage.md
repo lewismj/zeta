@@ -79,7 +79,7 @@ The solver accepts either the `bet_fraction` single-bet field or the richer `bet
 | ------------------- | -------- | --------------- | ----------------------------------------------------------------------- |
 | `players`           | string[] | `["BTN","BB"]`  | 2..6 player labels                                                      |
 | `street`            | string   | `"river"`       | One of `flop`, `turn`, `river`                                          |
-| `board`             | string[] | —               | Exactly 3 cards on flop, 4 on turn, 5 on river                          |
+| `board`             | string[] | required        | Exactly 3 cards on flop, 4 on turn, 5 on river                          |
 | `ranges`            | string[] | `["AA","AA"]`   | Must match player count                                                 |
 | `gross_pot`         | number   | `100.0`         | Must be positive                                                        |
 | `rake`              | number   | `0.0`           | Must be in `[0, gross_pot]`                                             |
@@ -99,6 +99,90 @@ Recommended `samples_per_combo` ranges:
 - Regular analysis: `8000` to `32000`
 - Higher-confidence runs: `64000+` (sometimes `128000+`)
 
+### Solver runtime knobs (`runtime` object)
+
+Multi-street solves accept an optional `runtime` object that tunes the solver
+without changing the game being solved. The block is optional; when omitted the
+solver runs the exact multi-street CFR+ solve with an auto-derived memory budget.
+
+```json
+{
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Kd", "7c", "4h"],
+  "ranges": ["AhKh", "QdJd"],
+  "gross_pot": 100.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "betting_policy": {"fixed_pot_fractions": [0.75], "max_raises": 1},
+  "runtime": {
+    "worker_threads": 4,
+    "memory_budget_bytes": 8589934592,
+    "card_isomorphism": true,
+    "allow_lossy_card_isomorphism": false,
+    "dynamic_pruning": {
+      "enabled": true,
+      "prune_threshold": 0.01,
+      "minimum_active_actions": 1,
+      "reconsider_interval": 64
+    },
+    "convergence": {
+      "measure_exploitability": true,
+      "measurement_interval": 100,
+      "target_exploitability": 0.5,
+      "max_curve_samples": 128
+    }
+  }
+}
+```
+
+| Field                                    | Type    | Default        | Notes                                                                                     |
+| ---------------------------------------- | ------- | -------------- | ----------------------------------------------------------------------------------------- |
+| `worker_threads`                         | integer | `1`            | CFR worker threads (clamped to `1..64`)                                                    |
+| `memory_budget_bytes`                    | integer | `0`            | Pre-build footprint cap; `0` derives `0.8 x` detected available memory (fallback 4 GiB)   |
+| `card_isomorphism`                       | boolean | `false`        | Collapse suit-isomorphic turn/river boards (lossless only for suit-symmetric ranges)      |
+| `allow_lossy_card_isomorphism`           | boolean | `false`        | Permit isomorphism even when ranges are not suit-symmetric (approximate)                  |
+| `dynamic_pruning.enabled`                | boolean | `false`        | Opt-in approximate action pruning; when off the solve is bit-identical to the exact solve |
+| `dynamic_pruning.prune_threshold`        | number  | `0.0`          | Reach-weighted positive-regret share below which an action is frozen (`>= 0`)             |
+| `dynamic_pruning.minimum_active_actions` | integer | `1`            | Never prune an infoset below this many active actions (`>= 1`)                           |
+| `dynamic_pruning.reconsider_interval`    | integer | `64`           | Iterations between prune/reactivate reconsideration passes (`>= 1`)                      |
+| `convergence.measure_exploitability`     | boolean | `false`        | Opt-in best-response exploitability (heads-up) / normalized regret (multiway) reporting   |
+| `convergence.measurement_interval`       | integer | `0`            | Iterations between convergence-curve samples; `0` measures only at the end                |
+| `convergence.target_exploitability`      | number  | `0.0`          | Stop early once heads-up exploitability drops to/below this EV-unit threshold (`>= 0`, `0` disables) |
+| `convergence.max_curve_samples`          | integer | `128`          | Cap on retained convergence-curve samples                                                 |
+
+Dynamic pruning is an **explicitly approximate** policy: it trades a bounded
+strategy-distance / EV error for speed on large trees. Frozen actions keep their
+regret state (never reset) and their subtree is not traversed while inactive;
+every `reconsider_interval` iterations the full action set is reconsidered so a
+frozen action reactivates once its regret share recovers. Pruning preserves the
+original action indexing, so persisted strategies stay aligned.
+
+### Convergence and exploitability reporting
+
+Every solve records reproducible input hashes (`solver.hashes`) and any applicable
+approximation warnings (`solver.warnings`) regardless of the `convergence` block.
+The reporting knobs above are **opt-in** and default off, so leaving the block out
+does not change solve timing.
+
+When `measure_exploitability` is enabled, supported heads-up abstractions
+(vectorized river root-actor and multi-street flop/turn solves) compute an exact
+best-response exploitability -- half of NashConv, in EV (chip) units -- against the
+average strategy. Multiway solves instead report a normalized average-regret metric
+and mark `exploitability_available: false`. A positive `measurement_interval`
+additionally records a convergence curve; a positive `target_exploitability` stops
+the solve once the measured heads-up exploitability reaches the threshold, and the
+artifact's `solver.iterations` reflects the reduced count.
+
+### Over-budget error
+
+Before allocating the CFR tables, the solver estimates the multi-street footprint
+from the graph shape and compares it to the memory budget. If the estimate
+exceeds the budget the solve is refused with a `solver` error that names the
+dominant cost dimension and the byte figures, and nothing is allocated. Raise
+`memory_budget_bytes`, enable `card_isomorphism` for suit-symmetric spots, or
+shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
+
 ## Artifact JSON schema
 
 ```json
@@ -113,7 +197,32 @@ Recommended `samples_per_combo` ranges:
     "algorithm": "cfr+",
     "iterations": 5000,
     "timestamp": "2026-08-02T10:00:00Z",
-    "git_revision": "abc1234"
+    "git_revision": "abc1234",
+    "hashes": {
+      "tree": "0x0123456789abcdef",
+      "range": "0x0123456789abcdef",
+      "board": "0x0123456789abcdef",
+      "betting_policy": "0x0123456789abcdef",
+      "solver_config": "0x0123456789abcdef",
+      "solve": "0x0123456789abcdef"
+    },
+    "convergence": {
+      "exploitability_available": true,
+      "exploitability": 0.42,
+      "exploitability_pot_fraction": 0.0042,
+      "nash_conv": 0.84,
+      "best_response_gap": [0.40, 0.44],
+      "normalized_regret": 0.0,
+      "target_exploitability": 0.0,
+      "reached_target": false,
+      "curve": [
+        {"iteration": 100, "metric": 3.1, "elapsed_ms": 12.0},
+        {"iteration": 200, "metric": 1.2, "elapsed_ms": 24.0}
+      ]
+    },
+    "warnings": [
+      "Strategy is an equilibrium only within the configured betting abstraction (bet sizings and max raises); it is not the full no-limit game."
+    ]
   },
   "strategy": [
     {
@@ -136,6 +245,14 @@ Validation checks include:
 4. Unique hand rows with exactly one combo per row
 5. Action frequencies in `[0,1]` summing to `1` (tolerance `1e-3`)
 6. Finite EV values
+
+The `solver.hashes` (FNV-1a digests as hex strings), `solver.convergence`
+(exploitability / normalized-regret report and curve), and `solver.warnings`
+(approximation notes) objects are always emitted. Parsing tolerates their absence,
+so older artifacts without these fields still load. `exploitability`,
+`exploitability_pot_fraction`, `nash_conv`, and `best_response_gap` are populated
+only when `exploitability_available` is `true`; otherwise `normalized_regret`
+carries the multiway quality signal.
 
 ## Examples
 

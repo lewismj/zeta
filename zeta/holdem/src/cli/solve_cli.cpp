@@ -2,9 +2,50 @@
 
 #include <boost/json.hpp>
 
+#include <cstdint>
+#include <cstdlib>
+#include <iomanip>
 #include <limits>
+#include <sstream>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#elif defined(__linux__) || defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#endif
 
 namespace zeta::holdem::cli {
+
+    namespace detail {
+
+        uint64_t detected_available_memory_bytes() noexcept
+        {
+#if defined(_WIN32)
+            MEMORYSTATUSEX status{};
+            status.dwLength = sizeof(status);
+            if (GlobalMemoryStatusEx(&status)) {
+                return static_cast<uint64_t>(status.ullAvailPhys);
+            }
+            return 0u;
+#elif defined(_SC_AVPHYS_PAGES) && defined(_SC_PAGE_SIZE)
+            const long pages = sysconf(_SC_AVPHYS_PAGES);
+            const long page_size = sysconf(_SC_PAGE_SIZE);
+            if (pages > 0 && page_size > 0) {
+                return static_cast<uint64_t>(pages) * static_cast<uint64_t>(page_size);
+            }
+            return 0u;
+#else
+            return 0u;
+#endif
+        }
+
+    }
 
     namespace {
 
@@ -97,6 +138,21 @@ namespace zeta::holdem::cli {
                 return fallback;
             }
             return number_value(*value, key);
+        }
+
+        [[nodiscard]] std::expected<bool, cli_error> optional_bool(
+            const json::object& object,
+            const std::string_view key,
+            const bool fallback)
+        {
+            const auto* value = find_value(object, key);
+            if (value == nullptr) {
+                return fallback;
+            }
+            if (!value->is_bool()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, key_name(key) + " must be a boolean."});
+            }
+            return value->as_bool();
         }
 
         [[nodiscard]] std::expected<uint64_t, cli_error> uint64_value(
@@ -482,6 +538,21 @@ namespace zeta::holdem::cli {
             };
         }
 
+        [[nodiscard]] std::string hash_to_hex(const uint64_t value)
+        {
+            std::ostringstream stream;
+            stream << "0x" << std::hex << std::setw(16) << std::setfill('0') << value;
+            return stream.str();
+        }
+
+        [[nodiscard]] uint64_t hash_from_hex(const std::string_view text)
+        {
+            if (text.empty()) {
+                return 0u;
+            }
+            return std::strtoull(std::string{text}.c_str(), nullptr, 0);
+        }
+
         [[nodiscard]] json::object solver_json(const solver_metadata& solver)
         {
             json::object out;
@@ -489,6 +560,44 @@ namespace zeta::holdem::cli {
             out["iterations"] = solver.iterations;
             out["timestamp"] = solver.timestamp;
             out["git_revision"] = solver.git_revision;
+
+            json::object hashes;
+            hashes["tree"] = hash_to_hex(solver.hashes.tree_hash);
+            hashes["range"] = hash_to_hex(solver.hashes.range_hash);
+            hashes["board"] = hash_to_hex(solver.hashes.board_hash);
+            hashes["betting_policy"] = hash_to_hex(solver.hashes.betting_policy_hash);
+            hashes["solver_config"] = hash_to_hex(solver.hashes.solver_config_hash);
+            hashes["solve"] = hash_to_hex(solver.hashes.solve_hash);
+            out["hashes"] = std::move(hashes);
+
+            const auto& convergence = solver.convergence;
+            json::object convergence_object;
+            convergence_object["exploitability_available"] = convergence.exploitability_available;
+            convergence_object["exploitability"] = convergence.exploitability;
+            convergence_object["exploitability_pot_fraction"] = convergence.exploitability_pot_fraction;
+            convergence_object["nash_conv"] = convergence.nash_conv;
+            convergence_object["normalized_regret"] = convergence.normalized_regret;
+            convergence_object["target_exploitability"] = convergence.target_exploitability;
+            convergence_object["reached_target"] = convergence.reached_target;
+            json::array gaps;
+            gaps.reserve(convergence.best_response_gap.size());
+            for (const auto gap : convergence.best_response_gap) {
+                gaps.emplace_back(gap);
+            }
+            convergence_object["best_response_gap"] = std::move(gaps);
+            json::array curve;
+            curve.reserve(convergence.curve.size());
+            for (const auto& sample : convergence.curve) {
+                json::object sample_object;
+                sample_object["iteration"] = sample.iteration;
+                sample_object["metric"] = sample.metric;
+                sample_object["elapsed_ms"] = sample.elapsed_ms;
+                curve.emplace_back(std::move(sample_object));
+            }
+            convergence_object["curve"] = std::move(curve);
+            out["convergence"] = std::move(convergence_object);
+
+            out["warnings"] = string_array_json(solver.warnings);
             return out;
         }
 
@@ -768,6 +877,124 @@ namespace zeta::holdem::cli {
         return spot;
     }
 
+    std::expected<solve_runtime_options, cli_error> parse_spot_runtime_options(const std::string_view json_text)
+    {
+        auto root = parse_object(json_text, "Spot");
+        if (!root) {
+            return std::unexpected(root.error());
+        }
+
+        solve_runtime_options runtime{};
+        const auto* runtime_value = find_value(*root, "runtime");
+        if (runtime_value == nullptr) {
+            return runtime;
+        }
+        if (!runtime_value->is_object()) {
+            return std::unexpected(cli_error{cli_error_kind::parse, "runtime must be an object."});
+        }
+        const auto& runtime_object = runtime_value->as_object();
+
+        auto worker_threads = optional_uint<uint32_t>(runtime_object, "worker_threads", runtime.worker_threads);
+        auto memory_budget = optional_uint<uint64_t>(runtime_object, "memory_budget_bytes", runtime.memory_budget_bytes);
+        auto card_isomorphism = optional_bool(runtime_object, "card_isomorphism", runtime.enable_card_isomorphism);
+        auto allow_lossy = optional_bool(
+            runtime_object, "allow_lossy_card_isomorphism", runtime.allow_lossy_card_isomorphism);
+        if (!worker_threads) {
+            return std::unexpected(worker_threads.error());
+        }
+        if (!memory_budget) {
+            return std::unexpected(memory_budget.error());
+        }
+        if (!card_isomorphism) {
+            return std::unexpected(card_isomorphism.error());
+        }
+        if (!allow_lossy) {
+            return std::unexpected(allow_lossy.error());
+        }
+        runtime.worker_threads = *worker_threads;
+        runtime.memory_budget_bytes = *memory_budget;
+        runtime.enable_card_isomorphism = *card_isomorphism;
+        runtime.allow_lossy_card_isomorphism = *allow_lossy;
+
+        if (const auto* pruning_value = find_value(runtime_object, "dynamic_pruning"); pruning_value != nullptr) {
+            if (!pruning_value->is_object()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "runtime.dynamic_pruning must be an object."});
+            }
+            const auto& pruning_object = pruning_value->as_object();
+            auto enabled = optional_bool(pruning_object, "enabled", runtime.pruning.enabled);
+            auto prune_threshold = optional_double(pruning_object, "prune_threshold", runtime.pruning.prune_threshold);
+            auto minimum_active = optional_uint<uint32_t>(
+                pruning_object, "minimum_active_actions", runtime.pruning.minimum_active_actions);
+            auto reconsider_interval = optional_uint<uint32_t>(
+                pruning_object, "reconsider_interval", runtime.pruning.reconsider_interval);
+            if (!enabled) {
+                return std::unexpected(enabled.error());
+            }
+            if (!prune_threshold) {
+                return std::unexpected(prune_threshold.error());
+            }
+            if (!minimum_active) {
+                return std::unexpected(minimum_active.error());
+            }
+            if (!reconsider_interval) {
+                return std::unexpected(reconsider_interval.error());
+            }
+            if (*prune_threshold < 0.0) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::invalid_spot, "runtime.dynamic_pruning.prune_threshold must be non-negative."});
+            }
+            if (*minimum_active < 1u) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::invalid_spot, "runtime.dynamic_pruning.minimum_active_actions must be at least 1."});
+            }
+            if (*reconsider_interval < 1u) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::invalid_spot, "runtime.dynamic_pruning.reconsider_interval must be at least 1."});
+            }
+            runtime.pruning.enabled = *enabled;
+            runtime.pruning.prune_threshold = *prune_threshold;
+            runtime.pruning.minimum_active_actions = *minimum_active;
+            runtime.pruning.reconsider_interval = *reconsider_interval;
+        }
+
+        if (const auto* convergence_value = find_value(runtime_object, "convergence"); convergence_value != nullptr) {
+            if (!convergence_value->is_object()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "runtime.convergence must be an object."});
+            }
+            const auto& convergence_object = convergence_value->as_object();
+            auto measure = optional_bool(
+                convergence_object, "measure_exploitability", runtime.convergence.measure_exploitability);
+            auto interval = optional_uint<uint64_t>(
+                convergence_object, "measurement_interval", runtime.convergence.measurement_interval);
+            auto target = optional_double(
+                convergence_object, "target_exploitability", runtime.convergence.target_exploitability);
+            auto max_samples = optional_uint<uint32_t>(
+                convergence_object, "max_curve_samples", runtime.convergence.max_curve_samples);
+            if (!measure) {
+                return std::unexpected(measure.error());
+            }
+            if (!interval) {
+                return std::unexpected(interval.error());
+            }
+            if (!target) {
+                return std::unexpected(target.error());
+            }
+            if (!max_samples) {
+                return std::unexpected(max_samples.error());
+            }
+            if (*target < 0.0) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::invalid_spot, "runtime.convergence.target_exploitability must be non-negative."});
+            }
+            runtime.convergence.measure_exploitability = *measure;
+            runtime.convergence.measurement_interval = *interval;
+            runtime.convergence.target_exploitability = *target;
+            runtime.convergence.max_curve_samples = *max_samples;
+        }
+
+        return runtime;
+    }
+
     std::string serialize_spot_json(const struct solve_spot& spot)
     {
         const auto serialized_policy = cfr::serialize_betting_abstraction_policy(resolve_spot_betting_policy(spot));
@@ -877,6 +1104,89 @@ namespace zeta::holdem::cli {
         artifact.solver.iterations = *iterations;
         artifact.solver.timestamp = std::move(*timestamp);
         artifact.solver.git_revision = std::move(*git_revision);
+
+        if (const auto* hashes_value = find_value(solver_object, "hashes");
+            hashes_value != nullptr && hashes_value->is_object()) {
+            const auto& hashes_object = hashes_value->as_object();
+            auto tree = optional_string(hashes_object, "tree", "");
+            auto range = optional_string(hashes_object, "range", "");
+            auto board = optional_string(hashes_object, "board", "");
+            auto betting_policy = optional_string(hashes_object, "betting_policy", "");
+            auto solver_config = optional_string(hashes_object, "solver_config", "");
+            auto solve = optional_string(hashes_object, "solve", "");
+            if (!tree) { return std::unexpected(tree.error()); }
+            if (!range) { return std::unexpected(range.error()); }
+            if (!board) { return std::unexpected(board.error()); }
+            if (!betting_policy) { return std::unexpected(betting_policy.error()); }
+            if (!solver_config) { return std::unexpected(solver_config.error()); }
+            if (!solve) { return std::unexpected(solve.error()); }
+            artifact.solver.hashes.tree_hash = hash_from_hex(*tree);
+            artifact.solver.hashes.range_hash = hash_from_hex(*range);
+            artifact.solver.hashes.board_hash = hash_from_hex(*board);
+            artifact.solver.hashes.betting_policy_hash = hash_from_hex(*betting_policy);
+            artifact.solver.hashes.solver_config_hash = hash_from_hex(*solver_config);
+            artifact.solver.hashes.solve_hash = hash_from_hex(*solve);
+        }
+
+        if (const auto* convergence_value = find_value(solver_object, "convergence");
+            convergence_value != nullptr && convergence_value->is_object()) {
+            const auto& convergence_object = convergence_value->as_object();
+            auto available = optional_bool(convergence_object, "exploitability_available", false);
+            auto exploitability = optional_double(convergence_object, "exploitability", 0.0);
+            auto pot_fraction = optional_double(convergence_object, "exploitability_pot_fraction", 0.0);
+            auto nash_conv = optional_double(convergence_object, "nash_conv", 0.0);
+            auto normalized_regret = optional_double(convergence_object, "normalized_regret", 0.0);
+            auto target = optional_double(convergence_object, "target_exploitability", 0.0);
+            auto reached = optional_bool(convergence_object, "reached_target", false);
+            auto gaps = optional_number_array(convergence_object, "best_response_gap", {});
+            if (!available) { return std::unexpected(available.error()); }
+            if (!exploitability) { return std::unexpected(exploitability.error()); }
+            if (!pot_fraction) { return std::unexpected(pot_fraction.error()); }
+            if (!nash_conv) { return std::unexpected(nash_conv.error()); }
+            if (!normalized_regret) { return std::unexpected(normalized_regret.error()); }
+            if (!target) { return std::unexpected(target.error()); }
+            if (!reached) { return std::unexpected(reached.error()); }
+            if (!gaps) { return std::unexpected(gaps.error()); }
+            auto& convergence = artifact.solver.convergence;
+            convergence.exploitability_available = *available;
+            convergence.exploitability = *exploitability;
+            convergence.exploitability_pot_fraction = *pot_fraction;
+            convergence.nash_conv = *nash_conv;
+            convergence.normalized_regret = *normalized_regret;
+            convergence.target_exploitability = *target;
+            convergence.reached_target = *reached;
+            convergence.best_response_gap.assign(gaps->begin(), gaps->end());
+            if (const auto* curve_value = find_value(convergence_object, "curve");
+                curve_value != nullptr) {
+                if (!curve_value->is_array()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "convergence.curve must be an array."});
+                }
+                for (const auto& element : curve_value->as_array()) {
+                    if (!element.is_object()) {
+                        return std::unexpected(cli_error{
+                            cli_error_kind::parse, "convergence.curve entries must be objects."});
+                    }
+                    const auto& sample_object = element.as_object();
+                    auto iteration = optional_uint<uint64_t>(sample_object, "iteration", 0);
+                    auto metric = optional_double(sample_object, "metric", 0.0);
+                    auto elapsed_ms = optional_double(sample_object, "elapsed_ms", 0.0);
+                    if (!iteration) { return std::unexpected(iteration.error()); }
+                    if (!metric) { return std::unexpected(metric.error()); }
+                    if (!elapsed_ms) { return std::unexpected(elapsed_ms.error()); }
+                    convergence.curve.push_back(convergence_sample{
+                        .iteration = *iteration,
+                        .metric = *metric,
+                        .elapsed_ms = *elapsed_ms,
+                    });
+                }
+            }
+        }
+
+        auto warnings = optional_string_array(solver_object, "warnings", {});
+        if (!warnings) {
+            return std::unexpected(warnings.error());
+        }
+        artifact.solver.warnings = std::move(*warnings);
 
         if (const auto* root_strategy_value = find_value(*root, "root_strategy"); root_strategy_value != nullptr) {
             if (!root_strategy_value->is_array()) {

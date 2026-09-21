@@ -3,9 +3,11 @@
 #include <QAbstractItemView>
 #include <QAction>
 #include <QActionGroup>
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDialog>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -364,6 +366,12 @@ namespace zeta::holdem::ui {
         solver_iterations_ = settings_.solver_iterations();
         progress_batch_iterations_ = settings_.solver_progress_batch_iterations();
         worker_threads_ = std::clamp(settings_.solver_worker_threads(), min_worker_threads, available_worker_threads());
+        card_isomorphism_ = settings_.solver_card_isomorphism();
+        allow_lossy_isomorphism_ = settings_.solver_allow_lossy_isomorphism();
+        dynamic_pruning_ = settings_.solver_dynamic_pruning();
+        pruning_threshold_ = settings_.solver_pruning_threshold();
+        pruning_minimum_active_actions_ = settings_.solver_pruning_minimum_active_actions();
+        pruning_reconsider_interval_ = settings_.solver_pruning_reconsider_interval();
         workspace_splitter_sizes_ = settings_.workspace_splitter_sizes();
         create_actions();
         create_layout();
@@ -654,6 +662,12 @@ namespace zeta::holdem::ui {
         };
         request.runtime.progress_batch_iterations = static_cast<uint64_t>(progress_batch_iterations_);
         request.runtime.worker_threads = static_cast<uint32_t>(worker_threads_);
+        request.runtime.enable_card_isomorphism = card_isomorphism_;
+        request.runtime.allow_lossy_card_isomorphism = allow_lossy_isomorphism_;
+        request.runtime.pruning.enabled = dynamic_pruning_;
+        request.runtime.pruning.prune_threshold = pruning_threshold_;
+        request.runtime.pruning.minimum_active_actions = static_cast<uint32_t>(pruning_minimum_active_actions_);
+        request.runtime.pruning.reconsider_interval = static_cast<uint32_t>(pruning_reconsider_interval_);
         if (const char* revision = std::getenv("ZETA_GIT_REVISION")) {
             request.runtime.git_revision = revision;
         }
@@ -747,6 +761,56 @@ namespace zeta::holdem::ui {
         threads->setToolTip(tr("CFR worker threads for the next solve."));
         solver_layout->addRow(tr("Worker threads"), threads);
 
+        auto* card_isomorphism = new QCheckBox{solver_panel};
+        card_isomorphism->setObjectName("cardIsomorphismCheckBox");
+        card_isomorphism->setChecked(card_isomorphism_);
+        card_isomorphism->setToolTip(tr("Collapse suit-isomorphic turn/river runouts to shrink the game."));
+        solver_layout->addRow(tr("Card isomorphism"), card_isomorphism);
+
+        auto* allow_lossy = new QCheckBox{solver_panel};
+        allow_lossy->setObjectName("allowLossyIsomorphismCheckBox");
+        allow_lossy->setChecked(allow_lossy_isomorphism_);
+        allow_lossy->setToolTip(tr("Permit isomorphism even when ranges are not suit-symmetric (approximate)."));
+        allow_lossy->setEnabled(card_isomorphism_);
+        solver_layout->addRow(tr("Allow lossy isomorphism"), allow_lossy);
+        connect(card_isomorphism, &QCheckBox::toggled, allow_lossy, &QWidget::setEnabled);
+
+        auto* dynamic_pruning = new QCheckBox{solver_panel};
+        dynamic_pruning->setObjectName("dynamicPruningCheckBox");
+        dynamic_pruning->setChecked(dynamic_pruning_);
+        dynamic_pruning->setToolTip(tr("Opt-in approximate solve: freeze low-regret actions and skip their subtrees."));
+        solver_layout->addRow(tr("Dynamic action pruning"), dynamic_pruning);
+
+        auto* pruning_threshold = new QDoubleSpinBox{solver_panel};
+        pruning_threshold->setObjectName("pruningThresholdSpinBox");
+        pruning_threshold->setDecimals(4);
+        pruning_threshold->setRange(0.0001, 0.9999);
+        pruning_threshold->setSingleStep(0.005);
+        pruning_threshold->setValue(pruning_threshold_);
+        pruning_threshold->setToolTip(tr("Reach-weighted positive-regret share below which an action is pruned."));
+        pruning_threshold->setEnabled(dynamic_pruning_);
+        solver_layout->addRow(tr("Pruning threshold"), pruning_threshold);
+
+        auto* pruning_minimum = new QSpinBox{solver_panel};
+        pruning_minimum->setObjectName("pruningMinimumActionsSpinBox");
+        pruning_minimum->setRange(1, 64);
+        pruning_minimum->setValue(pruning_minimum_active_actions_);
+        pruning_minimum->setToolTip(tr("Never prune below this many active actions per infoset."));
+        pruning_minimum->setEnabled(dynamic_pruning_);
+        solver_layout->addRow(tr("Minimum active actions"), pruning_minimum);
+
+        auto* pruning_interval = new QSpinBox{solver_panel};
+        pruning_interval->setObjectName("pruningReconsiderIntervalSpinBox");
+        pruning_interval->setRange(1, 1'000'000);
+        pruning_interval->setValue(pruning_reconsider_interval_);
+        pruning_interval->setToolTip(tr("Iterations between prune/reactivate reconsideration passes."));
+        pruning_interval->setEnabled(dynamic_pruning_);
+        solver_layout->addRow(tr("Reconsider interval"), pruning_interval);
+
+        connect(dynamic_pruning, &QCheckBox::toggled, pruning_threshold, &QWidget::setEnabled);
+        connect(dynamic_pruning, &QCheckBox::toggled, pruning_minimum, &QWidget::setEnabled);
+        connect(dynamic_pruning, &QCheckBox::toggled, pruning_interval, &QWidget::setEnabled);
+
         tabs->addTab(solver_panel, tr("Solver"));
 
         root->addWidget(tabs);
@@ -774,9 +838,21 @@ namespace zeta::holdem::ui {
         solver_iterations_ = iterations->value();
         progress_batch_iterations_ = progress_batch->value();
         worker_threads_ = threads->value();
+        card_isomorphism_ = card_isomorphism->isChecked();
+        allow_lossy_isomorphism_ = allow_lossy->isChecked();
+        dynamic_pruning_ = dynamic_pruning->isChecked();
+        pruning_threshold_ = pruning_threshold->value();
+        pruning_minimum_active_actions_ = pruning_minimum->value();
+        pruning_reconsider_interval_ = pruning_interval->value();
         settings_.set_solver_iterations(solver_iterations_);
         settings_.set_solver_progress_batch_iterations(progress_batch_iterations_);
         settings_.set_solver_worker_threads(worker_threads_);
+        settings_.set_solver_card_isomorphism(card_isomorphism_);
+        settings_.set_solver_allow_lossy_isomorphism(allow_lossy_isomorphism_);
+        settings_.set_solver_dynamic_pruning(dynamic_pruning_);
+        settings_.set_solver_pruning_threshold(pruning_threshold_);
+        settings_.set_solver_pruning_minimum_active_actions(pruning_minimum_active_actions_);
+        settings_.set_solver_pruning_reconsider_interval(pruning_reconsider_interval_);
         settings_.sync();
     }
 

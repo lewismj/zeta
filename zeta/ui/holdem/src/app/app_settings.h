@@ -33,6 +33,24 @@ namespace zeta::holdem::ui::app {
         [[nodiscard]] int solver_worker_threads() const;
         void set_solver_worker_threads(int threads);
 
+        [[nodiscard]] bool solver_card_isomorphism() const;
+        void set_solver_card_isomorphism(bool enabled);
+
+        [[nodiscard]] bool solver_allow_lossy_isomorphism() const;
+        void set_solver_allow_lossy_isomorphism(bool allowed);
+
+        [[nodiscard]] bool solver_dynamic_pruning() const;
+        void set_solver_dynamic_pruning(bool enabled);
+
+        [[nodiscard]] double solver_pruning_threshold() const;
+        void set_solver_pruning_threshold(double threshold);
+
+        [[nodiscard]] int solver_pruning_minimum_active_actions() const;
+        void set_solver_pruning_minimum_active_actions(int minimum);
+
+        [[nodiscard]] int solver_pruning_reconsider_interval() const;
+        void set_solver_pruning_reconsider_interval(int interval);
+
         [[nodiscard]] QByteArray window_geometry() const;
         void set_window_geometry(const QByteArray& geometry);
 

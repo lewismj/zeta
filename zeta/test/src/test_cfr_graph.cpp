@@ -802,15 +802,132 @@ BOOST_AUTO_TEST_CASE(canonicalize_public_card_outcomes_exact_is_identity) {
     outcomes[0].probability = 0.5f;
     outcomes[1].probability = 0.5f;
 
-    auto canonical = canonicalize_public_card_outcomes(outcomes, public_card_isomorphism_mode::exact);
+    const auto board = card(0, 0) | card(1, 1) | card(2, 2);
+    auto canonical = canonicalize_public_card_outcomes(
+        outcomes, board, 0, public_card_isomorphism_mode::exact);
     BOOST_REQUIRE_EQUAL(canonical.size(), outcomes.size());
     for (std::size_t index = 0; index < canonical.size(); ++index) {
         BOOST_CHECK_EQUAL(canonical[index].representative_cards, outcomes[index].cards);
         BOOST_CHECK_CLOSE(canonical[index].probability, outcomes[index].probability, 1e-5);
-        BOOST_CHECK(is_identity_suit_permutation(canonical[index].public_permutation));
         BOOST_REQUIRE_EQUAL(canonical[index].members.size(), 1u);
-        BOOST_CHECK_EQUAL(canonical[index].members[0], outcomes[index].outcome_id);
+        BOOST_CHECK_EQUAL(canonical[index].members[0].outcome_id, outcomes[index].outcome_id);
+        BOOST_CHECK(is_identity_suit_permutation(canonical[index].members[0].permutation));
     }
+}
+
+BOOST_AUTO_TEST_CASE(canonicalize_public_card_outcomes_collapses_suit_isomorphic) {
+    // Board As Ks 7h: the spade lane (A,K) and the heart lane (7) are pinned, so the
+    // only board-fixing suit permutation swaps the two unused suits (diamonds/clubs).
+    // Dealing the 2 of either of those suits is isomorphic and must collapse into one
+    // representative with the summed probability, while a spade/heart 2 stays distinct.
+    const auto board = card(0, 12) | card(0, 11) | card(1, 5);
+    const auto two_spades = card(0, 0);
+    const auto two_hearts = card(1, 0);
+    const auto two_diamonds = card(2, 0);
+    const auto two_clubs = card(3, 0);
+    std::vector<chance_outcome> outcomes = {
+        chance_outcome{.probability = 0.25f, .outcome_id = 0, .cards = two_spades},
+        chance_outcome{.probability = 0.25f, .outcome_id = 1, .cards = two_hearts},
+        chance_outcome{.probability = 0.25f, .outcome_id = 2, .cards = two_diamonds},
+        chance_outcome{.probability = 0.25f, .outcome_id = 3, .cards = two_clubs}
+    };
+
+    auto canonical = canonicalize_public_card_outcomes(
+        outcomes, board, 0, public_card_isomorphism_mode::suit_isomorphic);
+
+    // Spade, heart, and the collapsed diamond/club class -> three representatives.
+    BOOST_REQUIRE_EQUAL(canonical.size(), 3u);
+    float probability_total = 0.0f;
+    std::size_t collapsed_members = 0;
+    for (const auto& outcome : canonical) {
+        probability_total += outcome.probability;
+        collapsed_members = std::max(collapsed_members, outcome.members.size());
+    }
+    BOOST_CHECK_CLOSE(probability_total, 1.0f, 1e-4);
+    BOOST_CHECK_EQUAL(collapsed_members, 2u);
+
+    // The collapsed class has probability 0.5 and one non-identity member permutation
+    // that maps its board onto the representative.
+    for (const auto& outcome : canonical) {
+        if (outcome.members.size() != 2u) {
+            continue;
+        }
+        BOOST_CHECK_CLOSE(outcome.probability, 0.5f, 1e-4);
+        bool saw_non_identity = false;
+        for (const auto& member : outcome.members) {
+            const auto mapped = apply_suit_permutation(member.cards, member.permutation);
+            BOOST_CHECK_EQUAL(mapped, outcome.representative_cards);
+            saw_non_identity = saw_non_identity || !is_identity_suit_permutation(member.permutation);
+        }
+        BOOST_CHECK(saw_non_identity);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(multi_street_memory_estimate_matches_allocation_dimensions) {
+    const auto board = card(0, 0) | card(1, 1) | card(2, 2) | card(3, 3);
+    const auto live = card(0, 5) | card(1, 6) | card(2, 7);
+    auto config = tiny_multi_street_config(holdem_street::turn, board, live);
+
+    auto lowered = lower_multi_street_public_game(config);
+    BOOST_REQUIRE(lowered.has_value());
+    auto layout = require_layout(make_action_table_layout(lowered->graph));
+
+    auto shape = estimate_multi_street_public_game_shape(config);
+    BOOST_REQUIRE(shape.has_value());
+    auto estimate = estimate_multi_street_public_game_memory(config);
+    BOOST_REQUIRE(estimate.has_value());
+
+    // The combo dimension is the full table width the solver actually allocates, and
+    // the action-slot dimension equals the dense layout's value count.
+    BOOST_CHECK_EQUAL(estimate->combo_count, static_cast<uint64_t>(zeta::holdem::combination_count));
+    BOOST_CHECK_EQUAL(estimate->action_slot_count, layout.value_count());
+
+    // The four combo x action tables: regrets, strategy_sums, and 2x working strategies.
+    const uint64_t combo_table_bytes =
+        static_cast<uint64_t>(zeta::holdem::combination_count) * layout.value_count() * sizeof(float);
+    BOOST_CHECK_EQUAL(estimate->regret_bytes, combo_table_bytes);
+    BOOST_CHECK_EQUAL(estimate->strategy_sum_bytes, combo_table_bytes);
+    BOOST_CHECK_EQUAL(estimate->working_bytes, 2u * combo_table_bytes);
+
+    // Per-node reach vectors carry one reach lane per seat; per-node value vectors carry one.
+    BOOST_CHECK_EQUAL(estimate->reach_bytes, 2u * estimate->value_bytes);
+
+    // The multi-street CFR loop is serial, so no per-worker scratch is charged.
+    BOOST_CHECK_EQUAL(estimate->worker_bytes, 0u);
+
+    // Total is exactly the sum of the components, and the dominant component is the
+    // single largest term.
+    const std::array<uint64_t, 11> parts = {
+        estimate->graph_bytes, estimate->infoset_bytes, estimate->regret_bytes,
+        estimate->strategy_sum_bytes, estimate->working_bytes, estimate->reach_bytes,
+        estimate->value_bytes, estimate->terminal_cache_bytes, estimate->chance_bytes,
+        estimate->worker_bytes, estimate->extraction_bytes
+    };
+    uint64_t sum = 0;
+    uint64_t largest = 0;
+    for (const auto bytes : parts) {
+        sum += bytes;
+        largest = std::max(largest, bytes);
+    }
+    BOOST_CHECK_EQUAL(estimate->total_bytes, sum);
+
+    const std::array<std::pair<uint64_t, multi_street_memory_component>, 11> labelled = {{
+        {estimate->graph_bytes, multi_street_memory_component::graph},
+        {estimate->infoset_bytes, multi_street_memory_component::infoset},
+        {estimate->regret_bytes, multi_street_memory_component::regret},
+        {estimate->strategy_sum_bytes, multi_street_memory_component::strategy_sum},
+        {estimate->working_bytes, multi_street_memory_component::working},
+        {estimate->reach_bytes, multi_street_memory_component::reach},
+        {estimate->value_bytes, multi_street_memory_component::value},
+        {estimate->terminal_cache_bytes, multi_street_memory_component::terminal_cache},
+        {estimate->chance_bytes, multi_street_memory_component::chance},
+        {estimate->worker_bytes, multi_street_memory_component::worker},
+        {estimate->extraction_bytes, multi_street_memory_component::extraction}
+    }};
+    BOOST_REQUIRE(estimate->dominant == std::ranges::max_element(labelled,
+        [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; })->second);
+    BOOST_CHECK_EQUAL(largest, std::ranges::max_element(labelled,
+        [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; })->first);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

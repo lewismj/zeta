@@ -270,3 +270,127 @@ Convergence/quality gates are computed from:
 - average strategy mass
 
 These diagnostics provide a deterministic release-facing acceptance surface for CFR behavior.
+
+## 13. Multi-street unified solve, memory budgeting, isomorphism, and dynamic pruning
+
+Flop and turn spots lower to a single exact multi-street public game
+(`lower_multi_street_public_game`) that interleaves a per-street betting round
+with each chance deal (flop bet round -> turn card -> turn bet round -> river
+card -> river bet round -> showdown). A single CFR+ loop
+(`solve_multi_street_public_game`) traverses the whole tree: it weights chance
+children by outcome probability, dispatches showdown leaves to the per-river
+terminal cache keyed by river public-state id, and uses one street-general value
+backup so a turn or flop solve exercises the same chance-backup code a river
+solve uses. `iterations` therefore drives convergence on every street; there is
+no separate runout-average path.
+
+### Pre-build memory budgeting
+
+Before any graph is materialised, `estimate_multi_street_public_game_shape`
+returns the exact node / edge / infoset / chance-outcome / terminal counts, and
+`estimate_multi_street_cfr_memory` turns that shape into a byte-accurate
+`multi_street_memory_estimate` broken down by component (graph, infoset, regret,
+strategy_sum, working, reach, value, terminal_cache, chance, worker, extraction)
+and records the `dominant` dimension. The regret / strategy_sum / working tables
+are dimensioned `combos x actions` over the full 1326-combo width the solver
+actually allocates, so the estimate matches the real allocation. If the estimate
+exceeds the resolved memory budget the solve is refused before allocation with an
+actionable error that names the dominant dimension.
+
+### Exact suit-isomorphism reduction
+
+When enabled, suit-isomorphic turn/river boards are collapsed under the board's
+suit-permutation symmetry group, shrinking the chance layer. The reduction is
+lossless only when the ranges are invariant under the collapsed permutations; a
+lossless request over asymmetric ranges is refused unless the caller opts into
+the lossy approximation.
+
+### Dynamic action pruning (opt-in, approximate)
+
+Dynamic pruning is an explicitly approximate solver policy, default off. When
+off, the solver is bit-identical to the exact multi-street solve. When on, each
+infoset maintains an active action set:
+
+- An action's score is its reach-weighted positive-regret contribution,
+  `score(a) = sum_combo max(0, reach) * max(0, regret(a))`, and its share is
+  `score(a) / sum_a score(a)`.
+- Actions whose share falls below `prune_threshold` are deactivated: their
+  subtree is skipped and their regret is frozen (never reset), subject to always
+  keeping at least `minimum_active_actions` active (ranked by score). When the
+  total score is non-positive, or the infoset already has at most the minimum,
+  all actions stay active.
+- Pruning preserves the original action indexing so persisted strategies stay
+  aligned, and it changes only which children are traversed - regret and
+  average-strategy accumulation for active actions are unchanged.
+- Every `reconsider_interval` iterations the active set is reconsidered from the
+  parent/infoset reach and the retained regret (including the frozen action's
+  own regret), so a pruned action reactivates once its share recovers without
+  ever traversing the inactive child to detect it.
+
+The contract is bounded-to-tolerance: a pruned solve stays within a configured
+strategy-distance / EV tolerance of the unpruned solve, not identical to it.
+
+## 14. Convergence and exploitability reporting
+
+Every solve emits user-facing confidence signals attached to the artifact's
+`solver` metadata: reproducible input hashes, an optional convergence report, and
+approximation warnings.
+
+### Reproducible input hashes
+
+Six stable FNV-1a digests identify the exact inputs a solve consumed, so two
+solves can be compared for equivalence without replaying them:
+
+- `tree` -- lowered game-graph topology and metadata (via the solver graph view).
+- `range` -- every seat's per-combo reach weights.
+- `board` -- the public board card mask.
+- `betting_policy` -- the betting abstraction plus stack / pot / contribution
+  configuration.
+- `solver_config` -- algorithm identity, iteration budget, sampling, isomorphism,
+  and pruning knobs.
+- `solve` -- a combined digest folding the five components together.
+
+Hashes are always computed and serialize as `0x`-prefixed hex strings.
+
+### Best-response exploitability (heads-up)
+
+For supported heads-up abstractions (the vectorized river root-actor path and the
+multi-street flop/turn path), the solver measures exact best-response
+exploitability against the average strategy. It reuses the same vectorized
+node-value backup, but at the exploiter's own decision nodes it takes the
+per-combo maximum over that seat's actions instead of the strategy-weighted sum.
+Because each combo is its own infoset and the counterfactual node reach for the
+opponent is independent of the exploiter's strategy, the per-combo maximum is an
+exact best response. The per-seat gap is the range-weighted average, over the
+seat's reach, of `(best_response_value - profile_value)` at the root; both terms
+are non-negative by construction. The aggregate exploitability is the mean of the
+two seats' gaps (`NashConv / 2`), reported in EV (chip) units together with its
+fraction of the gross pot. The measurement uses no dynamic pruning so the best
+response may exploit pruned-away actions.
+
+Measurement is opt-in. When disabled (the default), the solver skips the
+best-response passes but still records hashes and warnings, leaving the strategy
+and timing unchanged.
+
+### Normalized regret (multiway)
+
+Where an exact best response is expensive (multiway, or the generic fallback
+path), the report instead carries a normalized average-regret metric: the mean,
+over infosets and active combos, of the maximum positive accumulated regret,
+divided by the iteration count. It trends toward zero as the average strategy
+approaches equilibrium and leaves `exploitability_available` false.
+
+### Convergence curve and quality-threshold stopping
+
+With a positive `measurement_interval`, the primary metric (heads-up
+exploitability) is sampled every that-many iterations into a curve of
+`(iteration, metric, elapsed_ms)` points, capped at `max_curve_samples`. With a
+positive `target_exploitability`, the CFR loop stops early the first time the
+measured exploitability drops to or below the threshold; the recorded iteration
+count reflects the reduced work and `reached_target` is set.
+
+### Warnings
+
+Each solve lists the ways it departs from an exact no-limit equilibrium:
+abstraction-only equilibrium, multiway normalized-regret-only reporting,
+Monte-Carlo sampled showdown equity, lossy card isomorphism, and dynamic pruning.

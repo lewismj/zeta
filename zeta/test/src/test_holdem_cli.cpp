@@ -87,6 +87,25 @@ namespace {
   "hero_seat": 0
 })";
 
+    // A four-to-a-royal spade turn board leaves the three non-spade suits (hearts,
+    // diamonds, clubs) fully interchangeable, and the identical rank-only "AA" range
+    // for both seats is invariant under every permutation of those free suits. This is
+    // the canonical suit-symmetric spot: collapsing suit-isomorphic river runouts is
+    // lossless, so an isomorphism-reduced solve must reproduce the exact solve.
+    constexpr const char* sample_spot_suit_symmetric_turn = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Ks", "Qs", "Js"],
+  "ranges": ["AA", "AA"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "max_history": 4,
+  "public_state_id": 5
+})";
+
     constexpr const char* sample_spot_asymmetric_river = R"({
   "players": ["BTN", "BB"],
   "board": ["Ah", "Kd", "Qc", "Jh", "2s"],
@@ -602,6 +621,217 @@ BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_solve_is_deterministic_across_worke
     }
 }
 
+BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_solve_rejects_over_budget_footprint) {
+    auto turn_spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
+    BOOST_REQUIRE(turn_spot.has_value());
+
+    // A one-byte budget is smaller than any real footprint, so the pre-build check
+    // must refuse the solve before allocating the CFR tables and name the dominant
+    // cost dimension in an actionable message.
+    auto rejected = zeta::holdem::cli::solve_spot(
+        *turn_spot, 64, {.memory_budget_bytes = 1});
+    BOOST_REQUIRE(!rejected.has_value());
+    BOOST_CHECK(rejected.error().kind == zeta::holdem::cli::cli_error_kind::solver);
+    BOOST_CHECK(rejected.error().message.find("exceeds the budget") != std::string::npos);
+
+    // A generous budget solves the same spot normally, confirming the rejection is the
+    // budget check and not an unrelated failure.
+    auto solved = zeta::holdem::cli::solve_spot(
+        *turn_spot, 8, {.memory_budget_bytes = uint64_t{8} << 30});
+    BOOST_REQUIRE(solved.has_value());
+    BOOST_CHECK(!solved->artifact.strategy.empty());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_card_isomorphism_matches_exact_for_suit_symmetric_ranges) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_suit_symmetric_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    auto exact = zeta::holdem::cli::solve_spot(*spot, 200, {});
+    auto iso = zeta::holdem::cli::solve_spot(
+        *spot, 200, {.enable_card_isomorphism = true});
+    BOOST_REQUIRE(exact.has_value());
+    BOOST_REQUIRE(iso.has_value());
+
+    // Suit isomorphism is lossless for suit-symmetric ranges: the reduced solve must
+    // return the same hands and per-hand counterfactual values as the exact solve.
+    BOOST_REQUIRE_EQUAL(exact->artifact.strategy.size(), iso->artifact.strategy.size());
+    BOOST_REQUIRE(!exact->artifact.strategy.empty());
+    for (std::size_t i = 0; i < exact->artifact.strategy.size(); ++i) {
+        BOOST_CHECK_EQUAL(exact->artifact.strategy[i].hand, iso->artifact.strategy[i].hand);
+        BOOST_CHECK_SMALL(exact->artifact.strategy[i].ev - iso->artifact.strategy[i].ev, 1e-3);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_dynamic_pruning_default_off_matches_exact_solver) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    // With pruning disabled the solver must be bit-identical to the exact Step 2/3
+    // solver: same hands, per-combo EV, and every action frequency.
+    auto exact = zeta::holdem::cli::solve_spot(*spot, 96, {});
+    auto defaulted = zeta::holdem::cli::solve_spot(
+        *spot, 96, {.pruning = {.enabled = false}});
+    BOOST_REQUIRE(exact.has_value());
+    BOOST_REQUIRE(defaulted.has_value());
+    BOOST_REQUIRE_EQUAL(exact->artifact.strategy.size(), defaulted->artifact.strategy.size());
+    for (std::size_t i = 0; i < exact->artifact.strategy.size(); ++i) {
+        BOOST_CHECK_EQUAL(exact->artifact.strategy[i].hand, defaulted->artifact.strategy[i].hand);
+        BOOST_CHECK_EQUAL(exact->artifact.strategy[i].ev, defaulted->artifact.strategy[i].ev);
+        BOOST_REQUIRE_EQUAL(exact->artifact.strategy[i].strategy.size(),
+            defaulted->artifact.strategy[i].strategy.size());
+        for (std::size_t action = 0; action < exact->artifact.strategy[i].strategy.size(); ++action) {
+            BOOST_CHECK_EQUAL(exact->artifact.strategy[i].strategy[action].frequency,
+                defaulted->artifact.strategy[i].strategy[action].frequency);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_dynamic_pruning_stays_within_tolerance_of_exact_solve) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    constexpr uint64_t iterations = 256;
+    auto exact = zeta::holdem::cli::solve_spot(*spot, iterations, {});
+    // Opt-in approximate pruning: actions contributing under 1% of an infoset's
+    // reach-weighted positive regret are frozen, reconsidered every 16 iterations,
+    // and at least one action stays active. The approximate solve must track the
+    // exact solve closely in both per-combo EV and root action frequencies.
+    auto pruned = zeta::holdem::cli::solve_spot(
+        *spot,
+        iterations,
+        {.pruning = {
+             .enabled = true,
+             .prune_threshold = 0.01,
+             .minimum_active_actions = 1,
+             .reconsider_interval = 16}});
+    BOOST_REQUIRE(exact.has_value());
+    BOOST_REQUIRE(pruned.has_value());
+    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(pruned->artifact).has_value());
+    BOOST_REQUIRE_EQUAL(exact->artifact.strategy.size(), pruned->artifact.strategy.size());
+    BOOST_REQUIRE(!exact->artifact.strategy.empty());
+
+    for (std::size_t i = 0; i < exact->artifact.strategy.size(); ++i) {
+        BOOST_CHECK_EQUAL(exact->artifact.strategy[i].hand, pruned->artifact.strategy[i].hand);
+        BOOST_CHECK_SMALL(exact->artifact.strategy[i].ev - pruned->artifact.strategy[i].ev, 1.0);
+        BOOST_REQUIRE_EQUAL(exact->artifact.strategy[i].strategy.size(),
+            pruned->artifact.strategy[i].strategy.size());
+        for (std::size_t action = 0; action < exact->artifact.strategy[i].strategy.size(); ++action) {
+            BOOST_CHECK_SMALL(
+                exact->artifact.strategy[i].strategy[action].frequency
+                    - pruned->artifact.strategy[i].strategy[action].frequency,
+                0.05);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_parses_solver_runtime_knobs_from_spot_json) {
+    // The spot JSON exposes the solver runtime knobs (memory budget, isomorphism,
+    // dynamic pruning, worker threads) via an optional "runtime" object.
+    constexpr const char* runtime_spot = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Ks", "7h", "4h"],
+  "ranges": ["AhKh", "QdJd"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "max_history": 4,
+  "public_state_id": 5,
+  "runtime": {
+    "worker_threads": 4,
+    "memory_budget_bytes": 8589934592,
+    "card_isomorphism": true,
+    "allow_lossy_card_isomorphism": true,
+    "dynamic_pruning": {
+      "enabled": true,
+      "prune_threshold": 0.02,
+      "minimum_active_actions": 2,
+      "reconsider_interval": 32
+    }
+  }
+})";
+    auto runtime = zeta::holdem::cli::parse_spot_runtime_options(runtime_spot);
+    BOOST_REQUIRE(runtime.has_value());
+    BOOST_CHECK_EQUAL(runtime->worker_threads, 4u);
+    BOOST_CHECK_EQUAL(runtime->memory_budget_bytes, uint64_t{8} << 30);
+    BOOST_CHECK(runtime->enable_card_isomorphism);
+    BOOST_CHECK(runtime->allow_lossy_card_isomorphism);
+    BOOST_CHECK(runtime->pruning.enabled);
+    BOOST_CHECK(runtime->pruning.is_active());
+    BOOST_CHECK_CLOSE(runtime->pruning.prune_threshold, 0.02, 1e-6);
+    BOOST_CHECK_EQUAL(runtime->pruning.minimum_active_actions, 2u);
+    BOOST_CHECK_EQUAL(runtime->pruning.reconsider_interval, 32u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_runtime_options_default_when_block_absent) {
+    // A spot with no "runtime" block yields the exact-solver defaults: pruning off,
+    // isomorphism off, and an auto-derived memory budget.
+    auto runtime = zeta::holdem::cli::parse_spot_runtime_options(sample_spot_turn);
+    BOOST_REQUIRE(runtime.has_value());
+    BOOST_CHECK(!runtime->enable_card_isomorphism);
+    BOOST_CHECK(!runtime->allow_lossy_card_isomorphism);
+    BOOST_CHECK(!runtime->pruning.enabled);
+    BOOST_CHECK(!runtime->pruning.is_active());
+    BOOST_CHECK_EQUAL(runtime->memory_budget_bytes, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_runtime_options_reject_invalid_minimum_active_actions) {
+    // minimum_active_actions must stay >= 1; a zero value is a hard parse error, not a
+    // silently clamped value.
+    constexpr const char* bad_runtime_spot = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Ks", "7h", "4h"],
+  "ranges": ["AhKh", "QdJd"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "max_history": 4,
+  "public_state_id": 5,
+  "runtime": {"dynamic_pruning": {"enabled": true, "minimum_active_actions": 0}}
+})";
+    auto runtime = zeta::holdem::cli::parse_spot_runtime_options(bad_runtime_spot);
+    BOOST_REQUIRE(!runtime.has_value());
+    BOOST_CHECK(runtime.error().message.find("minimum_active_actions") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_card_isomorphism_rejects_asymmetric_ranges) {
+    // The turn board As Ks 7h 4h uses only spades and hearts, so diamonds and clubs are
+    // interchangeable (swapping them fixes the board). Diamond-only ranges are not
+    // invariant under that swap, so a lossless isomorphism request must be refused
+    // unless the caller explicitly opts into the lossy approximation.
+    constexpr const char* asymmetric_iso_spot = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Ks", "7h", "4h"],
+  "ranges": ["AdKd", "QdJd"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "max_history": 4,
+  "public_state_id": 5
+})";
+    auto spot = zeta::holdem::cli::parse_spot_json(asymmetric_iso_spot);
+    BOOST_REQUIRE(spot.has_value());
+
+    auto rejected = zeta::holdem::cli::solve_spot(
+        *spot, 16, {.enable_card_isomorphism = true});
+    BOOST_REQUIRE(!rejected.has_value());
+    BOOST_CHECK(rejected.error().kind == zeta::holdem::cli::cli_error_kind::solver);
+    BOOST_CHECK(rejected.error().message.find("suit-symmetric") != std::string::npos);
+
+    auto accepted = zeta::holdem::cli::solve_spot(
+        *spot, 16, {.enable_card_isomorphism = true, .allow_lossy_card_isomorphism = true});
+    BOOST_REQUIRE(accepted.has_value());
+    BOOST_CHECK(!accepted->artifact.strategy.empty());
+}
+
 BOOST_AUTO_TEST_CASE(holdem_cli_nonriver_artifact_persists_multi_street_graph_payload) {
     auto turn_spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
     BOOST_REQUIRE(turn_spot.has_value());
@@ -638,6 +868,261 @@ BOOST_AUTO_TEST_CASE(holdem_cli_nonriver_artifact_persists_multi_street_graph_pa
     BOOST_CHECK_EQUAL(parsed->chance_events.size(), turn_output->artifact.chance_events.size());
     BOOST_CHECK_EQUAL(parsed->runouts.size(), turn_output->artifact.runouts.size());
     BOOST_CHECK_EQUAL(parsed->solved_nodes.size(), turn_output->artifact.solved_nodes.size());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_populates_solve_hashes_and_warnings_by_default) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot);
+    BOOST_REQUIRE(spot.has_value());
+
+    // Reproducible input hashes and abstraction warnings are always recorded, even
+    // when the (opt-in) exploitability measurement is left disabled.
+    auto output = zeta::holdem::cli::solve_spot(*spot, 4);
+    BOOST_REQUIRE(output.has_value());
+    const auto& hashes = output->artifact.solver.hashes;
+    BOOST_CHECK_NE(hashes.tree_hash, 0u);
+    BOOST_CHECK_NE(hashes.range_hash, 0u);
+    BOOST_CHECK_NE(hashes.board_hash, 0u);
+    BOOST_CHECK_NE(hashes.betting_policy_hash, 0u);
+    BOOST_CHECK_NE(hashes.solver_config_hash, 0u);
+    BOOST_CHECK_NE(hashes.solve_hash, 0u);
+    BOOST_CHECK(!output->artifact.solver.warnings.empty());
+    // Without opt-in measurement no best-response pass runs.
+    BOOST_CHECK(!output->artifact.solver.convergence.exploitability_available);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_solve_hashes_are_stable_and_input_sensitive) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot);
+    auto other = zeta::holdem::cli::parse_spot_json(sample_spot_asymmetric_river);
+    BOOST_REQUIRE(spot.has_value());
+    BOOST_REQUIRE(other.has_value());
+
+    // Two identical solves hash identically; a spot with a different board, range,
+    // and betting policy hashes differently in every component and in the combined
+    // digest, so hashes can gate solution reuse.
+    auto first = zeta::holdem::cli::solve_spot(*spot, 4);
+    auto second = zeta::holdem::cli::solve_spot(*spot, 4);
+    auto different = zeta::holdem::cli::solve_spot(*other, 4);
+    BOOST_REQUIRE(first.has_value());
+    BOOST_REQUIRE(second.has_value());
+    BOOST_REQUIRE(different.has_value());
+
+    BOOST_CHECK_EQUAL(first->artifact.solver.hashes.solve_hash, second->artifact.solver.hashes.solve_hash);
+    BOOST_CHECK_EQUAL(first->artifact.solver.hashes.board_hash, second->artifact.solver.hashes.board_hash);
+    BOOST_CHECK_NE(first->artifact.solver.hashes.board_hash, different->artifact.solver.hashes.board_hash);
+    BOOST_CHECK_NE(first->artifact.solver.hashes.range_hash, different->artifact.solver.hashes.range_hash);
+    BOOST_CHECK_NE(first->artifact.solver.hashes.solve_hash, different->artifact.solver.hashes.solve_hash);
+
+    // The iteration budget participates in the solver-configuration hash.
+    auto more_iterations = zeta::holdem::cli::solve_spot(*spot, 8);
+    BOOST_REQUIRE(more_iterations.has_value());
+    BOOST_CHECK_NE(first->artifact.solver.hashes.solver_config_hash,
+        more_iterations->artifact.solver.hashes.solver_config_hash);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_reports_heads_up_exploitability_when_enabled) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    // The nuts spot has an exact equilibrium (hero holds an unbeatable royal, villain
+    // is drawing dead), so a well-converged solve is essentially unexploitable: both
+    // per-seat best-response gaps and the aggregate exploitability collapse toward zero.
+    auto output = zeta::holdem::cli::solve_spot(
+        *spot, 600, {.convergence = {.measure_exploitability = true}});
+    BOOST_REQUIRE(output.has_value());
+    const auto& convergence = output->artifact.solver.convergence;
+    BOOST_REQUIRE(convergence.exploitability_available);
+    BOOST_CHECK_GE(convergence.exploitability, 0.0);
+    BOOST_CHECK_LT(convergence.exploitability, 1.0);
+    BOOST_CHECK_CLOSE(convergence.nash_conv, 2.0 * convergence.exploitability, 1e-6);
+    BOOST_REQUIRE_EQUAL(convergence.best_response_gap.size(), 2u);
+    BOOST_CHECK_GE(convergence.best_response_gap[0], 0.0);
+    BOOST_CHECK_GE(convergence.best_response_gap[1], 0.0);
+    BOOST_CHECK_GT(output->artifact.solver.hashes.solve_hash, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_exploitability_decreases_with_iterations) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    // A barely-iterated average strategy leaves the opponent's play exploitable; a
+    // well-converged solve drives the measured exploitability down.
+    auto coarse = zeta::holdem::cli::solve_spot(
+        *spot, 2, {.convergence = {.measure_exploitability = true}});
+    auto refined = zeta::holdem::cli::solve_spot(
+        *spot, 600, {.convergence = {.measure_exploitability = true}});
+    BOOST_REQUIRE(coarse.has_value());
+    BOOST_REQUIRE(refined.has_value());
+    BOOST_REQUIRE(coarse->artifact.solver.convergence.exploitability_available);
+    BOOST_REQUIRE(refined->artifact.solver.convergence.exploitability_available);
+    BOOST_CHECK_LE(refined->artifact.solver.convergence.exploitability,
+        coarse->artifact.solver.convergence.exploitability);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_records_convergence_curve_with_interval) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    // A positive measurement interval samples the exploitability over the CFR loop;
+    // samples are ordered by increasing iteration and carry non-negative metrics.
+    auto output = zeta::holdem::cli::solve_spot(
+        *spot, 200, {.convergence = {.measure_exploitability = true, .measurement_interval = 25}});
+    BOOST_REQUIRE(output.has_value());
+    const auto& curve = output->artifact.solver.convergence.curve;
+    BOOST_REQUIRE(!curve.empty());
+    for (std::size_t i = 0; i < curve.size(); ++i) {
+        BOOST_CHECK_GT(curve[i].iteration, 0u);
+        BOOST_CHECK_LE(curve[i].iteration, 200u);
+        BOOST_CHECK_GE(curve[i].metric, 0.0);
+        if (i > 0) {
+            BOOST_CHECK_LT(curve[i - 1].iteration, curve[i].iteration);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_curve_sample_count_is_capped) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    // The retained curve honours max_curve_samples: a tiny interval over many
+    // iterations still keeps at most the configured number of samples.
+    auto output = zeta::holdem::cli::solve_spot(
+        *spot,
+        200,
+        {.convergence = {
+             .measure_exploitability = true,
+             .measurement_interval = 1,
+             .max_curve_samples = 3}});
+    BOOST_REQUIRE(output.has_value());
+    BOOST_CHECK_LE(output->artifact.solver.convergence.curve.size(), 3u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_stops_early_on_target_exploitability) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    // The nuts spot converges to zero exploitability, so a generous quality target is
+    // reached well before the iteration budget is exhausted: the solve stops early and
+    // records the reduced iteration count.
+    constexpr uint64_t budget = 2000;
+    auto output = zeta::holdem::cli::solve_spot(
+        *spot,
+        budget,
+        {.convergence = {.measure_exploitability = true, .target_exploitability = 5.0}});
+    BOOST_REQUIRE(output.has_value());
+    const auto& convergence = output->artifact.solver.convergence;
+    BOOST_CHECK(convergence.reached_target);
+    BOOST_CHECK_LT(output->artifact.solver.iterations, budget);
+    BOOST_CHECK_LE(convergence.exploitability, 5.0);
+    BOOST_CHECK_CLOSE(convergence.target_exploitability, 5.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_multiway_reports_normalized_regret_without_exploitability) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_multiway);
+    BOOST_REQUIRE(spot.has_value());
+
+    // Multiway solves do not compute an exact best response; they report a normalized
+    // average-regret metric and warn that exploitability is unavailable.
+    auto output = zeta::holdem::cli::solve_spot(
+        *spot, 16, {.convergence = {.measure_exploitability = true}});
+    BOOST_REQUIRE(output.has_value());
+    const auto& convergence = output->artifact.solver.convergence;
+    BOOST_CHECK(!convergence.exploitability_available);
+    BOOST_CHECK_GE(convergence.normalized_regret, 0.0);
+    const bool warns_multiway = std::ranges::any_of(
+        output->artifact.solver.warnings, [](const std::string& warning) {
+            return warning.find("normalized average-regret") != std::string::npos;
+        });
+    BOOST_CHECK(warns_multiway);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_parses_convergence_runtime_knobs_from_spot_json) {
+    constexpr const char* convergence_spot = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Ks", "7h", "4h"],
+  "ranges": ["AhKh", "QdJd"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "max_history": 4,
+  "public_state_id": 5,
+  "runtime": {
+    "convergence": {
+      "measure_exploitability": true,
+      "measurement_interval": 20,
+      "target_exploitability": 0.5,
+      "max_curve_samples": 64
+    }
+  }
+})";
+    auto runtime = zeta::holdem::cli::parse_spot_runtime_options(convergence_spot);
+    BOOST_REQUIRE(runtime.has_value());
+    BOOST_CHECK(runtime->convergence.measure_exploitability);
+    BOOST_CHECK_EQUAL(runtime->convergence.measurement_interval, 20u);
+    BOOST_CHECK_CLOSE(runtime->convergence.target_exploitability, 0.5, 1e-6);
+    BOOST_CHECK_EQUAL(runtime->convergence.max_curve_samples, 64u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_convergence_runtime_defaults_when_block_absent) {
+    // With no runtime.convergence block the reporting knobs default to off.
+    auto runtime = zeta::holdem::cli::parse_spot_runtime_options(sample_spot_turn);
+    BOOST_REQUIRE(runtime.has_value());
+    BOOST_CHECK(!runtime->convergence.measure_exploitability);
+    BOOST_CHECK_EQUAL(runtime->convergence.measurement_interval, 0u);
+    BOOST_CHECK_CLOSE(runtime->convergence.target_exploitability, 0.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_convergence_runtime_rejects_negative_target) {
+    constexpr const char* bad_spot = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["As", "Ks", "7h", "4h"],
+  "ranges": ["AhKh", "QdJd"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "bet_fraction": 0.5,
+  "max_history": 4,
+  "public_state_id": 5,
+  "runtime": {"convergence": {"target_exploitability": -1.0}}
+})";
+    auto runtime = zeta::holdem::cli::parse_spot_runtime_options(bad_spot);
+    BOOST_REQUIRE(!runtime.has_value());
+    BOOST_CHECK(runtime.error().message.find("target_exploitability") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_artifact_json_roundtrips_hashes_and_convergence) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
+    BOOST_REQUIRE(spot.has_value());
+
+    auto output = zeta::holdem::cli::solve_spot(
+        *spot, 120, {.convergence = {.measure_exploitability = true, .measurement_interval = 20}});
+    BOOST_REQUIRE(output.has_value());
+    BOOST_REQUIRE(output->artifact.solver.convergence.exploitability_available);
+    BOOST_REQUIRE(!output->artifact.solver.convergence.curve.empty());
+
+    const auto json = zeta::holdem::cli::serialize_artifact_json(output->artifact);
+    auto parsed = zeta::holdem::cli::parse_artifact_json(json);
+    BOOST_REQUIRE(parsed.has_value());
+
+    const auto& original = output->artifact.solver;
+    const auto& restored = parsed->solver;
+    BOOST_CHECK_EQUAL(restored.hashes.tree_hash, original.hashes.tree_hash);
+    BOOST_CHECK_EQUAL(restored.hashes.solve_hash, original.hashes.solve_hash);
+    BOOST_CHECK_EQUAL(restored.hashes.board_hash, original.hashes.board_hash);
+    BOOST_CHECK_EQUAL(restored.convergence.exploitability_available,
+        original.convergence.exploitability_available);
+    BOOST_CHECK_CLOSE(restored.convergence.exploitability, original.convergence.exploitability, 1e-9);
+    BOOST_CHECK_CLOSE(restored.convergence.nash_conv, original.convergence.nash_conv, 1e-9);
+    BOOST_REQUIRE_EQUAL(restored.convergence.best_response_gap.size(),
+        original.convergence.best_response_gap.size());
+    BOOST_REQUIRE_EQUAL(restored.convergence.curve.size(), original.convergence.curve.size());
+    BOOST_CHECK_EQUAL(restored.convergence.curve.front().iteration,
+        original.convergence.curve.front().iteration);
+    BOOST_REQUIRE_EQUAL(restored.warnings.size(), original.warnings.size());
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_rejects_old_artifact_schema_versions) {

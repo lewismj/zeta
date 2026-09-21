@@ -113,6 +113,12 @@ namespace zeta::holdem::ui {
         int solver_iterations_ = 100;
         int progress_batch_iterations_ = 1;
         int worker_threads_ = 1;
+        bool card_isomorphism_ = false;
+        bool allow_lossy_isomorphism_ = false;
+        bool dynamic_pruning_ = false;
+        double pruning_threshold_ = 0.01;
+        int pruning_minimum_active_actions_ = 1;
+        int pruning_reconsider_interval_ = 64;
         QList<int> workspace_splitter_sizes_;
         int active_solver_document_index_ = -1;
     };

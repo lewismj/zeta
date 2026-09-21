@@ -17,6 +17,12 @@ namespace zeta::holdem::ui::app {
         constexpr int max_progress_batch_iterations = 1'000'000;
         constexpr int default_worker_threads = 1;
         constexpr int max_worker_threads = 64;
+        constexpr double default_pruning_threshold = 0.01;
+        constexpr int default_pruning_minimum_active_actions = 1;
+        constexpr int max_pruning_minimum_active_actions = 64;
+        constexpr int default_pruning_reconsider_interval = 64;
+        constexpr int min_pruning_reconsider_interval = 1;
+        constexpr int max_pruning_reconsider_interval = 1'000'000;
 
     }
 
@@ -107,6 +113,90 @@ namespace zeta::holdem::ui::app {
             return;
         }
         settings_.setValue(QStringLiteral("solver/worker_threads"), threads);
+    }
+
+    bool app_settings::solver_card_isomorphism() const
+    {
+        return settings_.value(QStringLiteral("solver/card_isomorphism"), false).toBool();
+    }
+
+    void app_settings::set_solver_card_isomorphism(const bool enabled)
+    {
+        settings_.setValue(QStringLiteral("solver/card_isomorphism"), enabled);
+    }
+
+    bool app_settings::solver_allow_lossy_isomorphism() const
+    {
+        return settings_.value(QStringLiteral("solver/allow_lossy_isomorphism"), false).toBool();
+    }
+
+    void app_settings::set_solver_allow_lossy_isomorphism(const bool allowed)
+    {
+        settings_.setValue(QStringLiteral("solver/allow_lossy_isomorphism"), allowed);
+    }
+
+    bool app_settings::solver_dynamic_pruning() const
+    {
+        return settings_.value(QStringLiteral("solver/dynamic_pruning"), false).toBool();
+    }
+
+    void app_settings::set_solver_dynamic_pruning(const bool enabled)
+    {
+        settings_.setValue(QStringLiteral("solver/dynamic_pruning"), enabled);
+    }
+
+    double app_settings::solver_pruning_threshold() const
+    {
+        bool ok = false;
+        const double threshold = settings_.value(QStringLiteral("solver/pruning_threshold"), default_pruning_threshold).toDouble(&ok);
+        if (!ok || threshold <= 0.0 || threshold >= 1.0) {
+            return default_pruning_threshold;
+        }
+        return threshold;
+    }
+
+    void app_settings::set_solver_pruning_threshold(const double threshold)
+    {
+        if (threshold <= 0.0 || threshold >= 1.0) {
+            return;
+        }
+        settings_.setValue(QStringLiteral("solver/pruning_threshold"), threshold);
+    }
+
+    int app_settings::solver_pruning_minimum_active_actions() const
+    {
+        bool ok = false;
+        const int minimum = settings_.value(QStringLiteral("solver/pruning_minimum_active_actions"), default_pruning_minimum_active_actions).toInt(&ok);
+        if (!ok || minimum < default_pruning_minimum_active_actions || minimum > max_pruning_minimum_active_actions) {
+            return default_pruning_minimum_active_actions;
+        }
+        return minimum;
+    }
+
+    void app_settings::set_solver_pruning_minimum_active_actions(const int minimum)
+    {
+        if (minimum < default_pruning_minimum_active_actions || minimum > max_pruning_minimum_active_actions) {
+            return;
+        }
+        settings_.setValue(QStringLiteral("solver/pruning_minimum_active_actions"), minimum);
+    }
+
+    int app_settings::solver_pruning_reconsider_interval() const
+    {
+        bool ok = false;
+        const int interval = settings_.value(QStringLiteral("solver/pruning_reconsider_interval"), default_pruning_reconsider_interval).toInt(&ok);
+        if (!ok || interval < min_pruning_reconsider_interval || interval > max_pruning_reconsider_interval) {
+            return default_pruning_reconsider_interval;
+        }
+        return interval;
+    }
+
+    void app_settings::set_solver_pruning_reconsider_interval(const int interval)
+    {
+        if (interval < min_pruning_reconsider_interval || interval > max_pruning_reconsider_interval) {
+            return;
+        }
+        settings_.setValue(QStringLiteral("solver/pruning_reconsider_interval"), interval);
     }
 
     QByteArray app_settings::window_geometry() const

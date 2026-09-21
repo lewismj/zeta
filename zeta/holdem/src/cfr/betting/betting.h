@@ -228,6 +228,7 @@ namespace zeta::holdem::cfr {
         betting_abstraction_policy abstraction{};
         uint16_t max_history = 8;
         uint32_t public_state_id = 0;
+        public_card_isomorphism_mode isomorphism = public_card_isomorphism_mode::exact;
         solver::cfr_memory_plan_options memory_plan_options{};
         solver::cfr_memory_plan_limits memory_plan_limits{};
     };
@@ -1437,18 +1438,20 @@ namespace zeta::holdem::cfr {
 
                     const auto next_street = static_cast<solver::holdem_street>(
                         static_cast<uint8_t>(state.street) + 1u);
-                    auto outcomes = enumerate_public_card_outcomes(board, config.dead_cards, 1);
-                    if (outcomes.empty()) {
+                    auto raw_outcomes = enumerate_public_card_outcomes(board, config.dead_cards, 1);
+                    if (raw_outcomes.empty()) {
                         return std::unexpected(betting_validation_error{
                             .kind = betting_validation_error_kind::invalid_terminal_state
                         });
                     }
+                    const auto outcomes = canonicalize_public_card_outcomes(
+                        raw_outcomes, board, config.dead_cards, config.isomorphism);
                     ++shape.node_count;
                     ++shape.chance_node_count;
                     for (const auto& outcome : outcomes) {
                         ++shape.chance_outcome_count;
                         ++shape.edge_count;
-                        const auto next_board = board | outcome.cards;
+                        const auto next_board = board | outcome.representative_cards;
                         if (seen_boards.insert(next_board).second) {
                             ++shape.public_state_count;
                             if (next_street == solver::holdem_street::river) {
@@ -1505,6 +1508,201 @@ namespace zeta::holdem::cfr {
             shape.infoset_count = shape.player_node_count;
             return shape;
         }
+    }
+
+    /** Which dimension of the multi-street CFR footprint dominates the estimate. */
+    enum class multi_street_memory_component : uint8_t {
+        graph = 0,
+        infoset,
+        regret,
+        strategy_sum,
+        working,
+        reach,
+        value,
+        terminal_cache,
+        chance,
+        worker,
+        extraction
+    };
+
+    [[nodiscard]] constexpr const char* to_string(const multi_street_memory_component component) noexcept
+    {
+        switch (component) {
+            case multi_street_memory_component::graph:          return "graph";
+            case multi_street_memory_component::infoset:        return "infoset";
+            case multi_street_memory_component::regret:         return "regret";
+            case multi_street_memory_component::strategy_sum:   return "strategy_sum";
+            case multi_street_memory_component::working:        return "working";
+            case multi_street_memory_component::reach:          return "reach";
+            case multi_street_memory_component::value:          return "value";
+            case multi_street_memory_component::terminal_cache: return "terminal_cache";
+            case multi_street_memory_component::chance:         return "chance";
+            case multi_street_memory_component::worker:         return "worker";
+            case multi_street_memory_component::extraction:     return "extraction";
+        }
+        return "unknown";
+    }
+
+    /**
+     * Byte-accurate footprint of the vectorized multi-street CFR+ solve, broken down
+     * by component so an over-budget spot can name its dominant dimension. The combo
+     * dimension is the full 1326-combo table width the solver allocates, so the
+     * estimate matches the actual allocation rather than a range-pruned lower bound.
+     */
+    struct multi_street_memory_estimate {
+        uint64_t combo_count = 0;
+        uint64_t action_slot_count = 0;
+        uint64_t graph_bytes = 0;
+        uint64_t infoset_bytes = 0;
+        uint64_t regret_bytes = 0;
+        uint64_t strategy_sum_bytes = 0;
+        uint64_t working_bytes = 0;
+        uint64_t reach_bytes = 0;
+        uint64_t value_bytes = 0;
+        uint64_t terminal_cache_bytes = 0;
+        uint64_t chance_bytes = 0;
+        uint64_t worker_bytes = 0;
+        uint64_t extraction_bytes = 0;
+        uint64_t total_bytes = 0;
+        multi_street_memory_component dominant = multi_street_memory_component::graph;
+    };
+
+    /**
+     * Estimate the multi-street CFR+ memory footprint from a graph shape.
+     *
+     * Every term maps to a concrete allocation in `solve_multi_street_public_game`:
+     *   - regret / strategy_sum / working: the four combo x action tables
+     *     (regrets, strategy_sums, current_strategy, average_strategy),
+     *   - reach / value: the per-node reach and value vectors,
+     *   - terminal_cache: one river terminal cache plus per-seat reach indices per
+     *     river public state,
+     *   - graph / infoset / chance: the lowered graph, infoset layout, and chance
+     *     registries.
+     * The multi-street CFR loop is serial, so worker scratch is zero.
+     */
+    template <std::size_t N>
+    [[nodiscard]] std::expected<multi_street_memory_estimate, solver::cfr_memory_plan_error>
+    estimate_multi_street_cfr_memory(const multi_street_public_game_shape& shape) noexcept
+    {
+        multi_street_memory_estimate estimate;
+        estimate.combo_count = combination_count;
+        if (shape.edge_count < shape.chance_outcome_count) {
+            return std::unexpected(solver::cfr_memory_plan_error{
+                solver::cfr_memory_plan_error_kind::estimate_overflow});
+        }
+        estimate.action_slot_count = shape.edge_count - shape.chance_outcome_count;
+
+        const uint64_t combo = estimate.combo_count;
+        const uint64_t table_value_bytes = sizeof(float);
+        const uint64_t reach_vector_bytes = combination_count * sizeof(combo_weight);
+
+        uint64_t combo_table_bytes = 0;
+        uint64_t node_reach_bytes = 0;
+        if (!solver::checked_mul(combo, estimate.action_slot_count, combo_table_bytes)
+            || !solver::checked_mul(combo_table_bytes, table_value_bytes, combo_table_bytes)
+            || !solver::checked_mul(shape.node_count, N * reach_vector_bytes, node_reach_bytes)) {
+            return std::unexpected(solver::cfr_memory_plan_error{
+                solver::cfr_memory_plan_error_kind::estimate_overflow});
+        }
+
+        estimate.regret_bytes = combo_table_bytes;
+        estimate.strategy_sum_bytes = combo_table_bytes;
+        if (!solver::checked_mul(combo_table_bytes, 2u, estimate.working_bytes)) {
+            return std::unexpected(solver::cfr_memory_plan_error{
+                solver::cfr_memory_plan_error_kind::estimate_overflow});
+        }
+        estimate.reach_bytes = node_reach_bytes;
+        if (!solver::checked_mul(shape.node_count, reach_vector_bytes, estimate.value_bytes)) {
+            return std::unexpected(solver::cfr_memory_plan_error{
+                solver::cfr_memory_plan_error_kind::estimate_overflow});
+        }
+
+        constexpr uint64_t node_payload_bytes = sizeof(uint32_t) * 2u + sizeof(node_kind) + sizeof(uint16_t)
+            + sizeof(solver::solver_node_state_metadata) + sizeof(solver::cfr_terminal_leaf);
+        uint64_t graph_row_bytes = 0;
+        if (!solver::checked_mul(shape.node_count, node_payload_bytes, estimate.graph_bytes)
+            || !solver::checked_mul(shape.node_count + 1u, sizeof(uint32_t), graph_row_bytes)
+            || !solver::checked_add(estimate.graph_bytes, graph_row_bytes)
+            || !solver::checked_add(estimate.graph_bytes, shape.edge_count * sizeof(edge))) {
+            return std::unexpected(solver::cfr_memory_plan_error{
+                solver::cfr_memory_plan_error_kind::estimate_overflow});
+        }
+
+        if (!solver::checked_mul(shape.infoset_count + 1u, sizeof(uint32_t), estimate.infoset_bytes)
+            || !solver::checked_add(estimate.infoset_bytes, estimate.action_slot_count * sizeof(uint32_t))) {
+            return std::unexpected(solver::cfr_memory_plan_error{
+                solver::cfr_memory_plan_error_kind::estimate_overflow});
+        }
+
+        constexpr uint64_t terminal_cache_bytes = sizeof(river_terminal_cache)
+            + N * sizeof(river_reach_index);
+        if (!solver::checked_mul(shape.river_public_state_count, terminal_cache_bytes, estimate.terminal_cache_bytes)) {
+            return std::unexpected(solver::cfr_memory_plan_error{
+                solver::cfr_memory_plan_error_kind::estimate_overflow});
+        }
+
+        uint64_t chance_event_bytes = 0;
+        if (!solver::checked_mul(shape.chance_node_count, sizeof(chance_event), chance_event_bytes)
+            || !solver::checked_mul(shape.chance_outcome_count, sizeof(chance_outcome), estimate.chance_bytes)
+            || !solver::checked_add(estimate.chance_bytes, chance_event_bytes)) {
+            return std::unexpected(solver::cfr_memory_plan_error{
+                solver::cfr_memory_plan_error_kind::estimate_overflow});
+        }
+
+        estimate.worker_bytes = 0;
+        if (!solver::checked_mul(estimate.action_slot_count, sizeof(uint32_t) + sizeof(double), estimate.extraction_bytes)) {
+            return std::unexpected(solver::cfr_memory_plan_error{
+                solver::cfr_memory_plan_error_kind::estimate_overflow});
+        }
+
+        const std::array<std::pair<uint64_t, multi_street_memory_component>, 11> parts = {{
+            {estimate.graph_bytes,          multi_street_memory_component::graph},
+            {estimate.infoset_bytes,        multi_street_memory_component::infoset},
+            {estimate.regret_bytes,         multi_street_memory_component::regret},
+            {estimate.strategy_sum_bytes,   multi_street_memory_component::strategy_sum},
+            {estimate.working_bytes,        multi_street_memory_component::working},
+            {estimate.reach_bytes,          multi_street_memory_component::reach},
+            {estimate.value_bytes,          multi_street_memory_component::value},
+            {estimate.terminal_cache_bytes, multi_street_memory_component::terminal_cache},
+            {estimate.chance_bytes,         multi_street_memory_component::chance},
+            {estimate.worker_bytes,         multi_street_memory_component::worker},
+            {estimate.extraction_bytes,     multi_street_memory_component::extraction}
+        }};
+        uint64_t dominant_bytes = 0;
+        for (const auto& [bytes, component] : parts) {
+            if (!solver::checked_add(estimate.total_bytes, bytes)) {
+                return std::unexpected(solver::cfr_memory_plan_error{
+                    solver::cfr_memory_plan_error_kind::estimate_overflow});
+            }
+            if (bytes > dominant_bytes) {
+                dominant_bytes = bytes;
+                estimate.dominant = component;
+            }
+        }
+        return estimate;
+    }
+
+    /**
+     * Convenience wrapper: estimate the multi-street footprint straight from a config
+     * by first computing the graph shape. Runs entirely without materialising the
+     * graph, so an oversized flop tree is measured rather than allocated.
+     */
+    template <std::size_t N>
+    [[nodiscard]] std::expected<multi_street_memory_estimate, betting_validation_error>
+    estimate_multi_street_public_game_memory(const holdem_public_game_config<N>& config)
+    {
+        auto shape = estimate_multi_street_public_game_shape(config);
+        if (!shape) {
+            return std::unexpected(shape.error());
+        }
+        auto estimate = estimate_multi_street_cfr_memory<N>(*shape);
+        if (!estimate) {
+            return std::unexpected(betting_validation_error{
+                .kind = betting_validation_error_kind::memory_plan_failed,
+                .memory_plan_error = estimate.error()
+            });
+        }
+        return *estimate;
     }
 
     /**
@@ -1624,12 +1822,14 @@ namespace zeta::holdem::cfr {
                     // Non-river end-of-round: advance the board through a chance node.
                     const auto next_street = static_cast<solver::holdem_street>(
                         static_cast<uint8_t>(state.street) + 1u);
-                    auto outcomes = enumerate_public_card_outcomes(board, config.dead_cards, 1);
-                    if (outcomes.empty()) {
+                    auto raw_outcomes = enumerate_public_card_outcomes(board, config.dead_cards, 1);
+                    if (raw_outcomes.empty()) {
                         return std::unexpected(betting_validation_error{
                             .kind = betting_validation_error_kind::invalid_terminal_state
                         });
                     }
+                    const auto outcomes = canonicalize_public_card_outcomes(
+                        raw_outcomes, board, config.dead_cards, config.isomorphism);
 
                     const auto chance_node = new_node(node_kind::chance);
                     ps_by_builder[chance_node] = ps;
@@ -1647,7 +1847,7 @@ namespace zeta::holdem::cfr {
 
                     for (uint16_t index = 0; index < static_cast<uint16_t>(outcomes.size()); ++index) {
                         const auto& outcome = outcomes[index];
-                        const auto next_board = board | outcome.cards;
+                        const auto next_board = board | outcome.representative_cards;
                         const bool is_next_river = next_street == solver::holdem_street::river;
 
                         // Reuse the board's public state (and runout) when another betting
@@ -1678,7 +1878,7 @@ namespace zeta::holdem::cfr {
                                     .root_public_state_id = registry.root_public_state_id,
                                     .river_public_state_id = child_ps,
                                     .dealt_turn = board ^ config.board_cards,
-                                    .dealt_river = outcome.cards
+                                    .dealt_river = outcome.representative_cards
                                 });
                                 runouts.river_public_state_by_runout.push_back(child_ps);
                             }
@@ -1693,7 +1893,7 @@ namespace zeta::holdem::cfr {
                         recorded_events[event_id].outcomes.push_back(recorded_outcome_edge{
                             .child_builder = *child_node,
                             .action_index = index,
-                            .cards = outcome.cards,
+                            .cards = outcome.representative_cards,
                             .probability = outcome.probability
                         });
                     }
@@ -1822,7 +2022,8 @@ namespace zeta::holdem::cfr {
                     .outcome_count = static_cast<uint32_t>(recorded.outcomes.size()),
                     .kind = recorded.kind,
                     .board_cards = recorded.board,
-                    .dead_cards = config.dead_cards
+                    .dead_cards = config.dead_cards,
+                    .is_canonical = config.isomorphism == public_card_isomorphism_mode::suit_isomorphic
                 });
             }
             lowered.chance_events = std::move(chance_events);

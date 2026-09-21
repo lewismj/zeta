@@ -20,6 +20,10 @@ add_executable(zeta-bench-holdem-cfr
     src/cfr_benchmark.cpp
 )
 
+add_executable(zeta-bench-holdem-multi-street
+    src/multi_street_solve_benchmark.cpp
+)
+
 target_link_libraries(zeta-bench-holdem-evaluator
     PRIVATE
     zeta-holdem
@@ -44,11 +48,19 @@ target_link_libraries(zeta-bench-holdem-cfr
     benchmark::benchmark
 )
 
+target_link_libraries(zeta-bench-holdem-multi-street
+    PRIVATE
+    zeta-holdem
+    Boost::json
+    benchmark::benchmark
+)
+
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta-bench-holdem-evaluator PRIVATE stdc++ m)
     target_link_libraries(zeta-bench-holdem-range-parser PRIVATE stdc++ m)
     target_link_libraries(zeta-bench-holdem-terminal PRIVATE stdc++ m)
     target_link_libraries(zeta-bench-holdem-cfr PRIVATE stdc++ m)
+    target_link_libraries(zeta-bench-holdem-multi-street PRIVATE stdc++ m)
 endif()
 
 add_custom_target(zeta-bench-holdem-evaluator-json
@@ -89,6 +101,16 @@ add_custom_target(zeta-bench-holdem-cfr-json
     USES_TERMINAL
     VERBATIM
     COMMENT "Running Google Benchmark Hold'em CFR suite and writing JSON baseline"
+)
+
+add_custom_target(zeta-bench-holdem-multi-street-json
+    COMMAND $<TARGET_FILE:zeta-bench-holdem-multi-street>
+        --benchmark_out=${CMAKE_CURRENT_BINARY_DIR}/holdem-multi-street-benchmark.json
+        --benchmark_out_format=json
+    DEPENDS zeta-bench-holdem-multi-street
+    USES_TERMINAL
+    VERBATIM
+    COMMENT "Running Google Benchmark Hold'em multi-street solve suite and writing JSON baseline"
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

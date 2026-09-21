@@ -255,6 +255,22 @@ Open **Configuration** from the command bar.
 | **Iterations** | CFR+ iterations for the next solve. |
 | **Progress batch iterations** | Number of CFR iterations between progress updates. |
 | **Worker threads** | CFR worker thread count, capped by available hardware threads and the UI maximum. |
+| **Card isomorphism** | Collapse suit-isomorphic turn/river runouts to shrink the game. Lossless only for suit-symmetric ranges. |
+| **Allow lossy isomorphism** | Permit isomorphism even when ranges are not suit-symmetric (approximate). Enabled only when **Card isomorphism** is on. |
+| **Dynamic action pruning** | Opt-in approximate solve: freeze low-regret actions and skip their subtrees. When off, the solve is exact. |
+| **Pruning threshold** | Reach-weighted positive-regret share below which an action is pruned. Enabled only when **Dynamic action pruning** is on. |
+| **Minimum active actions** | Never prune below this many active actions per infoset. |
+| **Reconsider interval** | Iterations between prune/reactivate reconsideration passes. |
+
+> Flop and turn spots now run a real multi-street CFR+ solve with betting on
+> every street, not an equity rollout. A completed flop/turn solve reports
+> `cfr+` metadata and real per-node strategies, exactly like a river solve.
+
+> **Card isomorphism**, **Dynamic action pruning**, and the memory budget are the
+> controls that keep large flop/turn trees tractable. If a solve is refused for
+> exceeding the memory budget, the solve console reports the dominant cost
+> dimension; enable **Card isomorphism** for suit-symmetric spots, reduce the
+> betting sizes, or shrink the betting history to bring the footprint down.
 
 Settings persist between sessions, along with recent files, pinned files, window splitters, and workspace splitters.
 

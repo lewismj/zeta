@@ -78,6 +78,11 @@ int main(int argc, char** argv)
         }
 
         solve_runtime_options runtime{};
+        if (auto parsed_runtime = parse_spot_runtime_options(*spot_text)) {
+            runtime = std::move(*parsed_runtime);
+        } else {
+            return fail(parsed_runtime.error());
+        }
         if (const char* revision = std::getenv("ZETA_GIT_REVISION")) {
             runtime.git_revision = revision;
         }
