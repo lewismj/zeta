@@ -7,7 +7,12 @@
 #include "terminal/terminal.h"
 
 #include <array>
+#include <algorithm>
+#include <bit>
+#include <chrono>
 #include <cmath>
+#include <functional>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -48,6 +53,225 @@ namespace {
 
         BOOST_FAIL("compatible live combos not found");
         return {0, 0};
+    }
+
+    [[nodiscard]] std::vector<float> oracle_normalized_strategy(
+        const zeta::holdem::cfr::strategy_sum_table& strategy_sums,
+        const uint32_t infoset_id)
+    {
+        const auto sums = strategy_sums.infoset_sums(infoset_id);
+        std::vector<float> normalized(sums.size(), 0.0f);
+        if (sums.empty()) {
+            return normalized;
+        }
+
+        double total = 0.0;
+        for (const float sum : sums) {
+            total += static_cast<double>(std::max(sum, 0.0f));
+        }
+
+        if (total <= 0.0) {
+            const auto uniform = 1.0f / static_cast<float>(sums.size());
+            std::fill(normalized.begin(), normalized.end(), uniform);
+            return normalized;
+        }
+
+        for (std::size_t action = 0; action < sums.size(); ++action) {
+            normalized[action] = static_cast<float>(static_cast<double>(std::max(sums[action], 0.0f)) / total);
+        }
+        return normalized;
+    }
+
+    struct oracle_reach_state {
+        float oop = 0.0f;
+        float ip = 0.0f;
+        float chance = 0.0f;
+    };
+
+    [[nodiscard]] std::vector<oracle_reach_state> oracle_reach_by_node(
+        const zeta::holdem::cfr::game_graph& graph,
+        const zeta::holdem::cfr::solver::solver_graph_annotations& annotations,
+        const zeta::holdem::cfr::strategy_sum_table& strategy_sums)
+    {
+        std::vector<oracle_reach_state> reaches(graph.node_count);
+        reaches[graph.root_node] = oracle_reach_state{1.0f, 1.0f, 1.0f};
+
+        for (uint32_t node_id = graph.root_node + 1u; node_id-- > 0u;) {
+            const auto parent = reaches[node_id];
+            if (parent.chance == 0.0f) {
+                continue;
+            }
+            const auto edges = graph.out_edges(node_id);
+            if (edges.empty()) {
+                continue;
+            }
+
+            if (graph.is_player_node(node_id)) {
+                const auto strategy = oracle_normalized_strategy(strategy_sums, graph.infoset_id[node_id]);
+                const auto actor = annotations.actor_by_node[node_id];
+                for (const auto edge : edges) {
+                    auto child = parent;
+                    if (actor == 0u) {
+                        child.oop *= strategy[edge.action_index];
+                    } else {
+                        child.ip *= strategy[edge.action_index];
+                    }
+                    reaches[edge.child_node] = child;
+                }
+            } else if (graph.is_chance_node(node_id)) {
+                const auto chance_probability = 1.0f / static_cast<float>(edges.size());
+                for (const auto edge : edges) {
+                    auto child = parent;
+                    child.chance *= chance_probability;
+                    reaches[edge.child_node] = child;
+                }
+            }
+        }
+
+        return reaches;
+    }
+
+    [[nodiscard]] std::vector<zeta::holdem::combination_index> oracle_combo_domain(
+        const zeta::holdem::river_terminal_cache& cache)
+    {
+        std::vector<zeta::holdem::combination_index> combos;
+        combos.reserve(cache.rank_order_count);
+        for (std::size_t i = 0; i < cache.rank_order_count; ++i) {
+            combos.push_back(cache.rank_order[i]);
+        }
+        return combos;
+    }
+
+    [[nodiscard]] std::vector<std::array<std::vector<double>, 2>> oracle_value_cache(
+        const zeta::holdem::cfr::game_graph& graph,
+        const zeta::holdem::cfr::solver::solver_graph_annotations& annotations,
+        const zeta::holdem::cfr::strategy_sum_table& strategy_sums,
+        const zeta::holdem::river_terminal_cache& cache,
+        const std::span<const zeta::holdem::cfr::traversal::river_terminal_leaf> terminal_leaves,
+        const std::span<const zeta::holdem::terminal_state<2>> terminal_states,
+        const std::array<zeta::holdem::reach_vector, 2>& ranges)
+    {
+        const auto combo_indices = oracle_combo_domain(cache);
+        const auto combo_count = static_cast<uint32_t>(combo_indices.size());
+        zeta::holdem::terminal_engine<2> engine{};
+        const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+            zeta::holdem::make_river_reach_index(cache, ranges[0]),
+            zeta::holdem::make_river_reach_index(cache, ranges[1])
+        };
+
+        std::vector<zeta::holdem::terminal_values<2>> terminal_value_cache(terminal_states.size());
+        for (std::size_t terminal_id = 0; terminal_id < terminal_states.size(); ++terminal_id) {
+            terminal_value_cache[terminal_id] = engine.evaluate_terminal_values(cache, reach_indices, terminal_states[terminal_id]);
+        }
+
+        constexpr uint8_t unvisited = 0;
+        constexpr uint8_t visiting = 1;
+        constexpr uint8_t visited = 2;
+        std::vector<std::array<std::vector<double>, 2>> cache_by_node(graph.node_count);
+        std::vector<std::array<uint8_t, 2>> state(graph.node_count, {unvisited, unvisited});
+
+        std::function<const std::vector<double>&(uint32_t, zeta::holdem::heads_up_player)> evaluate =
+            [&](const uint32_t node_id, const zeta::holdem::heads_up_player perspective) -> const std::vector<double>& {
+            const auto player_slot = zeta::holdem::player_index(perspective);
+            BOOST_REQUIRE(state[node_id][player_slot] != visiting);
+            if (state[node_id][player_slot] == visited) {
+                return cache_by_node[node_id][player_slot];
+            }
+
+            state[node_id][player_slot] = visiting;
+            auto& values = cache_by_node[node_id][player_slot];
+            values.assign(combo_count, 0.0);
+
+            if (graph.is_terminal(node_id)) {
+                const auto terminal_state_id = terminal_leaves[node_id].terminal_state_id;
+                const auto& terminal_values = terminal_value_cache[terminal_state_id][perspective];
+                for (uint32_t combo = 0; combo < combo_count; ++combo) {
+                    values[combo] = terminal_values[combo_indices[combo]];
+                }
+            } else if (graph.is_player_node(node_id)) {
+                const auto strategy = oracle_normalized_strategy(strategy_sums, graph.infoset_id[node_id]);
+                for (const auto edge : graph.out_edges(node_id)) {
+                    const auto& child = evaluate(edge.child_node, perspective);
+                    for (uint32_t combo = 0; combo < combo_count; ++combo) {
+                        values[combo] += static_cast<double>(strategy[edge.action_index]) * child[combo];
+                    }
+                }
+            } else if (graph.is_chance_node(node_id)) {
+                const auto chance_probability = 1.0 / static_cast<double>(graph.action_count(node_id));
+                for (const auto edge : graph.out_edges(node_id)) {
+                    const auto& child = evaluate(edge.child_node, perspective);
+                    for (uint32_t combo = 0; combo < combo_count; ++combo) {
+                        values[combo] += chance_probability * child[combo];
+                    }
+                }
+            }
+
+            state[node_id][player_slot] = visited;
+            return values;
+        };
+
+        for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+            if (!graph.is_player_node(node_id)) {
+                continue;
+            }
+            const auto actor = annotations.actor_by_node[node_id] == 0u
+                ? zeta::holdem::heads_up_player::oop
+                : zeta::holdem::heads_up_player::ip;
+            (void)evaluate(node_id, actor);
+            for (const auto edge : graph.out_edges(node_id)) {
+                (void)evaluate(edge.child_node, actor);
+            }
+        }
+
+        return cache_by_node;
+    }
+
+    [[nodiscard]] double oracle_showdown_equity(
+        const zeta::holdem::river_terminal_cache& cache,
+        const zeta::holdem::reach_vector& opponent_range,
+        const float opponent_reach_probability,
+        const zeta::holdem::combination_index hero_combo)
+    {
+        if (!zeta::holdem::is_live_combo(hero_combo, cache.river_board.mask)) {
+            return 0.0;
+        }
+
+        const auto hero_mask = zeta::holdem::combination_mask(hero_combo);
+        const auto hero_rank = cache.rank_keys[hero_combo];
+        double compatible_mass = 0.0;
+        double pot_share_mass = 0.0;
+
+        for (std::size_t i = 0; i < cache.rank_order_count; ++i) {
+            const auto opponent_combo = cache.rank_order[i];
+            const auto opponent_weight = static_cast<double>(opponent_range[opponent_combo])
+                * static_cast<double>(opponent_reach_probability);
+            if (opponent_weight <= 0.0) {
+                continue;
+            }
+            if ((hero_mask & zeta::holdem::combination_mask(opponent_combo)) != 0) {
+                continue;
+            }
+
+            compatible_mass += opponent_weight;
+            const auto opponent_rank = cache.rank_keys[opponent_combo];
+            if (hero_rank > opponent_rank) {
+                pot_share_mass += opponent_weight;
+            } else if (hero_rank == opponent_rank) {
+                pot_share_mass += 0.5 * opponent_weight;
+            }
+        }
+
+        return compatible_mass > 0.0 ? pot_share_mass / compatible_mass : 0.0;
+    }
+
+    [[nodiscard]] uint32_t float_bits(const float value)
+    {
+        return std::bit_cast<uint32_t>(value);
+    }
+
+    [[nodiscard]] uint64_t double_bits(const double value)
+    {
+        return std::bit_cast<uint64_t>(value);
     }
 }
 
@@ -293,7 +517,10 @@ BOOST_AUTO_TEST_CASE(river_hu_extraction_populates_q_v_a_and_equity_surfaces)
     builder.add_edge(root, showdown_terminal, 0);
     builder.add_edge(root, fold_terminal, 1);
     builder.set_infoset_id(root, 0);
-    auto graph = require_extraction_graph(builder.build());
+    std::vector<uint32_t> remap;
+    auto graph_result = builder.build(remap);
+    BOOST_REQUIRE_MESSAGE(graph_result.has_value(), zeta::holdem::cfr::to_string(graph_result.error().kind));
+    auto graph = std::move(*graph_result);
 
     cfr::action_table_layout layout;
     layout.action_offsets = {0, 2};
@@ -440,8 +667,493 @@ BOOST_AUTO_TEST_CASE(river_hu_extraction_aliases_shared_infoset_strategy_surface
     BOOST_REQUIRE_EQUAL(extracted->node_count(), 2u);
     BOOST_REQUIRE_EQUAL(extracted->strategy_context_count(), 1u);
     BOOST_CHECK_EQUAL(extracted->node_strategy_context_id(0), extracted->node_strategy_context_id(1));
+    BOOST_CHECK_EQUAL(extracted->node(0).strategy().entries().data(), extracted->node(1).strategy().entries().data());
+    BOOST_CHECK_NE(extracted->node(0).values().action_values().data(), extracted->node(1).values().action_values().data());
     BOOST_CHECK_CLOSE(extracted->node(0).values().range_reach_mass(), 1.0, 0.001);
     BOOST_CHECK_CLOSE(extracted->node(1).values().range_reach_mass(), 1.0, 0.001);
+}
+
+BOOST_AUTO_TEST_CASE(river_hu_extraction_preserves_zero_reach_combos)
+{
+    namespace cfr = zeta::holdem::cfr;
+
+    cfr::graph_builder builder;
+    const auto root = builder.add_node(cfr::node_kind::player);
+    const auto reached_node = builder.add_node(cfr::node_kind::player);
+    const auto zero_reach_node = builder.add_node(cfr::node_kind::player);
+    const auto reached_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto zero_reach_terminal = builder.add_node(cfr::node_kind::terminal);
+    builder.add_edge(root, reached_node, 0);
+    builder.add_edge(root, zero_reach_node, 1);
+    builder.add_edge(reached_node, reached_terminal, 0);
+    builder.add_edge(zero_reach_node, zero_reach_terminal, 0);
+    builder.set_infoset_id(root, 0);
+    builder.set_infoset_id(reached_node, 1);
+    builder.set_infoset_id(zero_reach_node, 2);
+    auto graph = require_extraction_graph(builder.build());
+
+    cfr::action_table_layout layout;
+    layout.action_offsets = {0, 2, 3, 4};
+    cfr::strategy_sum_table strategy_sums(layout);
+    strategy_sums.value(0, 0) = 1.0f;
+    strategy_sums.value(0, 1) = 0.0f;
+    strategy_sums.value(1, 0) = 1.0f;
+    strategy_sums.value(2, 0) = 1.0f;
+
+    const auto board = extraction_test_river_board();
+    const auto cache = zeta::holdem::make_river_terminal_cache(board);
+    const auto [oop_combo, ip_combo] = first_extraction_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_range{};
+    zeta::holdem::reach_vector ip_range{};
+    oop_range[oop_combo] = 1.0f;
+    ip_range[ip_combo] = 1.0f;
+
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(
+        zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0)));
+    std::vector<cfr::traversal::river_terminal_leaf> terminal_leaves(graph.node_count);
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (graph.is_terminal(node_id)) {
+            terminal_leaves[node_id] = cfr::traversal::river_terminal_leaf{0};
+        }
+    }
+
+    cfr::solver::solver_graph_annotations annotations;
+    annotations.actor_by_node.assign(graph.node_count, cfr::solver::INVALID_PLAYER);
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (graph.is_player_node(node_id)) {
+            annotations.actor_by_node[node_id] = 0u;
+        }
+    }
+    annotations.state_by_node.assign(graph.node_count, cfr::solver::solver_node_state_metadata{
+        .street = cfr::solver::holdem_street::river,
+        .public_state_id = 13u,
+        .betting_state_id = 0u
+    });
+
+    auto extracted = extract_river_heads_up_result_store(river_heads_up_extraction_input{
+        .graph = &graph,
+        .annotations = &annotations,
+        .strategy_sums = &strategy_sums,
+        .river_cache = &cache,
+        .terminal_leaves = terminal_leaves,
+        .terminal_states = terminal_states.view(),
+        .ranges = {oop_range, ip_range}
+    });
+    BOOST_REQUIRE(extracted.has_value());
+    BOOST_REQUIRE_EQUAL(extracted->node_count(), 3u);
+
+    const auto node = extracted->node(0);
+    uint32_t combo_local = INVALID_COMBO_LOCAL_INDEX;
+    for (uint32_t local = 0; local < node.combo_count(); ++local) {
+        if (node.combo_index(local) != oop_combo && node.values().range_weight(local) == 0.0f) {
+            combo_local = local;
+            break;
+        }
+    }
+    BOOST_REQUIRE_NE(combo_local, INVALID_COMBO_LOCAL_INDEX);
+    BOOST_CHECK_SMALL(node.values().range_weight(combo_local), 1e-6f);
+    BOOST_CHECK(node.values().reach_probability(combo_local) >= 0.0f);
+    BOOST_CHECK(std::isfinite(node.values().combo_ev(combo_local)));
+    BOOST_CHECK(std::isfinite(node.values().q_value(combo_local, 0)));
+    BOOST_CHECK(std::isfinite(node.equity().showdown_equity(combo_local)));
+}
+
+BOOST_AUTO_TEST_CASE(river_hu_extraction_differential_matches_oracle_and_query_contract)
+{
+    namespace cfr = zeta::holdem::cfr;
+
+    cfr::graph_builder builder;
+    const auto root = builder.add_node(cfr::node_kind::player);
+    const auto oop_node = builder.add_node(cfr::node_kind::player);
+    const auto ip_node = builder.add_node(cfr::node_kind::player);
+    const auto oop_showdown_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto oop_fold_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto ip_showdown_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto ip_fold_terminal = builder.add_node(cfr::node_kind::terminal);
+    builder.add_edge(root, oop_node, 0);
+    builder.add_edge(root, ip_node, 1);
+    builder.add_edge(oop_node, oop_showdown_terminal, 0);
+    builder.add_edge(oop_node, oop_fold_terminal, 1);
+    builder.add_edge(ip_node, ip_showdown_terminal, 0);
+    builder.add_edge(ip_node, ip_fold_terminal, 1);
+    builder.set_infoset_id(root, 0);
+    builder.set_infoset_id(oop_node, 1);
+    builder.set_infoset_id(ip_node, 2);
+    std::vector<uint32_t> remap;
+    auto graph_result = builder.build(remap);
+    BOOST_REQUIRE_MESSAGE(graph_result.has_value(), zeta::holdem::cfr::to_string(graph_result.error().kind));
+    auto graph = std::move(*graph_result);
+    const auto root_node = remap[root];
+    const auto oop_node_id = remap[oop_node];
+    const auto ip_node_id = remap[ip_node];
+    const auto oop_showdown_terminal_id = remap[oop_showdown_terminal];
+    const auto oop_fold_terminal_id = remap[oop_fold_terminal];
+    const auto ip_showdown_terminal_id = remap[ip_showdown_terminal];
+    const auto ip_fold_terminal_id = remap[ip_fold_terminal];
+
+    cfr::action_table_layout layout;
+    layout.action_offsets = {0, 2, 4, 6};
+    cfr::strategy_sum_table strategy_sums(layout);
+    strategy_sums.value(0, 0) = 2.0f;
+    strategy_sums.value(0, 1) = 3.0f;
+    strategy_sums.value(1, 0) = 7.0f;
+    strategy_sums.value(1, 1) = 5.0f;
+    strategy_sums.value(2, 0) = 4.0f;
+    strategy_sums.value(2, 1) = 6.0f;
+
+    const auto board = extraction_test_river_board();
+    const auto cache = zeta::holdem::make_river_terminal_cache(board);
+    zeta::holdem::reach_vector oop_range{};
+    zeta::holdem::reach_vector ip_range{};
+    for (std::size_t i = 0; i < cache.rank_order_count && i < 64; ++i) {
+        oop_range[cache.rank_order[i]] = (i % 7u == 0u) ? 0.75f : 0.25f;
+    }
+    for (std::size_t i = 8; i < cache.rank_order_count && i < 72; ++i) {
+        ip_range[cache.rank_order[i]] = (i % 5u == 0u) ? 1.0f : 0.35f;
+    }
+
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    const auto context = zeta::holdem::make_heads_up_context(180.0, 0.0, 45.0, 45.0);
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::oop));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::ip));
+
+    std::vector<cfr::traversal::river_terminal_leaf> terminal_leaves(graph.node_count);
+    terminal_leaves[oop_showdown_terminal_id] = cfr::traversal::river_terminal_leaf{0};
+    terminal_leaves[oop_fold_terminal_id] = cfr::traversal::river_terminal_leaf{1};
+    terminal_leaves[ip_showdown_terminal_id] = cfr::traversal::river_terminal_leaf{0};
+    terminal_leaves[ip_fold_terminal_id] = cfr::traversal::river_terminal_leaf{2};
+
+    cfr::solver::solver_graph_annotations annotations;
+    annotations.actor_by_node.assign(graph.node_count, cfr::solver::INVALID_PLAYER);
+    annotations.actor_by_node[root_node] = 1u;
+    annotations.actor_by_node[oop_node_id] = 0u;
+    annotations.actor_by_node[ip_node_id] = 1u;
+    annotations.state_by_node.assign(graph.node_count, cfr::solver::solver_node_state_metadata{
+        .street = cfr::solver::holdem_street::river,
+        .public_state_id = 19u,
+        .betting_state_id = 0u
+    });
+
+    const auto input = river_heads_up_extraction_input{
+        .graph = &graph,
+        .annotations = &annotations,
+        .strategy_sums = &strategy_sums,
+        .river_cache = &cache,
+        .terminal_leaves = terminal_leaves,
+        .terminal_states = terminal_states.view(),
+        .ranges = {oop_range, ip_range}
+    };
+    auto extracted = extract_river_heads_up_result_store(input);
+    BOOST_REQUIRE(extracted.has_value());
+
+    const auto combo_indices = oracle_combo_domain(cache);
+    const auto oracle_reaches = oracle_reach_by_node(graph, annotations, strategy_sums);
+    const auto oracle_values = oracle_value_cache(
+        graph,
+        annotations,
+        strategy_sums,
+        cache,
+        terminal_leaves,
+        terminal_states.view(),
+        {oop_range, ip_range});
+
+    uint32_t result_node_id = 0;
+    for (uint32_t graph_node = 0; graph_node < graph.node_count; ++graph_node) {
+        if (!graph.is_player_node(graph_node)) {
+            continue;
+        }
+
+        const auto actor = annotations.actor_by_node[graph_node] == 0u
+            ? zeta::holdem::heads_up_player::oop
+            : zeta::holdem::heads_up_player::ip;
+        const auto actor_slot = zeta::holdem::player_index(actor);
+        const auto opponent_slot = actor_slot == 0u ? 1u : 0u;
+        const auto actor_reach = actor == zeta::holdem::heads_up_player::oop
+            ? oracle_reaches[graph_node].oop
+            : oracle_reaches[graph_node].ip;
+        const auto opponent_reach = actor == zeta::holdem::heads_up_player::oop
+            ? oracle_reaches[graph_node].ip
+            : oracle_reaches[graph_node].oop;
+        const auto& actor_range = input.ranges[actor_slot];
+        const auto& opponent_range = input.ranges[opponent_slot];
+        const auto strategy = oracle_normalized_strategy(strategy_sums, graph.infoset_id[graph_node]);
+
+        const auto node = extracted->node(result_node_id++);
+        BOOST_CHECK_EQUAL(node.action_count(), graph.action_count(graph_node));
+        BOOST_CHECK_EQUAL(node.public_state_id(), annotations.state_by_node[graph_node].public_state_id);
+        const auto context_strategy = extracted->context_strategy(node.strategy_context_id());
+        BOOST_CHECK_EQUAL(context_strategy.entries().data(), node.strategy().entries().data());
+
+        double expected_range_reach_mass = 0.0;
+        double expected_reach_weighted_ev = 0.0;
+        double expected_counterfactual_value = 0.0;
+        for (uint32_t local = 0; local < node.combo_count(); ++local) {
+            const auto combo = node.combo_index(local);
+            BOOST_CHECK_EQUAL(combo, combo_indices[local]);
+            const auto combo_ev = oracle_values[graph_node][actor_slot][local];
+            BOOST_CHECK_EQUAL(float_bits(node.strategy().frequency(local, 0)), float_bits(strategy[0]));
+            if (node.action_count() > 1u) {
+                BOOST_CHECK_EQUAL(float_bits(node.strategy().frequency(local, 1)), float_bits(strategy[1]));
+            }
+
+            const auto range_weight = actor_range[combo];
+            const auto range_reach_weight = static_cast<double>(range_weight) * static_cast<double>(actor_reach);
+            expected_range_reach_mass += range_reach_weight;
+            expected_reach_weighted_ev += range_reach_weight * combo_ev;
+            expected_counterfactual_value += static_cast<double>(range_weight)
+                * static_cast<double>(opponent_reach)
+                * static_cast<double>(oracle_reaches[graph_node].chance)
+                * combo_ev;
+
+            BOOST_CHECK_EQUAL(float_bits(node.values().range_weight(local)), float_bits(range_weight));
+            BOOST_CHECK_EQUAL(float_bits(node.values().reach_probability(local)), float_bits(actor_reach));
+            BOOST_CHECK_EQUAL(double_bits(node.values().combo_ev(local)), double_bits(combo_ev));
+            for (const auto child : graph.out_edges(graph_node)) {
+                const auto child_q = oracle_values[child.child_node][actor_slot][local];
+                BOOST_CHECK_EQUAL(double_bits(node.values().q_value(local, child.action_index)), double_bits(child_q));
+                BOOST_CHECK_EQUAL(
+                    double_bits(node.values().profile_advantage(local, child.action_index)),
+                    double_bits(child_q - combo_ev));
+            }
+
+            const auto expected_equity = oracle_showdown_equity(cache, opponent_range, opponent_reach, combo);
+            BOOST_CHECK_SMALL(std::abs(node.equity().showdown_equity(local) - expected_equity), 1e-6);
+            BOOST_CHECK(node.categories().classification(local).made_hand_tier >= zeta::holdem::hand_category::high_card);
+        }
+
+        BOOST_CHECK_EQUAL(double_bits(node.values().range_reach_mass()), double_bits(expected_range_reach_mass));
+        BOOST_CHECK_EQUAL(double_bits(node.values().reach_weighted_ev()), double_bits(expected_reach_weighted_ev));
+        BOOST_CHECK_EQUAL(
+            double_bits(node.values().conditional_range_ev()),
+            double_bits(compute_conditional_range_ev(expected_reach_weighted_ev, expected_range_reach_mass)));
+        BOOST_CHECK_EQUAL(double_bits(node.values().counterfactual_value()), double_bits(expected_counterfactual_value));
+    }
+
+    BOOST_CHECK_EQUAL(result_node_id, extracted->node_count());
+}
+
+BOOST_AUTO_TEST_CASE(river_hu_extraction_is_bitwise_deterministic)
+{
+    namespace cfr = zeta::holdem::cfr;
+
+    cfr::graph_builder builder;
+    const auto root = builder.add_node(cfr::node_kind::player);
+    const auto player_next = builder.add_node(cfr::node_kind::player);
+    const auto showdown_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto fold_terminal_root = builder.add_node(cfr::node_kind::terminal);
+    const auto fold_terminal_child = builder.add_node(cfr::node_kind::terminal);
+    builder.add_edge(root, player_next, 0);
+    builder.add_edge(root, fold_terminal_root, 1);
+    builder.add_edge(player_next, showdown_terminal, 0);
+    builder.add_edge(player_next, fold_terminal_child, 1);
+    builder.set_infoset_id(root, 0);
+    builder.set_infoset_id(player_next, 1);
+    std::vector<uint32_t> remap;
+    auto graph_result = builder.build(remap);
+    BOOST_REQUIRE_MESSAGE(graph_result.has_value(), zeta::holdem::cfr::to_string(graph_result.error().kind));
+    auto graph = std::move(*graph_result);
+    const auto root_node = remap[root];
+    const auto player_next_node = remap[player_next];
+    const auto showdown_terminal_id = remap[showdown_terminal];
+    const auto fold_terminal_root_id = remap[fold_terminal_root];
+    const auto fold_terminal_child_id = remap[fold_terminal_child];
+
+    cfr::action_table_layout layout;
+    layout.action_offsets = {0, 2, 4};
+    cfr::strategy_sum_table strategy_sums(layout);
+    strategy_sums.value(0, 0) = 9.0f;
+    strategy_sums.value(0, 1) = 11.0f;
+    strategy_sums.value(1, 0) = 3.0f;
+    strategy_sums.value(1, 1) = 7.0f;
+
+    const auto board = extraction_test_river_board();
+    const auto cache = zeta::holdem::make_river_terminal_cache(board);
+    zeta::holdem::reach_vector oop_range{};
+    zeta::holdem::reach_vector ip_range{};
+    for (std::size_t i = 0; i < cache.rank_order_count && i < 50; ++i) {
+        oop_range[cache.rank_order[i]] = 0.4f + static_cast<float>(i % 3u) * 0.2f;
+        ip_range[cache.rank_order[(i + 9u) % cache.rank_order_count]] = 0.3f + static_cast<float>(i % 5u) * 0.15f;
+    }
+
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    const auto context = zeta::holdem::make_heads_up_context(220.0, 0.0, 60.0, 50.0);
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::oop));
+
+    std::vector<cfr::traversal::river_terminal_leaf> terminal_leaves(graph.node_count);
+    terminal_leaves[showdown_terminal_id] = cfr::traversal::river_terminal_leaf{0};
+    terminal_leaves[fold_terminal_root_id] = cfr::traversal::river_terminal_leaf{1};
+    terminal_leaves[fold_terminal_child_id] = cfr::traversal::river_terminal_leaf{1};
+
+    cfr::solver::solver_graph_annotations annotations;
+    annotations.actor_by_node.assign(graph.node_count, cfr::solver::INVALID_PLAYER);
+    annotations.actor_by_node[root_node] = 0u;
+    annotations.actor_by_node[player_next_node] = 1u;
+    annotations.state_by_node.assign(graph.node_count, cfr::solver::solver_node_state_metadata{
+        .street = cfr::solver::holdem_street::river,
+        .public_state_id = 23u,
+        .betting_state_id = 0u
+    });
+
+    const auto input = river_heads_up_extraction_input{
+        .graph = &graph,
+        .annotations = &annotations,
+        .strategy_sums = &strategy_sums,
+        .river_cache = &cache,
+        .terminal_leaves = terminal_leaves,
+        .terminal_states = terminal_states.view(),
+        .ranges = {oop_range, ip_range}
+    };
+    auto baseline = extract_river_heads_up_result_store(input);
+    BOOST_REQUIRE(baseline.has_value());
+
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        auto current = extract_river_heads_up_result_store(input);
+        BOOST_REQUIRE(current.has_value());
+        BOOST_REQUIRE_EQUAL(current->node_count(), baseline->node_count());
+        BOOST_REQUIRE_EQUAL(current->strategy_context_count(), baseline->strategy_context_count());
+
+        for (uint32_t node_id = 0; node_id < baseline->node_count(); ++node_id) {
+            const auto lhs = baseline->node(node_id);
+            const auto rhs = current->node(node_id);
+            BOOST_CHECK_EQUAL(lhs.node_id(), rhs.node_id());
+            BOOST_CHECK_EQUAL(lhs.strategy_context_id(), rhs.strategy_context_id());
+            BOOST_CHECK_EQUAL(lhs.public_state_id(), rhs.public_state_id());
+            BOOST_CHECK_EQUAL(lhs.combo_count(), rhs.combo_count());
+            BOOST_CHECK_EQUAL(lhs.action_count(), rhs.action_count());
+            for (uint32_t combo = 0; combo < lhs.combo_count(); ++combo) {
+                BOOST_CHECK_EQUAL(lhs.combo_index(combo), rhs.combo_index(combo));
+                BOOST_CHECK_EQUAL(float_bits(lhs.values().range_weight(combo)), float_bits(rhs.values().range_weight(combo)));
+                BOOST_CHECK_EQUAL(float_bits(lhs.values().reach_probability(combo)), float_bits(rhs.values().reach_probability(combo)));
+                BOOST_CHECK_EQUAL(double_bits(lhs.values().combo_ev(combo)), double_bits(rhs.values().combo_ev(combo)));
+                BOOST_CHECK_EQUAL(double_bits(lhs.equity().showdown_equity(combo)), double_bits(rhs.equity().showdown_equity(combo)));
+                const auto lhs_category = lhs.categories().classification(combo);
+                const auto rhs_category = rhs.categories().classification(combo);
+                BOOST_CHECK_EQUAL(static_cast<int>(lhs_category.made_hand_tier), static_cast<int>(rhs_category.made_hand_tier));
+                BOOST_CHECK_EQUAL(static_cast<int>(lhs_category.source), static_cast<int>(rhs_category.source));
+                BOOST_CHECK_EQUAL(static_cast<int>(lhs_category.pair_pos), static_cast<int>(rhs_category.pair_pos));
+                BOOST_CHECK_EQUAL(static_cast<int>(lhs_category.kicker), static_cast<int>(rhs_category.kicker));
+                BOOST_CHECK_EQUAL(static_cast<int>(lhs_category.draws), static_cast<int>(rhs_category.draws));
+                BOOST_CHECK_EQUAL(static_cast<int>(lhs_category.blockers), static_cast<int>(rhs_category.blockers));
+                for (uint16_t action = 0; action < lhs.action_count(); ++action) {
+                    BOOST_CHECK_EQUAL(float_bits(lhs.strategy().frequency(combo, action)), float_bits(rhs.strategy().frequency(combo, action)));
+                    BOOST_CHECK_EQUAL(double_bits(lhs.values().q_value(combo, action)), double_bits(rhs.values().q_value(combo, action)));
+                    BOOST_CHECK_EQUAL(double_bits(lhs.values().profile_advantage(combo, action)), double_bits(rhs.values().profile_advantage(combo, action)));
+                }
+            }
+            BOOST_CHECK_EQUAL(double_bits(lhs.values().range_reach_mass()), double_bits(rhs.values().range_reach_mass()));
+            BOOST_CHECK_EQUAL(double_bits(lhs.values().reach_weighted_ev()), double_bits(rhs.values().reach_weighted_ev()));
+            BOOST_CHECK_EQUAL(double_bits(lhs.values().conditional_range_ev()), double_bits(rhs.values().conditional_range_ev()));
+            BOOST_CHECK_EQUAL(double_bits(lhs.values().counterfactual_value()), double_bits(rhs.values().counterfactual_value()));
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(river_hu_extraction_benchmark_and_memory_budget)
+{
+    namespace cfr = zeta::holdem::cfr;
+
+    cfr::graph_builder builder;
+    const auto root = builder.add_node(cfr::node_kind::player);
+    const auto left = builder.add_node(cfr::node_kind::player);
+    const auto right = builder.add_node(cfr::node_kind::player);
+    const auto showdown_left_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto fold_oop_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto showdown_right_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto fold_ip_terminal = builder.add_node(cfr::node_kind::terminal);
+    builder.add_edge(root, left, 0);
+    builder.add_edge(root, right, 1);
+    builder.add_edge(left, showdown_left_terminal, 0);
+    builder.add_edge(left, fold_oop_terminal, 1);
+    builder.add_edge(right, showdown_right_terminal, 0);
+    builder.add_edge(right, fold_ip_terminal, 1);
+    builder.set_infoset_id(root, 0);
+    builder.set_infoset_id(left, 1);
+    builder.set_infoset_id(right, 2);
+    std::vector<uint32_t> remap;
+    auto graph_result = builder.build(remap);
+    BOOST_REQUIRE_MESSAGE(graph_result.has_value(), zeta::holdem::cfr::to_string(graph_result.error().kind));
+    auto graph = std::move(*graph_result);
+    const auto root_node = remap[root];
+    const auto left_node = remap[left];
+    const auto right_node = remap[right];
+    const auto showdown_left_terminal_id = remap[showdown_left_terminal];
+    const auto fold_oop_terminal_id = remap[fold_oop_terminal];
+    const auto showdown_right_terminal_id = remap[showdown_right_terminal];
+    const auto fold_ip_terminal_id = remap[fold_ip_terminal];
+
+    cfr::action_table_layout layout;
+    layout.action_offsets = {0, 2, 4, 6};
+    cfr::strategy_sum_table strategy_sums(layout);
+    strategy_sums.value(0, 0) = 5.0f;
+    strategy_sums.value(0, 1) = 5.0f;
+    strategy_sums.value(1, 0) = 6.0f;
+    strategy_sums.value(1, 1) = 4.0f;
+    strategy_sums.value(2, 0) = 3.0f;
+    strategy_sums.value(2, 1) = 7.0f;
+
+    const auto board = extraction_test_river_board();
+    const auto cache = zeta::holdem::make_river_terminal_cache(board);
+    zeta::holdem::reach_vector oop_range{};
+    zeta::holdem::reach_vector ip_range{};
+    for (std::size_t i = 0; i < cache.rank_order_count && i < 160; ++i) {
+        oop_range[cache.rank_order[i]] = 0.5f;
+        ip_range[cache.rank_order[(i + 11u) % cache.rank_order_count]] = 0.5f;
+    }
+
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    const auto context = zeta::holdem::make_heads_up_context(300.0, 0.0, 75.0, 75.0);
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::oop));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::ip));
+
+    std::vector<cfr::traversal::river_terminal_leaf> terminal_leaves(graph.node_count);
+    terminal_leaves[showdown_left_terminal_id] = cfr::traversal::river_terminal_leaf{0};
+    terminal_leaves[fold_oop_terminal_id] = cfr::traversal::river_terminal_leaf{1};
+    terminal_leaves[showdown_right_terminal_id] = cfr::traversal::river_terminal_leaf{0};
+    terminal_leaves[fold_ip_terminal_id] = cfr::traversal::river_terminal_leaf{2};
+
+    cfr::solver::solver_graph_annotations annotations;
+    annotations.actor_by_node.assign(graph.node_count, cfr::solver::INVALID_PLAYER);
+    annotations.actor_by_node[root_node] = 0u;
+    annotations.actor_by_node[left_node] = 0u;
+    annotations.actor_by_node[right_node] = 1u;
+    annotations.state_by_node.assign(graph.node_count, cfr::solver::solver_node_state_metadata{
+        .street = cfr::solver::holdem_street::river,
+        .public_state_id = 29u,
+        .betting_state_id = 0u
+    });
+
+    const auto input = river_heads_up_extraction_input{
+        .graph = &graph,
+        .annotations = &annotations,
+        .strategy_sums = &strategy_sums,
+        .river_cache = &cache,
+        .terminal_leaves = terminal_leaves,
+        .terminal_states = terminal_states.view(),
+        .ranges = {oop_range, ip_range}
+    };
+
+    constexpr int benchmark_iterations = 25;
+    const auto start = std::chrono::steady_clock::now();
+    std::expected<result_store, river_extraction_error> last{};
+    for (int i = 0; i < benchmark_iterations; ++i) {
+        last = extract_river_heads_up_result_store(input);
+        BOOST_REQUIRE(last.has_value());
+    }
+    const auto end = std::chrono::steady_clock::now();
+    const auto elapsed_seconds = std::chrono::duration<double>(end - start).count();
+    const auto throughput = static_cast<double>(benchmark_iterations) / elapsed_seconds;
+    BOOST_TEST_MESSAGE("river extraction benchmark: " << throughput << " extracts/s over " << benchmark_iterations << " iterations");
+    BOOST_CHECK_GT(throughput, 0.0);
+
+    for (uint32_t node_id = 0; node_id < last->node_count(); ++node_id) {
+        const auto node = last->node(node_id);
+        const auto bytes = node_footprint_bytes(node.combo_count(), node.action_count(), 1u);
+        BOOST_CHECK_LE(bytes, two_action_node_footprint_budget_bytes);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

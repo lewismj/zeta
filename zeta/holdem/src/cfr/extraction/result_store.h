@@ -126,6 +126,9 @@ namespace zeta::holdem::cfr::extraction {
         {
             return static_cast<double>(reaches_[combo_local_index].range_weight) * static_cast<double>(reaches_[combo_local_index].reach_probability);
         }
+        [[nodiscard]] std::span<const combo_reach_entry> reaches() const noexcept { return reaches_; }
+        [[nodiscard]] std::span<const combo_value_entry> combo_values() const noexcept { return combo_vals_; }
+        [[nodiscard]] std::span<const action_value_entry> action_values() const noexcept { return action_vals_; }
 
     private:
         std::span<const combo_reach_entry> reaches_;

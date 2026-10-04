@@ -1318,6 +1318,7 @@ To streamline implementation and establish clear architectural boundaries, the m
   2. Validate query ergonomics (`node -> combo -> action`, `node -> category`, `context -> strategy`) with guaranteed $O(1)$ lookup time and zero heap allocations.
   3. Verify zero-reach combo preservation (Golden 4), shared-infoset aliasing (Golden 5), private-card separation (Golden 8), strategy storage aliasing (Golden 9), and bitwise extraction determinism (Golden 6).
   4. Benchmark extraction throughput and assert memory footprint under tight bounds.
+- **Implementation status**: Completed in `zeta/test/src/test_extraction_contract.cpp` with differential oracle parity checks, deterministic byte-level replay checks, zero-reach preservation assertions, shared-strategy aliasing assertions, and extraction throughput/memory-budget benchmark coverage.
 
 #### Phase 3: Full Serializer Implementation & Round-Trip Tests
 - **Files**: `zeta/holdem/src/cli/solve_cli.h`, `zeta/holdem/src/cli/solve_cli.cpp`, `zeta/test/src/test_holdem_cli.cpp`.
@@ -1486,7 +1487,7 @@ Across every extracted node, test suites assert:
 - [x] Phase 1.5 `eval/categorizer.h` with 10-window straight engine ($W_0 \dots W_9$, `straight_draw_info`), paired-board `pair_source` & `pair_position` truth table, deterministic live-rank `kicker_quality` (Zeta intrinsic kicker classification), and `static_assert(sizeof(hand_category_classification) == 8)`.
 - [x] Phase 1.6 isolated algorithmic board-flush blocker rules (`nut_flush_blocker`, `second_nut_blocker`).
 - [x] Phase 2 exact river HU extraction pass with average-profile value extraction ($Q_{\text{profile}}, V_{\text{profile}}, A_{\text{profile}}$) and direct pre-sized flat buffer writing.
-- [ ] Phase 2.5 differential validation (Production Result Store vs Oracle), bitwise determinism (Golden 6), and performance benchmarks.
+- [x] Phase 2.5 differential validation (Production Result Store vs Oracle), bitwise determinism (Golden 6), and performance benchmarks.
 - [ ] Phase 3 full Schema v4 serializer/deserializer with export modes, explicit `seat_values`, deduplicated `public_states`, and versioned derived category summaries.
 - [ ] Phase 4 flop/turn exact HU runout evaluators and chance-node extraction contracts.
 - [ ] Phase 5 multiway exact equity evaluator with joint pot-share distribution conservation ($\sum_i E_i = 1$) and range interaction classification.
