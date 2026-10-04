@@ -57,6 +57,7 @@ BOOST_AUTO_TEST_CASE(test_result_store_views_are_offset_based)
         {action_value_entry{8.0, -2.0}, action_value_entry{12.0, 2.0}, action_value_entry{-6.0, -1.0}, action_value_entry{-4.0, 1.0}},
         {seat_value{0.125, 1.25, 10.0, 3.5}},
         {0.7f, 0.2f},
+        {42, 43},
         {zeta::holdem::hand_category_classification{.made_hand_tier = zeta::holdem::hand_category::pair}, zeta::holdem::hand_category_classification{.made_hand_tier = zeta::holdem::hand_category::high_card}}
     };
 
@@ -67,6 +68,7 @@ BOOST_AUTO_TEST_CASE(test_result_store_views_are_offset_based)
     BOOST_CHECK_CLOSE(node.values().range_reach_weight(0), 0.125, 0.001);
     BOOST_CHECK_CLOSE(node.values().q_value(1, 1), -4.0, 0.001);
     BOOST_CHECK_CLOSE(node.equity().showdown_equity(0), 0.7, 0.001);
+    BOOST_CHECK_EQUAL(node.combo_index(1), 43u);
     BOOST_CHECK_EQUAL(static_cast<int>(node.categories().classification(0).made_hand_tier), static_cast<int>(zeta::holdem::hand_category::pair));
 }
 

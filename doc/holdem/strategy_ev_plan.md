@@ -1301,12 +1301,16 @@ To streamline implementation and establish clear architectural boundaries, the m
   2. Keep blocker evaluation cleanly isolated from core made-hand and straight-draw categorization.
 
 #### Phase 2: River HU Exact Extraction
-- **Files**: `zeta/holdem/src/cfr/extraction/strategy_surface.h / .cpp`, `zeta/holdem/src/cfr/extraction/equity_surface.h / .cpp`, `zeta/holdem/src/cfr/extraction/ev_surface.h / .cpp`.
+- **Files**: `zeta/holdem/src/cfr/extraction/strategy_surface.h`, `zeta/holdem/src/cfr/extraction/equity_surface.h`, `zeta/holdem/src/cfr/extraction/ev_surface.h`.
 - **Deliverables**:
   1. Average strategy extraction pass over converged CFR tables exposing explicit action dimensions.
   2. River pot-share showdown equity calculation.
   3. Profile action EV ($Q_{\text{profile}}$), combo value ($V_{\text{profile}}$), and profile advantage ($A_{\text{profile}} = Q - V$) extraction.
   4. Populate canonical Result Store surfaces, with extraction writing directly into pre-allocated contiguous flat spans.
+- **Implementation notes**:
+  - `strategy_surface.h` normalizes non-negative average-strategy sums per infoset and expands them into the canonical `(strategy_context_id, combo_local_index, action_index)` flat surface. Empty/zero strategy sums resolve to the mathematically neutral uniform strategy for that infoset.
+  - `equity_surface.h` computes exact river heads-up pot-share equity against the opponent's reaching range, removing overlapping private-card matchups and assigning fractional tie share.
+  - `ev_surface.h` backs up the frozen average profile through river heads-up graphs, computes local one-step intervention action values, derives combo values and profile advantages, preserves zero-reach legal river combos, aliases shared-infoset strategy surfaces, and writes Result Store vectors directly after pre-sizing their contiguous spans.
 
 #### Phase 2.5: Differential Validation & Benchmarks
 - **Deliverables**:
@@ -1481,7 +1485,7 @@ Across every extracted node, test suites assert:
 - [x] Phase 1.1 Schema v4 DTO definitions and deterministic projection contract (`summary`, `standard`, `full` modes, canonical `"combination_index"`).
 - [x] Phase 1.5 `eval/categorizer.h` with 10-window straight engine ($W_0 \dots W_9$, `straight_draw_info`), paired-board `pair_source` & `pair_position` truth table, deterministic live-rank `kicker_quality` (Zeta intrinsic kicker classification), and `static_assert(sizeof(hand_category_classification) == 8)`.
 - [x] Phase 1.6 isolated algorithmic board-flush blocker rules (`nut_flush_blocker`, `second_nut_blocker`).
-- [ ] Phase 2 exact river HU extraction pass with average-profile value extraction ($Q_{\text{profile}}, V_{\text{profile}}, A_{\text{profile}}$) and direct pre-sized flat buffer writing.
+- [x] Phase 2 exact river HU extraction pass with average-profile value extraction ($Q_{\text{profile}}, V_{\text{profile}}, A_{\text{profile}}$) and direct pre-sized flat buffer writing.
 - [ ] Phase 2.5 differential validation (Production Result Store vs Oracle), bitwise determinism (Golden 6), and performance benchmarks.
 - [ ] Phase 3 full Schema v4 serializer/deserializer with export modes, explicit `seat_values`, deduplicated `public_states`, and versioned derived category summaries.
 - [ ] Phase 4 flop/turn exact HU runout evaluators and chance-node extraction contracts.

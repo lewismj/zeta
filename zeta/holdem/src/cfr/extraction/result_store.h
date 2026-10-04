@@ -137,14 +137,22 @@ namespace zeta::holdem::cfr::extraction {
 
     class equity_view {
     public:
-        explicit equity_view(std::span<const float> equities) noexcept : equities_(equities) {}
+        equity_view(
+            std::span<const float> equities,
+            std::span<const combination_index> combo_indices) noexcept
+            : equities_(equities), combo_indices_(combo_indices) {}
         [[nodiscard]] double showdown_equity(uint32_t combo_local_index) const noexcept
         {
             return static_cast<double>(equities_[combo_local_index]);
         }
+        [[nodiscard]] combination_index combo_index(uint32_t combo_local_index) const noexcept
+        {
+            return combo_indices_[combo_local_index];
+        }
 
     private:
         std::span<const float> equities_;
+        std::span<const combination_index> combo_indices_;
     };
 
     class category_view {
@@ -203,6 +211,10 @@ namespace zeta::holdem::cfr::extraction {
         [[nodiscard]] uint32_t combo_begin() const noexcept { return record_.combo_begin; }
         [[nodiscard]] uint32_t combo_count() const noexcept { return record_.combo_count; }
         [[nodiscard]] uint16_t action_count() const noexcept { return record_.action_count; }
+        [[nodiscard]] combination_index combo_index(uint32_t combo_local_index) const noexcept
+        {
+            return equity_.combo_index(combo_local_index);
+        }
         [[nodiscard]] strategy_view strategy() const noexcept { return strategy_; }
         [[nodiscard]] value_view values() const noexcept { return values_; }
         [[nodiscard]] equity_view equity() const noexcept { return equity_; }
@@ -229,6 +241,7 @@ namespace zeta::holdem::cfr::extraction {
             std::vector<action_value_entry> action_values,
             std::vector<seat_value> seat_values,
             std::vector<float> equities,
+            std::vector<combination_index> combo_indices,
             std::vector<hand_category_classification> categories)
             : nodes_(std::move(nodes)),
               strategy_surfaces_(std::move(strategy_surfaces)),
@@ -238,6 +251,7 @@ namespace zeta::holdem::cfr::extraction {
               action_values_(std::move(action_values)),
               seat_values_(std::move(seat_values)),
               equities_(std::move(equities)),
+              combo_indices_(std::move(combo_indices)),
               categories_(std::move(categories))
         {
             validate_invariants();
@@ -263,6 +277,7 @@ namespace zeta::holdem::cfr::extraction {
         std::vector<action_value_entry> action_values_{};
         std::vector<seat_value> seat_values_{};
         std::vector<float> equities_{};
+        std::vector<combination_index> combo_indices_{};
         std::vector<hand_category_classification> categories_{};
     };
 
@@ -282,6 +297,7 @@ namespace zeta::holdem::cfr::extraction {
             if (static_cast<std::size_t>(record.combo_begin) + record.combo_count > combo_reaches_.size()
                 || static_cast<std::size_t>(record.combo_begin) + record.combo_count > combo_values_.size()
                 || static_cast<std::size_t>(record.combo_begin) + record.combo_count > equities_.size()
+                || static_cast<std::size_t>(record.combo_begin) + record.combo_count > combo_indices_.size()
                 || static_cast<std::size_t>(record.combo_begin) + record.combo_count > categories_.size()) {
                 throw std::invalid_argument{"result_store combo-domain surfaces must share the node combo offset"};
             }
@@ -319,7 +335,8 @@ namespace zeta::holdem::cfr::extraction {
             record.action_count
         };
         const auto equity = equity_view{
-            std::span<const float>{equities_}.subspan(record.combo_begin, record.combo_count)
+            std::span<const float>{equities_}.subspan(record.combo_begin, record.combo_count),
+            std::span<const combination_index>{combo_indices_}.subspan(record.combo_begin, record.combo_count)
         };
         const auto categories = category_view{
             std::span<const hand_category_classification>{categories_}.subspan(record.combo_begin, record.combo_count),
@@ -356,7 +373,10 @@ namespace zeta::holdem::cfr::extraction {
     inline equity_view result_store::node_equity(uint32_t node_id) const
     {
         const auto& record = nodes_.at(node_id);
-        return equity_view{std::span<const float>{equities_}.subspan(record.combo_begin, record.combo_count)};
+        return equity_view{
+            std::span<const float>{equities_}.subspan(record.combo_begin, record.combo_count),
+            std::span<const combination_index>{combo_indices_}.subspan(record.combo_begin, record.combo_count)
+        };
     }
 
     inline category_view result_store::node_categories(uint32_t node_id) const

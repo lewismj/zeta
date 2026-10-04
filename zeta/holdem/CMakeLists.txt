@@ -17,7 +17,10 @@ add_library(zeta-holdem STATIC
     src/terminal/showdown.h
     src/terminal/workspace.h
     src/cfr/extraction/contract.h
+    src/cfr/extraction/equity_surface.h
+    src/cfr/extraction/ev_surface.h
     src/cfr/extraction/result_store.h
+    src/cfr/extraction/strategy_surface.h
     src/cfr/chance/chance.h
     src/cfr/betting/betting.h
     src/cfr/graph/graph.h
