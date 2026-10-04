@@ -6,6 +6,8 @@ set(ZETA_TEST_SOURCES
     src/test_holdem_cli.cpp
     src/test_holdem_ui.cpp
     src/test_cfr_graph.cpp
+    src/test_extraction_contract.cpp
+    src/test_hand_categorizer.cpp
 )
 
 add_executable(zeta_tests

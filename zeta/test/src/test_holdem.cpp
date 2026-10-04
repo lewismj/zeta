@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "board.h"
+#include "cfr/extraction/contract.h"
 #include "eval/evaluator.h"
 #include "range.h"
 #include "range_parser.h"
@@ -516,6 +517,53 @@ BOOST_AUTO_TEST_CASE(holdem_full_range_initializes_all_combo_weights) {
     BOOST_CHECK_EQUAL(r[0], 0.5f);
     BOOST_CHECK_EQUAL(r[zeta::holdem::combination_count - 1], 0.5f);
     BOOST_CHECK_CLOSE(r.total_weight(), 663.0f, 0.001);
+}
+
+BOOST_AUTO_TEST_CASE(phase0_contract_enforces_q_v_a_and_precision) {
+    const std::array<float, 3> strategy{0.2f, 0.3f, 0.5f};
+    const std::array<double, 3> q_profile{12.0, 18.0, 30.0};
+    const double v_profile = zeta::holdem::cfr::extraction::compute_combo_profile_value(strategy, q_profile);
+    const double expected_v_profile =
+        static_cast<double>(strategy[0]) * q_profile[0]
+        + static_cast<double>(strategy[1]) * q_profile[1]
+        + static_cast<double>(strategy[2]) * q_profile[2];
+    BOOST_CHECK_CLOSE(v_profile, expected_v_profile, 1e-9);
+
+    const std::array<double, 3> advantages{
+        zeta::holdem::cfr::extraction::compute_profile_advantage(q_profile[0], v_profile),
+        zeta::holdem::cfr::extraction::compute_profile_advantage(q_profile[1], v_profile),
+        zeta::holdem::cfr::extraction::compute_profile_advantage(q_profile[2], v_profile)
+    };
+    BOOST_CHECK_CLOSE(advantages[0], q_profile[0] - expected_v_profile, 1e-9);
+    BOOST_CHECK_CLOSE(advantages[1], q_profile[1] - expected_v_profile, 1e-9);
+    BOOST_CHECK_CLOSE(advantages[2], q_profile[2] - expected_v_profile, 1e-9);
+    BOOST_CHECK(zeta::holdem::cfr::extraction::verify_strategy_weighted_advantage_identity(strategy, advantages));
+
+    const float range_weight = 0.33333334f;
+    const float reach_probability = 0.25f;
+    const std::vector<float> range_weights{range_weight, 1.0f, 0.0f};
+    const std::vector<float> hero_reach{reach_probability, 0.0f, 0.0f};
+    const std::vector<double> combo_evs{100.0, -20.0, 55.0};
+
+    const double derived_weight = zeta::holdem::cfr::extraction::compute_range_reach_weight(range_weight, reach_probability);
+    BOOST_CHECK_CLOSE(derived_weight, static_cast<double>(range_weight) * static_cast<double>(reach_probability), 1e-6);
+
+    const double range_mass = zeta::holdem::cfr::extraction::compute_range_reach_mass(range_weights, hero_reach);
+    BOOST_CHECK_CLOSE(range_mass, derived_weight, 1e-6);
+
+    const double reach_weighted_ev = zeta::holdem::cfr::extraction::compute_reach_weighted_ev(range_weights, hero_reach, combo_evs);
+    BOOST_CHECK_CLOSE(reach_weighted_ev, derived_weight * 100.0, 1e-6);
+
+    const double conditional_ev = zeta::holdem::cfr::extraction::compute_conditional_range_ev(reach_weighted_ev, range_mass);
+    BOOST_CHECK_CLOSE(conditional_ev, 100.0, 1e-6);
+
+    const double cfv = zeta::holdem::cfr::extraction::compute_counterfactual_value(
+        range_weights,
+        std::vector<float>{0.4f, 0.0f, 0.0f},
+        0.5,
+        combo_evs
+    );
+    BOOST_CHECK_CLOSE(cfv, static_cast<double>(range_weight) * static_cast<double>(0.4f) * 0.5 * 100.0, 1e-6);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_range_fill_and_accessors_cover_storage) {

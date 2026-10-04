@@ -8,6 +8,7 @@ add_library(zeta-holdem STATIC
     src/tables.generated.cpp
     src/eval/eval.h
     src/eval/evaluator.h
+    src/eval/categorizer.h
     src/terminal/terminal.h
     src/terminal/terminal_types.h
     src/terminal/engine.h
@@ -15,6 +16,8 @@ add_library(zeta-holdem STATIC
     src/terminal/reach_index.h
     src/terminal/showdown.h
     src/terminal/workspace.h
+    src/cfr/extraction/contract.h
+    src/cfr/extraction/result_store.h
     src/cfr/chance/chance.h
     src/cfr/betting/betting.h
     src/cfr/graph/graph.h

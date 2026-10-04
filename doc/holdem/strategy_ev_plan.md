@@ -853,7 +853,7 @@ To guarantee high performance across trees with thousands of nodes, we establish
 | **Total per Legal Combo**| — | **$28 + 20A$ bytes** | **68 B** | **188 B** |
 
 - **Per-Node Memory Cost** (for $\approx 1100$ legal postflop combos):
-  - $A = 2$ actions (check/bet): $1100 \times 68 \text{ B} \approx \mathbf{74.8\text{ KB}}$ per node.
+  - $A = 2$ actions (check/bet): $1100 \times 68 \text{ B}$ plus fixed record headers $\approx \mathbf{74.88\text{ KB}}$ per node.
   - $A = 8$ actions: $1100 \times 188 \text{ B} \approx \mathbf{206.8\text{ KB}}$ per node.
 - **Full Tree Budgets**:
   - **River Solve** (~50–200 nodes): $5 \text{ MB} - 40 \text{ MB}$ total memory footprint.
@@ -1278,7 +1278,7 @@ To streamline implementation and establish clear architectural boundaries, the m
   1. Define flat memory layout structs: `node_record`, `strategy_surface_record`, `seat_value`, `combo_reach_entry`, `combo_value_entry`, `action_value_entry`.
   2. Implement non-owning views (`strategy_view`, `value_view`, `equity_view`, `category_view`, `node_view`) with guaranteed $O(1)$ direct indexing.
   3. Enforce the Combo Domain Offset Sharing Invariant, Dense Zero-Based ID Invariant, and Strategy Storage Aliasing Invariant.
-  4. Verify memory consumption bounds against the defined footprint budget ($74.8 \text{ KB}$ per 2-action node).
+  4. Verify memory consumption bounds against the defined footprint budget ($74.88 \text{ KB}$ per 2-action node, including fixed record headers).
 
 #### Phase 1.1: Serialization DTO & Schema v4 Projection Contract
 - **Files**: `zeta/holdem/src/cli/solve_cli.h`.
@@ -1472,15 +1472,15 @@ Across every extracted node, test suites assert:
 
 ## 7. Delivery Checklist
 
-- [ ] Mathematical contract formalization (Phase 0: Q, V, A canonical chain, $\sum \bar{\sigma} A = 0$, conditioning table, seat values, counterfactual values, tolerances).
-- [ ] Phase 0.1 extensive-form information set $I(\mathcal{S}, h)$ and range strategy context $\mathcal{S}$ (`strategy_context_id`) formalization.
-- [ ] Phase 0.2 reach and conditioning precision contracts (derived `range_reach_weight` in `double`).
-- [ ] Phase 0.3 local one-step intervention $Q_{\text{profile}}$ and counterfactual value $CFV$ conditioning contracts.
+- [x] Mathematical contract formalization (Phase 0: Q, V, A canonical chain, $\sum \bar{\sigma} A = 0$, conditioning table, seat values, counterfactual values, tolerances).
+- [x] Phase 0.1 extensive-form information set $I(\mathcal{S}, h)$ and range strategy context $\mathcal{S}$ (`strategy_context_id`) formalization.
+- [x] Phase 0.2 reach and conditioning precision contracts (derived `range_reach_weight` in `double`).
+- [x] Phase 0.3 local one-step intervention $Q_{\text{profile}}$ and counterfactual value $CFV$ conditioning contracts.
 - [ ] Phase 0.5 standalone reference evaluator oracle (`test_reference_evaluator.cpp`) using recursive traversal and plain enumeration on semantic inputs without sharing production logic.
-- [ ] Phase 1 Result Store skeleton with contiguous offset-indexed memory layout, `node_record`, `strategy_surface_record`, `seat_value`, `node_view` traversal, strategy storage aliasing, and memory footprint budgets ($74.8\text{ KB}$ per 2-action node).
-- [ ] Phase 1.1 Schema v4 DTO definitions and deterministic projection contract (`summary`, `standard`, `full` modes, canonical `"combination_index"`).
-- [ ] Phase 1.5 `eval/categorizer.h` with 10-window straight engine ($W_0 \dots W_9$, `straight_draw_info`), paired-board `pair_source` & `pair_position` truth table, deterministic live-rank `kicker_quality` (Zeta intrinsic kicker classification), and `static_assert(sizeof(hand_category_classification) == 8)`.
-- [ ] Phase 1.6 isolated algorithmic board-flush blocker rules (`nut_flush_blocker`, `second_nut_blocker`).
+- [x] Phase 1 Result Store skeleton with contiguous offset-indexed memory layout, `node_record`, `strategy_surface_record`, `seat_value`, `node_view` traversal, strategy storage aliasing, and memory footprint budgets ($74.88\text{ KB}$ per 2-action node including fixed record headers).
+- [x] Phase 1.1 Schema v4 DTO definitions and deterministic projection contract (`summary`, `standard`, `full` modes, canonical `"combination_index"`).
+- [x] Phase 1.5 `eval/categorizer.h` with 10-window straight engine ($W_0 \dots W_9$, `straight_draw_info`), paired-board `pair_source` & `pair_position` truth table, deterministic live-rank `kicker_quality` (Zeta intrinsic kicker classification), and `static_assert(sizeof(hand_category_classification) == 8)`.
+- [x] Phase 1.6 isolated algorithmic board-flush blocker rules (`nut_flush_blocker`, `second_nut_blocker`).
 - [ ] Phase 2 exact river HU extraction pass with average-profile value extraction ($Q_{\text{profile}}, V_{\text{profile}}, A_{\text{profile}}$) and direct pre-sized flat buffer writing.
 - [ ] Phase 2.5 differential validation (Production Result Store vs Oracle), bitwise determinism (Golden 6), and performance benchmarks.
 - [ ] Phase 3 full Schema v4 serializer/deserializer with export modes, explicit `seat_values`, deduplicated `public_states`, and versioned derived category summaries.

@@ -57,6 +57,8 @@ namespace zeta::holdem::cli {
     };
 
     struct hand_strategy {
+        ::zeta::holdem::combination_index combination_index =
+            std::numeric_limits<::zeta::holdem::combination_index>::max();
         std::string hand;
         std::vector<action_strategy> strategy;
         double ev = 0.0;
@@ -120,7 +122,14 @@ namespace zeta::holdem::cli {
         std::vector<std::string> warnings;
     };
 
-    inline constexpr uint32_t current_artifact_schema_version = 3;
+    inline constexpr uint32_t current_artifact_schema_version = 4;
+    inline constexpr uint32_t current_extraction_version = 1;
+
+    enum class solve_artifact_export_mode : uint8_t {
+        summary,
+        standard,
+        full
+    };
 
     struct solved_node_action {
         std::string action;
@@ -142,7 +151,7 @@ namespace zeta::holdem::cli {
         bool terminal = false;
         std::vector<std::string> board;
         std::vector<solved_node_action> actions;
-        std::vector<action_strategy> strategy;
+        std::vector<action_strategy> range_action_frequencies;
         std::vector<hand_strategy> strategy_rows;
     };
 
@@ -175,6 +184,7 @@ namespace zeta::holdem::cli {
 
     struct solve_artifact {
         uint32_t schema_version = current_artifact_schema_version;
+        uint32_t extraction_version = current_extraction_version;
         std::string game = "holdem";
         std::string street = "river";
         std::vector<std::string> players{"BTN", "BB"};
@@ -640,7 +650,9 @@ namespace zeta::holdem::cli {
     [[nodiscard]] std::expected<solve_runtime_options, cli_error> parse_spot_runtime_options(std::string_view json);
     [[nodiscard]] std::string serialize_spot_json(const solve_spot& spot);
     [[nodiscard]] std::expected<solve_artifact, cli_error> parse_artifact_json(std::string_view json);
-    [[nodiscard]] std::string serialize_artifact_json(const solve_artifact& artifact);
+    [[nodiscard]] std::string serialize_artifact_json(
+        const solve_artifact& artifact,
+        solve_artifact_export_mode mode = solve_artifact_export_mode::standard);
 
     [[nodiscard]] inline std::expected<void, cli_error> validate_artifact(const solve_artifact& artifact)
     {
@@ -665,6 +677,10 @@ namespace zeta::holdem::cli {
         if (artifact.schema_version != current_artifact_schema_version) {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
                 "Unsupported schema_version. Only version " + std::to_string(current_artifact_schema_version) + " is accepted."});
+        }
+        if (artifact.extraction_version != current_extraction_version) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
+                "Unsupported extraction_version. Only version " + std::to_string(current_extraction_version) + " is accepted."});
         }
         if (artifact.game != "holdem") {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "game must be \"holdem\"."});
@@ -727,8 +743,8 @@ namespace zeta::holdem::cli {
             if (!solved_node_ids.insert(node.node_id).second) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "solved_nodes contains a duplicate node id."});
             }
-            if (!node.strategy.empty()) {
-                if (auto result = validate_action_distribution(node.strategy, "solved node strategy"); !result) {
+            if (!node.range_action_frequencies.empty()) {
+                if (auto result = validate_action_distribution(node.range_action_frequencies, "solved node range_action_frequencies"); !result) {
                     return result;
                 }
             }
@@ -757,13 +773,19 @@ namespace zeta::holdem::cli {
                 return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "Invalid hand text: " + row.hand});
             }
             std::size_t non_zero = 0;
-            for (const auto weight : parsed_hand.range.weights) {
+            combination_index parsed_combo = 0;
+            for (combination_index combo = 0; combo < combination_count; ++combo) {
+                const auto weight = parsed_hand.range.weights[combo];
                 if (weight != 0.0f) {
+                    parsed_combo = combo;
                     ++non_zero;
                 }
             }
             if (non_zero != 1u) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "Hand must represent exactly one combo: " + row.hand});
+            }
+            if (row.combination_index >= combination_count || row.combination_index != parsed_combo) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "combination_index does not match hand: " + row.hand});
             }
 
             if (!row.strategy.empty()) {
@@ -1887,7 +1909,7 @@ namespace zeta::holdem::cli {
                         });
                     }
                     if (strategy != nullptr) {
-                        persisted.strategy = *strategy;
+                        persisted.range_action_frequencies = *strategy;
                     }
                 } else if (graph.node_types[node_id] == cfr::node_kind::chance && chance_events != nullptr) {
                     if (const auto* event = chance_events->event_for_node(node_id); event != nullptr) {
@@ -2282,6 +2304,7 @@ namespace zeta::holdem::cli {
                         });
                     }
                     artifact.strategy.push_back(hand_strategy{
+                        .combination_index = combo,
                         .hand = hand_text_from_combo(combo),
                         .strategy = std::move(combo_strategy),
                         .ev = node_values[graph.root_node][combo]
@@ -2575,6 +2598,7 @@ namespace zeta::holdem::cli {
                     });
                 }
                 artifact.strategy.push_back(hand_strategy{
+                    .combination_index = combo,
                     .hand = hand_text_from_combo(combo),
                     .strategy = std::move(combo_strategy),
                     .ev = node_values[lowered.graph.root_node][combo]
@@ -3019,6 +3043,7 @@ namespace zeta::holdem::cli {
                     continue;
                 }
                 artifact.strategy.push_back(hand_strategy{
+                    .combination_index = combo,
                     .hand = hand_text_from_combo(combo),
                     .ev = showdown_values[hero][combo]
                 });

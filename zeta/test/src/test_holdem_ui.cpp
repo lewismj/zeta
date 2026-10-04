@@ -51,6 +51,19 @@
 
 namespace {
 
+    zeta::holdem::combination_index combo_index_for(const std::string& hand)
+    {
+        const auto parsed = zeta::holdem::parse_range(hand);
+        BOOST_REQUIRE(parsed.ok());
+        for (zeta::holdem::combination_index combo = 0; combo < zeta::holdem::combination_count; ++combo) {
+            if (parsed.range.weights[combo] != 0.0f) {
+                return combo;
+            }
+        }
+        BOOST_FAIL("Expected exact hand to contain one combo.");
+        return 0;
+    }
+
     [[nodiscard]] zeta::holdem::ui::spot sample_heads_up_spot()
     {
         auto spot = zeta::holdem::cli::parse_spot_json(R"({
@@ -103,6 +116,7 @@ namespace {
         artifact.solver.git_revision = "abc1234";
         artifact.strategy = {
             zeta::holdem::cli::hand_strategy{
+                .combination_index = combo_index_for("AhAd"),
                 .hand = "AhAd",
                 .strategy = {
                     zeta::holdem::cli::action_strategy{.action = "check", .frequency = 0.75},
@@ -111,6 +125,7 @@ namespace {
                 .ev = 2.0
             },
             zeta::holdem::cli::hand_strategy{
+                .combination_index = combo_index_for("AcAs"),
                 .hand = "AcAs",
                 .strategy = {
                     zeta::holdem::cli::action_strategy{.action = "check", .frequency = 0.25},
@@ -119,6 +134,7 @@ namespace {
                 .ev = 4.0
             },
             zeta::holdem::cli::hand_strategy{
+                .combination_index = combo_index_for("KdKh"),
                 .hand = "KdKh",
                 .strategy = {
                     zeta::holdem::cli::action_strategy{.action = "fold", .frequency = 1.0}
@@ -384,6 +400,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_document_dirty_after_artifact_replacement_and_per
     artifact.solver.git_revision = "abc1234";
     artifact.strategy = {
         zeta::holdem::cli::hand_strategy{
+            .combination_index = combo_index_for("AhAd"),
             .hand = "AhAd",
             .strategy = {
                 zeta::holdem::cli::action_strategy{.action = "check", .frequency = 1.0}
@@ -1000,7 +1017,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_roundtrips_action_tree_without_com
                 zeta::holdem::cli::solved_node_action{.action = "call", .child_node_id = 2, .action_index = 1},
                 zeta::holdem::cli::solved_node_action{.action = "raise_50", .child_node_id = 3, .action_index = 2}
             },
-            .strategy = artifact.root_strategy
+            .range_action_frequencies = artifact.root_strategy
         },
         zeta::holdem::cli::solved_node{
             .node_id = 1,
@@ -1091,7 +1108,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
                 zeta::holdem::cli::solved_node_action{.action = "call", .child_node_id = 2, .action_index = 1},
                 zeta::holdem::cli::solved_node_action{.action = "raise_50", .child_node_id = 3, .action_index = 2}
             },
-            .strategy = artifact.root_strategy
+            .range_action_frequencies = artifact.root_strategy
         },
         zeta::holdem::cli::solved_node{
             .node_id = 1,

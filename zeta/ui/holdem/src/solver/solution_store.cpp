@@ -551,8 +551,8 @@ namespace zeta::holdem::ui::solver {
                 out.average_strategy = aggregate_root_strategy(artifact);
                 out.seat_evs = aggregate_root_evs(artifact);
             } else {
-                out.average_strategy.reserve(node.strategy.size());
-                for (const auto& action : node.strategy) {
+                out.average_strategy.reserve(node.range_action_frequencies.size());
+                for (const auto& action : node.range_action_frequencies) {
                     out.average_strategy.push_back(solution_action_summary{
                         .action = action.action,
                         .frequency = action.frequency,

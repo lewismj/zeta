@@ -440,6 +440,11 @@ namespace zeta::holdem::cli {
             }
             const auto& object = value.as_object();
             hand_strategy row{};
+            auto combo = required_uint<combination_index>(object, "combination_index");
+            if (!combo) {
+                return std::unexpected(combo.error());
+            }
+            row.combination_index = *combo;
             auto hand = required_string(object, "hand");
             if (!hand) {
                 return std::unexpected(hand.error());
@@ -647,6 +652,7 @@ namespace zeta::holdem::cli {
             rows.reserve(strategy.size());
             for (const auto& row : strategy) {
                 json::object row_object;
+                row_object["combination_index"] = static_cast<uint64_t>(row.combination_index);
                 row_object["hand"] = row.hand;
                 row_object["strategy"] = action_strategy_json(row.strategy);
                 row_object["ev"] = row.ev;
@@ -712,7 +718,9 @@ namespace zeta::holdem::cli {
             return out;
         }
 
-        [[nodiscard]] json::array solved_nodes_json(const std::vector<solved_node>& nodes)
+        [[nodiscard]] json::array solved_nodes_json(
+            const std::vector<solved_node>& nodes,
+            const solve_artifact_export_mode mode)
         {
             json::array out;
             out.reserve(nodes.size());
@@ -732,8 +740,10 @@ namespace zeta::holdem::cli {
                 object["terminal"] = node.terminal;
                 object["board"] = string_array_json(node.board);
                 object["actions"] = solved_node_action_json(node.actions);
-                object["strategy"] = action_strategy_json(node.strategy);
-                object["strategy_rows"] = strategy_json(node.strategy_rows);
+                object["range_action_frequencies"] = action_strategy_json(node.range_action_frequencies);
+                if (mode == solve_artifact_export_mode::full) {
+                    object["strategy_rows"] = strategy_json(node.strategy_rows);
+                }
                 out.emplace_back(std::move(object));
             }
             return out;
@@ -1033,6 +1043,7 @@ namespace zeta::holdem::cli {
 
         solve_artifact artifact{};
         auto schema_version = required_uint<uint32_t>(*root, "schema_version");
+        auto extraction_version = required_uint<uint32_t>(*root, "extraction_version");
         auto game = required_string(*root, "game");
         auto street = required_string(*root, "street");
         if (!schema_version) {
@@ -1042,6 +1053,13 @@ namespace zeta::holdem::cli {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
                 "Unsupported schema_version. Only version " + std::to_string(current_artifact_schema_version) + " is accepted."});
         }
+        if (!extraction_version) {
+            return std::unexpected(extraction_version.error());
+        }
+        if (*extraction_version != current_extraction_version) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
+                "Unsupported extraction_version. Only version " + std::to_string(current_extraction_version) + " is accepted."});
+        }
         if (!game) {
             return std::unexpected(game.error());
         }
@@ -1049,6 +1067,7 @@ namespace zeta::holdem::cli {
             return std::unexpected(street.error());
         }
         artifact.schema_version = *schema_version;
+        artifact.extraction_version = *extraction_version;
         artifact.game = std::move(*game);
         artifact.street = std::move(*street);
 
@@ -1359,16 +1378,16 @@ namespace zeta::holdem::cli {
                         node.actions.push_back(std::move(*parsed));
                     }
                 }
-                if (const auto* strategy_value = find_value(object, "strategy"); strategy_value != nullptr) {
+                if (const auto* strategy_value = find_value(object, "range_action_frequencies"); strategy_value != nullptr) {
                     if (!strategy_value->is_array()) {
-                        return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.strategy must be an array."});
+                        return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.range_action_frequencies must be an array."});
                     }
                     for (const auto& action_value : strategy_value->as_array()) {
                         auto action = parse_action_strategy(action_value);
                         if (!action) {
                             return std::unexpected(action.error());
                         }
-                        node.strategy.push_back(std::move(*action));
+                        node.range_action_frequencies.push_back(std::move(*action));
                     }
                 }
                 if (const auto* rows_value = find_value(object, "strategy_rows"); rows_value != nullptr) {
@@ -1393,10 +1412,11 @@ namespace zeta::holdem::cli {
         return artifact;
     }
 
-    std::string serialize_artifact_json(const solve_artifact& artifact)
+    std::string serialize_artifact_json(const solve_artifact& artifact, const solve_artifact_export_mode mode)
     {
         json::object out;
         out["schema_version"] = static_cast<uint64_t>(artifact.schema_version);
+        out["extraction_version"] = static_cast<uint64_t>(artifact.extraction_version);
         out["game"] = artifact.game;
         out["street"] = artifact.street;
         out["players"] = string_array_json(artifact.players);
@@ -1404,11 +1424,15 @@ namespace zeta::holdem::cli {
         out["hero_seat"] = static_cast<uint64_t>(artifact.hero_seat);
         out["solver"] = solver_json(artifact.solver);
         out["root_strategy"] = action_strategy_json(artifact.root_strategy);
-        out["strategy"] = strategy_json(artifact.strategy);
+        if (mode != solve_artifact_export_mode::summary) {
+            out["strategy"] = strategy_json(artifact.strategy);
+        } else {
+            out["strategy"] = json::array{};
+        }
         out["public_states"] = public_states_json(artifact.public_states);
         out["chance_events"] = chance_events_json(artifact.chance_events);
         out["runouts"] = runouts_json(artifact.runouts);
-        out["solved_nodes"] = solved_nodes_json(artifact.solved_nodes);
+        out["solved_nodes"] = solved_nodes_json(artifact.solved_nodes, mode);
         return json::serialize(out);
     }
 

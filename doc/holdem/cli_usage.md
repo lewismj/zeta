@@ -187,7 +187,8 @@ shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
+  "extraction_version": 1,
   "game": "holdem",
   "street": "turn",
   "players": ["BTN", "BB", "CO"],
@@ -226,6 +227,7 @@ shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
   },
   "strategy": [
     {
+      "combination_index": 3,
       "hand": "AsKs",
       "strategy": [
         {"action": "check", "frequency": 0.42},

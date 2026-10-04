@@ -10,6 +10,19 @@
 
 namespace {
 
+    zeta::holdem::combination_index combo_index_for(const std::string& hand)
+    {
+        const auto parsed = zeta::holdem::parse_range(hand);
+        BOOST_REQUIRE(parsed.ok());
+        for (zeta::holdem::combination_index combo = 0; combo < zeta::holdem::combination_count; ++combo) {
+            if (parsed.range.weights[combo] != 0.0f) {
+                return combo;
+            }
+        }
+        BOOST_FAIL("Expected exact hand to contain one combo.");
+        return 0;
+    }
+
     constexpr const char* sample_spot = R"({
   "players": ["BTN", "BB"],
   "board": ["As", "Kd", "7c", "4h", "2s"],
@@ -323,7 +336,8 @@ BOOST_AUTO_TEST_CASE(holdem_cli_solve_produces_valid_artifact) {
     BOOST_CHECK(std::ranges::all_of(output->artifact.strategy, [](const auto& row) {
         return !row.strategy.empty();
     }));
-    BOOST_CHECK_EQUAL(output->artifact.schema_version, 3u);
+    BOOST_CHECK_EQUAL(output->artifact.schema_version, 4u);
+    BOOST_CHECK_EQUAL(output->artifact.extraction_version, 1u);
     BOOST_CHECK_EQUAL(output->artifact.game, "holdem");
     BOOST_CHECK_EQUAL(output->artifact.street, "river");
     BOOST_CHECK_EQUAL(output->artifact.players.size(), 2u);
@@ -413,6 +427,7 @@ BOOST_AUTO_TEST_CASE(holdem_cli_artifact_json_accepts_nested_objects_and_escaped
     };
     artifact.strategy = {
         zeta::holdem::cli::hand_strategy{
+            .combination_index = combo_index_for("QhJd"),
             .hand = "QhJd",
             .strategy = {},
             .ev = 3.5
@@ -838,7 +853,8 @@ BOOST_AUTO_TEST_CASE(holdem_cli_nonriver_artifact_persists_multi_street_graph_pa
 
     auto turn_output = zeta::holdem::cli::solve_spot(*turn_spot, 16, {.worker_threads = 2});
     BOOST_REQUIRE(turn_output.has_value());
-    BOOST_CHECK_EQUAL(turn_output->artifact.schema_version, 3u);
+    BOOST_CHECK_EQUAL(turn_output->artifact.schema_version, 4u);
+    BOOST_CHECK_EQUAL(turn_output->artifact.extraction_version, 1u);
     BOOST_CHECK_EQUAL(turn_output->artifact.solver.algorithm, "cfr+");
     BOOST_CHECK(!turn_output->artifact.public_states.empty());
     BOOST_CHECK(!turn_output->artifact.chance_events.empty());
