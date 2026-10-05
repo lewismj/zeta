@@ -158,10 +158,15 @@ namespace zeta::holdem {
         return result;
     }
 
+    template <std::size_t N>
+    [[nodiscard]] terminal_values<N> evaluate_showdown_values_exact(
+        const river_terminal_cache& cache,
+        const std::array<river_reach_index, N>& reach,
+        const terminal_state<N>& state
+    ) noexcept;
+
     /**
-     * Generic entry point: player count is a compile-time constant. Primary
-     * template fails to compile for N != 2 until multiplayer kernels exist, so an
-     * accidental N-way call is a hard error rather than a silent slow path.
+     * Generic entry point: player count is a compile-time constant.
      */
     template <std::size_t N>
     [[nodiscard]] terminal_result<N> evaluate_showdown(
@@ -169,9 +174,23 @@ namespace zeta::holdem {
         const std::array<river_reach_index, N>& reach,
         const terminal_context<N>& context
     ) noexcept {
-        static_assert(N == 2, "N-way showdown evaluator not implemented");
         if constexpr (N == 2) {
             return evaluate_showdown_heads_up(cache, reach[0], reach[1], context);
+        } else {
+            terminal_result<N> result{};
+            const auto state = make_showdown_terminal_state(context);
+            result.values = evaluate_showdown_values_exact(cache, reach, state);
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                accumulator seat_ev = 0.0;
+                const auto& index = reach[seat];
+                for (uint16_t offset = 0; offset < index.active_count; ++offset) {
+                    const auto combo = index.active_indices[offset];
+                    seat_ev += static_cast<accumulator>(index.weights[combo])
+                        * static_cast<accumulator>(result.values[seat][combo]);
+                }
+                result.summary.seat_ev[seat] = seat_ev;
+            }
+            return result;
         }
     }
 
@@ -381,7 +400,9 @@ namespace zeta::holdem {
             (void)samples_per_combo;
             return evaluate_showdown(cache, reach, context).values;
         } else {
-            return evaluate_showdown_values_multiplayer_sampled(cache, reach, context, samples_per_combo);
+            (void)samples_per_combo;
+            const auto state = make_showdown_terminal_state(context);
+            return evaluate_showdown_values_exact(cache, reach, state);
         }
     }
 
@@ -433,7 +454,8 @@ namespace zeta::holdem {
            return evaluate_showdown(workspace, cache, ranges, context).values;
        } else {
            workspace.materialize(cache, ranges);
-           return evaluate_showdown_values_multiplayer_sampled(cache, workspace.reach, context, 64);
+           const auto state = make_showdown_terminal_state(context);
+           return evaluate_showdown_values_exact(cache, workspace.reach, state);
        }
     }
 

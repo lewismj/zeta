@@ -891,8 +891,7 @@ namespace zeta::holdem::cli {
                     node.category_summary_derivation_version,
                     node.category_summaries);
                 object["derived"] = std::move(derived);
-                if (mode == solve_artifact_export_mode::full
-                    || (mode == solve_artifact_export_mode::standard && node.kind == "player")) {
+                if (mode != solve_artifact_export_mode::summary) {
                     object["strategy_rows"] = strategy_json(node.strategy_rows);
                 }
                 out.emplace_back(std::move(object));

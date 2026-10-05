@@ -1733,12 +1733,12 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_stratified_importance_ma
     }
 
     zeta::holdem::terminal_engine<3> engine{};
-    const auto sampled = engine.evaluate_showdown_values(cache, reach, context, 1024);
+    const auto actual = engine.evaluate_showdown_values(cache, reach, context, 1024);
 
-    BOOST_CHECK_CLOSE(sampled[0][hero_combo], exact[0][hero_combo], 0.5);
-    BOOST_CHECK_CLOSE(sampled[1][opp_a], exact[1][opp_a], 0.5);
-    BOOST_CHECK_CLOSE(sampled[1][opp_b], exact[1][opp_b], 0.5);
-    BOOST_CHECK_CLOSE(sampled[2][p2_combo], exact[2][p2_combo], 0.5);
+    BOOST_CHECK_CLOSE(actual[0][hero_combo], exact[0][hero_combo], 1e-5);
+    BOOST_CHECK_CLOSE(actual[1][opp_a], exact[1][opp_a], 1e-5);
+    BOOST_CHECK_CLOSE(actual[1][opp_b], exact[1][opp_b], 1e-5);
+    BOOST_CHECK_CLOSE(actual[2][p2_combo], exact[2][p2_combo], 1e-5);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_combination_mask_helper_matches_table) {

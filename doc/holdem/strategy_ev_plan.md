@@ -1343,6 +1343,11 @@ To streamline implementation and establish clear architectural boundaries, the m
   1. Multiway equity evaluation over joint reaching opponent distributions with fractional pot-share tie handling ($\sum_i E_i = 1$).
   2. On-demand range-weighted category aggregations computed in Result Store.
   3. Implement `range_interaction_classification` for opponent-range-dependent blockers.
+- **Implementation status**:
+  - `zeta/holdem/src/terminal/showdown.h` now routes N-way `evaluate_showdown` / `evaluate_showdown_values` through exact joint opponent enumeration with fractional tie handling (no sampled fallback on the default path).
+  - `zeta/holdem/src/cfr/extraction/category_surface.h` and `.cpp` provide on-demand category aggregation directly from `category_view` + `equity_view`, including category-level reach frequency, EV/equity averages, and action frequencies.
+  - `range_interaction_classification` is implemented in `category_surface.cpp` as a deterministic opponent-range-dependent blocker classifier using blocked total mass and blocked strong-range mass.
+  - Coverage is enforced in `zeta/test/src/test_holdem.cpp` (exact 3-player showdown parity) and `zeta/test/src/test_extraction_contract.cpp` (category surface and range-interaction classification checks).
 
 #### Phase 6: UI Integration
 - **Files**: `zeta/ui/holdem/src/solver/solution_store.h / .cpp`, `zeta/ui/holdem/src/viewmodels/strategy_view_model.h / .cpp`, `zeta/ui/holdem/src/widgets/strategy_explorer.h / .cpp`.
@@ -1494,6 +1499,6 @@ Across every extracted node, test suites assert:
 - [x] Phase 2.5 differential validation (Production Result Store vs Oracle), bitwise determinism (Golden 6), and performance benchmarks.
 - [x] Phase 3 full Schema v4 serializer/deserializer with export modes, explicit `seat_values`, deduplicated `public_states`, and versioned derived category summaries.
 - [x] Phase 4 flop/turn exact HU runout evaluators and chance-node extraction contracts.
-- [ ] Phase 5 multiway exact equity evaluator with joint pot-share distribution conservation ($\sum_i E_i = 1$) and range interaction classification.
+- [x] Phase 5 multiway exact equity evaluator with joint pot-share distribution conservation ($\sum_i E_i = 1$) and range interaction classification.
 - [ ] Phase 6 UI `solution_store` and `strategy_explorer` integration with category matrices and action EV inspection.
 - [ ] Comprehensive Golden test suite covering Golden 1–9 fixtures (per-combo equity matrices, mixed strategy identities, zero-reach preservation, shared-infoset aliasing, private-card separation, strategy storage aliasing, bitwise determinism, and artifact round-trip).

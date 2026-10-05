@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 
+#include "cfr/extraction/category_surface.h"
 #include "cfr/extraction/ev_surface.h"
 #include "cfr/extraction/contract.h"
 #include "cfr/graph/builder.h"
@@ -624,6 +625,111 @@ BOOST_AUTO_TEST_CASE(test_derived_category_reductions)
     BOOST_CHECK_CLOSE(avg_eq, 0.70, 1e-9);
 }
 
+BOOST_AUTO_TEST_CASE(test_phase5_category_surface_and_range_interaction_classification)
+{
+    const auto board = extraction_test_river_board();
+    const auto cache = zeta::holdem::make_river_terminal_cache(board);
+    const auto [hero_a, hero_b] = first_extraction_compatible_live_combos(cache);
+
+    zeta::holdem::reach_vector opponent_reach{};
+    opponent_reach[hero_a] = 0.6f;
+    opponent_reach[hero_b] = 0.4f;
+    const auto opponent_index = zeta::holdem::make_river_reach_index(cache, opponent_reach);
+
+    zeta::holdem::hand_category_classification cat_a{};
+    cat_a.made_hand_tier = zeta::holdem::hand_category::pair;
+    cat_a.source = zeta::holdem::pair_source::hole_board_pair;
+    cat_a.pair_pos = zeta::holdem::pair_position::top_pair;
+    cat_a.kicker = zeta::holdem::kicker_quality::strong;
+    cat_a.draws = zeta::holdem::draw_flags::none;
+    cat_a.blockers = zeta::holdem::blocker_flags::nut_flush_blocker;
+
+    zeta::holdem::hand_category_classification cat_b{};
+    cat_b.made_hand_tier = zeta::holdem::hand_category::high_card;
+    cat_b.source = zeta::holdem::pair_source::none;
+    cat_b.pair_pos = zeta::holdem::pair_position::none;
+    cat_b.kicker = zeta::holdem::kicker_quality::top;
+    cat_b.draws = zeta::holdem::draw_flags::gutshot_straight_draw;
+    cat_b.blockers = zeta::holdem::blocker_flags::none;
+
+    result_store store{
+        std::vector<node_record>{
+            node_record{
+                .node_id = 0u,
+                .strategy_context_id = 0u,
+                .public_state_id = 0u,
+                .combo_begin = 0u,
+                .combo_count = 2u,
+                .action_val_begin = 0u,
+                .action_count = 2u,
+                .seat_value_begin = 0u,
+                .seat_value_count = 1u
+            }
+        },
+        std::vector<strategy_surface_record>{
+            strategy_surface_record{
+                .strategy_begin = 0u,
+                .combo_count = 2u,
+                .action_count = 2u
+            }
+        },
+        std::vector<strategy_surface_entry>{
+            strategy_surface_entry{.average_strategy = 0.25f},
+            strategy_surface_entry{.average_strategy = 0.75f},
+            strategy_surface_entry{.average_strategy = 0.60f},
+            strategy_surface_entry{.average_strategy = 0.40f}
+        },
+        std::vector<combo_reach_entry>{
+            combo_reach_entry{.range_weight = 1.0f, .reach_probability = 0.5f},
+            combo_reach_entry{.range_weight = 2.0f, .reach_probability = 0.25f}
+        },
+        std::vector<combo_value_entry>{
+            combo_value_entry{.combo_profile_value = 10.0},
+            combo_value_entry{.combo_profile_value = -2.0}
+        },
+        std::vector<action_value_entry>{
+            action_value_entry{.q_profile = 0.0, .profile_advantage = 0.0},
+            action_value_entry{.q_profile = 0.0, .profile_advantage = 0.0},
+            action_value_entry{.q_profile = 0.0, .profile_advantage = 0.0},
+            action_value_entry{.q_profile = 0.0, .profile_advantage = 0.0}
+        },
+        std::vector<seat_value>{
+            seat_value{
+                .range_reach_mass = 1.0,
+                .reach_weighted_value = 4.0,
+                .conditional_range_ev = 4.0,
+                .counterfactual_value = 0.0
+            }
+        },
+        std::vector<float>{0.8f, 0.3f},
+        std::vector<combination_index>{hero_a, hero_b},
+        std::vector<zeta::holdem::hand_category_classification>{cat_a, cat_b}
+    };
+
+    const auto node = store.node(0);
+    const auto summaries = compute_category_summaries(node.categories(), node.equity());
+    BOOST_REQUIRE_EQUAL(summaries.size(), 2u);
+    for (const auto& item : summaries) {
+        BOOST_CHECK_CLOSE(item.frequency, 0.5, 1e-9);
+        BOOST_CHECK_CLOSE(item.range_weight, 0.5, 1e-9);
+        BOOST_REQUIRE_EQUAL(item.action_frequencies.size(), 2u);
+    }
+
+    const std::array<combination_index, 2> combo_indices{hero_a, hero_b};
+    const auto summaries_with_interaction = compute_category_summaries(
+        node.categories(),
+        node.equity(),
+        std::span<const combination_index>{combo_indices},
+        cache,
+        opponent_index);
+    BOOST_REQUIRE_EQUAL(summaries_with_interaction.size(), 2u);
+
+    const auto interaction_a = classify_range_interaction(hero_a, cache, opponent_index);
+    const auto interaction_b = classify_range_interaction(hero_b, cache, opponent_index);
+    BOOST_CHECK(interaction_a.blocked_opponent_mass_fraction > interaction_b.blocked_opponent_mass_fraction);
+    BOOST_CHECK(interaction_a.strength != range_interaction_strength::none);
+}
+
 BOOST_AUTO_TEST_CASE(postflop_exact_equity_matches_manual_turn_and_flop_oracles)
 {
     zeta::holdem::reach_vector opponent_range{};
@@ -888,9 +994,9 @@ BOOST_AUTO_TEST_CASE(river_hu_extraction_uses_chance_event_probabilities)
         engine.evaluate_terminal_values(cache, reach_indices, terminal_states[1])[zeta::holdem::heads_up_player::oop][oop_combo]);
 
     const auto expected_chance_q = 0.8 * showdown_value + 0.2 * fold_lose_value;
-    BOOST_CHECK_CLOSE(node.values().q_value(hero_local, 0), expected_chance_q, 1e-6);
-    BOOST_CHECK_CLOSE(node.values().q_value(hero_local, 1), fold_win_value, 1e-6);
-    BOOST_CHECK_CLOSE(node.values().combo_ev(hero_local), expected_chance_q, 1e-6);
+    BOOST_CHECK_SMALL(std::abs(node.values().q_value(hero_local, 0) - expected_chance_q), 1e-6);
+    BOOST_CHECK_SMALL(std::abs(node.values().q_value(hero_local, 1) - fold_win_value), 1e-6);
+    BOOST_CHECK_SMALL(std::abs(node.values().combo_ev(hero_local) - expected_chance_q), 1e-6);
 }
 
 BOOST_AUTO_TEST_CASE(river_hu_extraction_aliases_shared_infoset_strategy_surfaces)

@@ -7,7 +7,7 @@ namespace zeta::holdem {
     /**
      * Dispatch layer: select kernel family at compile-time by player count.
      * - N == 2: heads-up exact kernel family
-     * - N > 2 : multiplayer kernel family, currently sampled
+     * - N > 2 : multiplayer exact kernel family
      */
     template <std::size_t N>
     struct terminal_engine {
@@ -23,17 +23,13 @@ namespace zeta::holdem {
             return kernel_family() == terminal_kernel_family::heads_up_exact;
         }
 
-        /** Showdown dispatch: currently only the heads-up exact kernel is implemented. */
+        /** Showdown dispatch to the exact kernel family (heads-up and N-way). */
         [[nodiscard]] auto evaluate_showdown(
             const river_terminal_cache& cache,
             const std::array<river_reach_index, N>& reach,
             const terminal_context<N>& context
         ) const noexcept {
-            if constexpr (N == 2) {
-                return ::zeta::holdem::evaluate_showdown(cache, reach, context);
-            } else {
-                static_assert(N == 2, "multiplayer showdown kernel not implemented");
-            }
+            return ::zeta::holdem::evaluate_showdown(cache, reach, context);
         }
 
         [[nodiscard]] auto evaluate_showdown(
@@ -42,11 +38,7 @@ namespace zeta::holdem {
             const std::array<reach_vector, N>& ranges,
             const terminal_context<N>& context
         ) const noexcept {
-            if constexpr (N == 2) {
-                return ::zeta::holdem::evaluate_showdown(workspace, cache, ranges, context);
-            } else {
-                static_assert(N == 2, "multiplayer showdown kernel not implemented");
-            }
+            return ::zeta::holdem::evaluate_showdown(workspace, cache, ranges, context);
         }
 
         [[nodiscard]] auto evaluate_showdown_values(
@@ -55,11 +47,7 @@ namespace zeta::holdem {
             const terminal_context<N>& context,
             const uint16_t samples_per_combo = 64
         ) const noexcept {
-            if constexpr (N == 2) {
-                return ::zeta::holdem::evaluate_showdown(cache, reach, context).values;
-            } else {
-                return ::zeta::holdem::evaluate_showdown_values_multiplayer_sampled(cache, reach, context, samples_per_combo);
-            }
+            return ::zeta::holdem::evaluate_showdown_values(cache, reach, context, samples_per_combo);
         }
 
         [[nodiscard]] auto evaluate_showdown_values(
@@ -69,12 +57,7 @@ namespace zeta::holdem {
             const terminal_context<N>& context,
             const uint16_t samples_per_combo = 64
         ) const noexcept {
-            if constexpr (N == 2) {
-                return ::zeta::holdem::evaluate_showdown_values(workspace, cache, ranges, context);
-            } else {
-                workspace.materialize(cache, ranges);
-                return ::zeta::holdem::evaluate_showdown_values_multiplayer_sampled(cache, workspace.reach, context, samples_per_combo);
-            }
+            return ::zeta::holdem::evaluate_showdown_values(workspace, cache, ranges, context);
         }
 
         /** Terminal-state dispatch returns player-indexed utility vectors. */

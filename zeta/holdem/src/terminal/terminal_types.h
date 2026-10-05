@@ -577,14 +577,15 @@ namespace zeta::holdem {
     };
 
     /**
-     * Aggregate EV / win-tie accounting for an evaluated terminal. The summary is
-     * inherently kernel-specific: the heads-up specialization below exposes the
-     * lower/equal/higher decomposition (oop vs ip). An N-way summary would carry a
-     * different shape, so the primary template is left unimplemented on purpose.
+     * Aggregate EV accounting for an evaluated terminal.
+     *
+     * For N-way terminals we expose per-seat aggregated EV (reach-weighted over
+     * each seat's own active combo mass). Heads-up extends this with matchup
+     * decomposition counters.
      */
     template <std::size_t N>
     struct terminal_summary {
-        static_assert(N == 2, "terminal_summary is only specialized for heads-up (N == 2)");
+        std::array<accumulator, N> seat_ev{};
     };
 
     template <>

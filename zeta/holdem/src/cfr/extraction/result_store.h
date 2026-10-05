@@ -152,6 +152,10 @@ namespace zeta::holdem::cfr::extraction {
         {
             return combo_indices_[combo_local_index];
         }
+        [[nodiscard]] uint32_t combo_count() const noexcept
+        {
+            return static_cast<uint32_t>(equities_.size());
+        }
 
     private:
         std::span<const float> equities_;
@@ -187,6 +191,16 @@ namespace zeta::holdem::cfr::extraction {
         [[nodiscard]] float frequency(uint32_t combo_local_index, action_index action) const noexcept
         {
             return strategies_[combo_local_index * action_count_ + action].average_strategy;
+        }
+
+        [[nodiscard]] uint32_t combo_count() const noexcept
+        {
+            return static_cast<uint32_t>(categories_.size());
+        }
+
+        [[nodiscard]] uint16_t action_count() const noexcept
+        {
+            return action_count_;
         }
 
     private:
