@@ -1332,6 +1332,10 @@ To streamline implementation and establish clear architectural boundaries, the m
 - **Deliverables**:
   1. Deterministic runout summation ($\binom{47}{2} = 1081$ for flop, $46$ for turn) for exact HU showdown pot-share equity.
   2. Chance-node extraction contracts and multi-street average profile backward induction for $Q_{\text{profile}}(n, h, a)$, $V_{\text{profile}}(n, h)$, and $A_{\text{profile}}(n, h, a)$.
+- **Implementation status**:
+  - `zeta/holdem/src/cfr/extraction/equity_surface.h` provides exact deterministic `turn_showdown_pot_share_equity` and `flop_showdown_pot_share_equity` evaluators over the full hero-conditioned runout domains.
+  - `zeta/holdem/src/cfr/extraction/ev_surface.h` consumes explicit `chance_event_table` probabilities during both reach propagation and chance-node value backup (no uniform-probability fallback when chance metadata is supplied).
+  - Coverage is enforced in `zeta/test/src/test_extraction_contract.cpp` with manual-oracle parity checks for turn/flop runout evaluators and a non-uniform chance-event extraction fixture.
 
 #### Phase 5: Multiway Equity & Category Aggregation
 - **Files**: `zeta/holdem/src/cfr/extraction/category_surface.h / .cpp`.
@@ -1489,7 +1493,7 @@ Across every extracted node, test suites assert:
 - [x] Phase 2 exact river HU extraction pass with average-profile value extraction ($Q_{\text{profile}}, V_{\text{profile}}, A_{\text{profile}}$) and direct pre-sized flat buffer writing.
 - [x] Phase 2.5 differential validation (Production Result Store vs Oracle), bitwise determinism (Golden 6), and performance benchmarks.
 - [x] Phase 3 full Schema v4 serializer/deserializer with export modes, explicit `seat_values`, deduplicated `public_states`, and versioned derived category summaries.
-- [ ] Phase 4 flop/turn exact HU runout evaluators and chance-node extraction contracts.
+- [x] Phase 4 flop/turn exact HU runout evaluators and chance-node extraction contracts.
 - [ ] Phase 5 multiway exact equity evaluator with joint pot-share distribution conservation ($\sum_i E_i = 1$) and range interaction classification.
 - [ ] Phase 6 UI `solution_store` and `strategy_explorer` integration with category matrices and action EV inspection.
 - [ ] Comprehensive Golden test suite covering Golden 1–9 fixtures (per-combo equity matrices, mixed strategy identities, zero-reach preservation, shared-infoset aliasing, private-card separation, strategy storage aliasing, bitwise determinism, and artifact round-trip).

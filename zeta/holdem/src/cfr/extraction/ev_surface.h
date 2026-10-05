@@ -2,6 +2,7 @@
 
 #include "cfr/extraction/equity_surface.h"
 #include "cfr/extraction/strategy_surface.h"
+#include "cfr/chance/chance.h"
 #include "cfr/solver/metadata.h"
 #include "cfr/traversal/traversal.h"
 #include "terminal/terminal.h"
@@ -21,6 +22,7 @@ namespace zeta::holdem::cfr::extraction {
         const cfr::game_graph* graph = nullptr;
         const cfr::solver::solver_graph_annotations* annotations = nullptr;
         const cfr::strategy_sum_table* strategy_sums = nullptr;
+        const cfr::chance_event_table* chance_events = nullptr;
         const river_terminal_cache* river_cache = nullptr;
         std::span<const cfr::traversal::river_terminal_leaf> terminal_leaves{};
         std::span<const terminal_state<2>> terminal_states{};
@@ -30,6 +32,7 @@ namespace zeta::holdem::cfr::extraction {
     enum class river_extraction_error_kind : uint8_t {
         missing_input,
         metadata_size_mismatch,
+        invalid_chance_table,
         invalid_actor,
         invalid_infoset,
         invalid_terminal_leaf,
@@ -48,6 +51,7 @@ namespace zeta::holdem::cfr::extraction {
         switch (kind) {
             case missing_input:          return "river_extraction_error_kind::missing_input";
             case metadata_size_mismatch: return "river_extraction_error_kind::metadata_size_mismatch";
+            case invalid_chance_table:   return "river_extraction_error_kind::invalid_chance_table";
             case invalid_actor:          return "river_extraction_error_kind::invalid_actor";
             case invalid_infoset:        return "river_extraction_error_kind::invalid_infoset";
             case invalid_terminal_leaf:  return "river_extraction_error_kind::invalid_terminal_leaf";
@@ -77,8 +81,13 @@ namespace zeta::holdem::cfr::extraction {
 
         [[nodiscard]] inline float chance_probability_for_edge(
             const cfr::game_graph& graph,
-            const uint32_t node_id) noexcept
+            const cfr::chance_event_table* chance_events,
+            const uint32_t node_id,
+            const cfr::edge child_edge) noexcept
         {
+            if (chance_events != nullptr) {
+                return chance_events->probability_for_edge(node_id, child_edge);
+            }
             const auto count = graph.action_count(node_id);
             return count == 0u ? 0.0f : 1.0f / static_cast<float>(count);
         }
@@ -115,6 +124,9 @@ namespace zeta::holdem::cfr::extraction {
                 || input.annotations->state_by_node.size() != node_count
                 || input.terminal_leaves.size() < node_count) {
                 return std::unexpected(river_extraction_error{river_extraction_error_kind::metadata_size_mismatch});
+            }
+            if (input.chance_events != nullptr && input.chance_events->event_id_by_node.size() != node_count) {
+                return std::unexpected(river_extraction_error{river_extraction_error_kind::invalid_chance_table});
             }
 
             for (uint32_t node_id = 0; node_id < node_count; ++node_id) {
@@ -180,10 +192,13 @@ namespace zeta::holdem::cfr::extraction {
                     reach_by_node[child_edge.child_node] = child_reach;
                 }
             } else if (graph.is_chance_node(node_id)) {
-                const auto chance_probability = detail::chance_probability_for_edge(graph, node_id);
                 for (const auto child_edge : edges) {
                     auto child_reach = parent_reach;
-                    child_reach.chance *= chance_probability;
+                    child_reach.chance *= detail::chance_probability_for_edge(
+                        graph,
+                        input.chance_events,
+                        node_id,
+                        child_edge);
                     reach_by_node[child_edge.child_node] = child_reach;
                 }
             } else if (!graph.is_terminal(node_id)) {
@@ -246,12 +261,16 @@ namespace zeta::holdem::cfr::extraction {
                     }
                 }
             } else if (graph.is_chance_node(node_id)) {
-                const auto chance_probability = static_cast<double>(detail::chance_probability_for_edge(graph, node_id));
                 for (const auto child_edge : graph.out_edges(node_id)) {
                     auto child_values = value_for_node(child_edge.child_node, perspective);
                     if (!child_values) {
                         return std::unexpected(child_values.error());
                     }
+                    const auto chance_probability = static_cast<double>(detail::chance_probability_for_edge(
+                        graph,
+                        input.chance_events,
+                        node_id,
+                        child_edge));
                     for (uint32_t combo = 0; combo < combo_count; ++combo) {
                         values[combo] += chance_probability * (*child_values)[combo];
                     }

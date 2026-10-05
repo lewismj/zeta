@@ -264,6 +264,124 @@ namespace {
         return compatible_mass > 0.0 ? pot_share_mass / compatible_mass : 0.0;
     }
 
+    [[nodiscard]] zeta::holdem::combination_index combo_from_exact_cards(
+        const zeta::card_mask first,
+        const zeta::card_mask second)
+    {
+        const auto target = first | second;
+        for (zeta::holdem::combination_index combo = 0; combo < zeta::holdem::combination_count; ++combo) {
+            if (zeta::holdem::combination_mask(combo) == target) {
+                return combo;
+            }
+        }
+        BOOST_FAIL("exact two-card combo not found");
+        return 0;
+    }
+
+    [[nodiscard]] double manual_turn_showdown_pot_share_equity(
+        const zeta::holdem::board turn_board,
+        const zeta::holdem::reach_vector& opponent_range,
+        const float opponent_reach_probability,
+        const zeta::holdem::combination_index hero_combo,
+        uint32_t& runout_count_out)
+    {
+        const auto hero_mask = zeta::holdem::combination_mask(hero_combo);
+        if ((hero_mask & turn_board.mask) != 0u) {
+            runout_count_out = 0u;
+            return 0.0;
+        }
+
+        double runout_equity_sum = 0.0;
+        uint32_t runout_count = 0u;
+        for (uint8_t river = 0; river < zeta::num_cards<zeta::default_deck>; ++river) {
+            const auto river_bit = zeta::card_mask{1} << river;
+            if ((turn_board.mask & river_bit) != 0u || (hero_mask & river_bit) != 0u) {
+                continue;
+            }
+            const auto board_mask = turn_board.mask | river_bit;
+            const auto hero_rank = zeta::holdem::evaluate(hero_mask | board_mask);
+            double compatible_mass = 0.0;
+            double pot_share_mass = 0.0;
+            for (zeta::holdem::combination_index opponent_combo = 0; opponent_combo < zeta::holdem::combination_count; ++opponent_combo) {
+                const auto opponent_weight = static_cast<double>(opponent_range[opponent_combo])
+                    * static_cast<double>(opponent_reach_probability);
+                if (opponent_weight <= 0.0) {
+                    continue;
+                }
+                const auto opponent_mask = zeta::holdem::combination_mask(opponent_combo);
+                if ((opponent_mask & board_mask) != 0u || (opponent_mask & hero_mask) != 0u) {
+                    continue;
+                }
+                compatible_mass += opponent_weight;
+                const auto opponent_rank = zeta::holdem::evaluate(opponent_mask | board_mask);
+                if (hero_rank > opponent_rank) {
+                    pot_share_mass += opponent_weight;
+                } else if (hero_rank == opponent_rank) {
+                    pot_share_mass += 0.5 * opponent_weight;
+                }
+            }
+            runout_equity_sum += compatible_mass > 0.0 ? pot_share_mass / compatible_mass : 0.0;
+            ++runout_count;
+        }
+        runout_count_out = runout_count;
+        return runout_count > 0u ? runout_equity_sum / static_cast<double>(runout_count) : 0.0;
+    }
+
+    [[nodiscard]] double manual_flop_showdown_pot_share_equity(
+        const zeta::holdem::board flop_board,
+        const zeta::holdem::reach_vector& opponent_range,
+        const float opponent_reach_probability,
+        const zeta::holdem::combination_index hero_combo,
+        uint32_t& runout_count_out)
+    {
+        const auto hero_mask = zeta::holdem::combination_mask(hero_combo);
+        if ((hero_mask & flop_board.mask) != 0u) {
+            runout_count_out = 0u;
+            return 0.0;
+        }
+
+        double runout_equity_sum = 0.0;
+        uint32_t runout_count = 0u;
+        for (uint8_t turn = 0; turn < zeta::num_cards<zeta::default_deck>; ++turn) {
+            const auto turn_bit = zeta::card_mask{1} << turn;
+            if ((flop_board.mask & turn_bit) != 0u || (hero_mask & turn_bit) != 0u) {
+                continue;
+            }
+            for (uint8_t river = static_cast<uint8_t>(turn + 1u); river < zeta::num_cards<zeta::default_deck>; ++river) {
+                const auto river_bit = zeta::card_mask{1} << river;
+                if ((flop_board.mask & river_bit) != 0u || (hero_mask & river_bit) != 0u) {
+                    continue;
+                }
+                const auto board_mask = flop_board.mask | turn_bit | river_bit;
+                const auto hero_rank = zeta::holdem::evaluate(hero_mask | board_mask);
+                double compatible_mass = 0.0;
+                double pot_share_mass = 0.0;
+                for (zeta::holdem::combination_index opponent_combo = 0; opponent_combo < zeta::holdem::combination_count; ++opponent_combo) {
+                    const auto opponent_weight = static_cast<double>(opponent_range[opponent_combo])
+                        * static_cast<double>(opponent_reach_probability);
+                    if (opponent_weight <= 0.0) {
+                        continue;
+                    }
+                    const auto opponent_mask = zeta::holdem::combination_mask(opponent_combo);
+                    if ((opponent_mask & board_mask) != 0u || (opponent_mask & hero_mask) != 0u) {
+                        continue;
+                    }
+                    compatible_mass += opponent_weight;
+                    const auto opponent_rank = zeta::holdem::evaluate(opponent_mask | board_mask);
+                    if (hero_rank > opponent_rank) {
+                        pot_share_mass += opponent_weight;
+                    } else if (hero_rank == opponent_rank) {
+                        pot_share_mass += 0.5 * opponent_weight;
+                    }
+                }
+                runout_equity_sum += compatible_mass > 0.0 ? pot_share_mass / compatible_mass : 0.0;
+                ++runout_count;
+            }
+        }
+        runout_count_out = runout_count;
+        return runout_count > 0u ? runout_equity_sum / static_cast<double>(runout_count) : 0.0;
+    }
+
     [[nodiscard]] uint32_t float_bits(const float value)
     {
         return std::bit_cast<uint32_t>(value);
@@ -506,6 +624,57 @@ BOOST_AUTO_TEST_CASE(test_derived_category_reductions)
     BOOST_CHECK_CLOSE(avg_eq, 0.70, 1e-9);
 }
 
+BOOST_AUTO_TEST_CASE(postflop_exact_equity_matches_manual_turn_and_flop_oracles)
+{
+    zeta::holdem::reach_vector opponent_range{};
+    const auto opponent_a = combo_from_exact_cards(test_card(3, 0), test_card(2, 1)); // 2c3d
+    const auto opponent_b = combo_from_exact_cards(test_card(3, 4), test_card(2, 5)); // 6c7d
+    opponent_range[opponent_a] = 0.65f;
+    opponent_range[opponent_b] = 0.35f;
+
+    const auto hero_combo = combo_from_exact_cards(test_card(1, 8), test_card(0, 7)); // Th9s
+    const zeta::holdem::board turn_board{
+        test_card(1, 12) | test_card(1, 11) | test_card(1, 10) | test_card(1, 9) // AhKhQhJh
+    };
+    const zeta::holdem::board flop_board{
+        test_card(0, 12) | test_card(2, 11) | test_card(3, 6) // AsKd8c
+    };
+
+    uint32_t turn_runouts = 0u;
+    const auto turn_manual = manual_turn_showdown_pot_share_equity(
+        turn_board,
+        opponent_range,
+        1.0f,
+        hero_combo,
+        turn_runouts);
+    const auto turn_surface = turn_showdown_pot_share_equity(
+        turn_board,
+        opponent_range,
+        1.0f,
+        hero_combo);
+
+    uint32_t flop_runouts = 0u;
+    const auto flop_manual = manual_flop_showdown_pot_share_equity(
+        flop_board,
+        opponent_range,
+        1.0f,
+        hero_combo,
+        flop_runouts);
+    const auto flop_surface = flop_showdown_pot_share_equity(
+        flop_board,
+        opponent_range,
+        1.0f,
+        hero_combo);
+
+    BOOST_CHECK_EQUAL(turn_runouts, 46u);
+    BOOST_CHECK_EQUAL(flop_runouts, 1081u);
+    BOOST_CHECK_CLOSE(turn_surface, turn_manual, 1e-6);
+    BOOST_CHECK_CLOSE(flop_surface, flop_manual, 1e-6);
+    BOOST_CHECK_CLOSE(turn_surface, 1.0, 1e-9);
+    BOOST_CHECK(turn_surface >= 0.0 && turn_surface <= 1.0);
+    BOOST_CHECK(flop_surface >= 0.0 && flop_surface <= 1.0);
+}
+
 BOOST_AUTO_TEST_CASE(river_hu_extraction_populates_q_v_a_and_equity_surfaces)
 {
     namespace cfr = zeta::holdem::cfr;
@@ -603,6 +772,125 @@ BOOST_AUTO_TEST_CASE(river_hu_extraction_populates_q_v_a_and_equity_surfaces)
     BOOST_CHECK(verify_showdown_equity_bounds(node.equity().showdown_equity(oop_local)));
     BOOST_CHECK_CLOSE(node.values().range_reach_mass(), 1.0, 0.001);
     BOOST_CHECK_CLOSE(node.values().conditional_range_ev(), expected_value, 0.001);
+}
+
+BOOST_AUTO_TEST_CASE(river_hu_extraction_uses_chance_event_probabilities)
+{
+    namespace cfr = zeta::holdem::cfr;
+
+    cfr::graph_builder builder;
+    const auto root = builder.add_node(cfr::node_kind::player);
+    const auto chance_node = builder.add_node(cfr::node_kind::chance);
+    const auto fold_win_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto showdown_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto fold_lose_terminal = builder.add_node(cfr::node_kind::terminal);
+    builder.add_edge(root, chance_node, 0);
+    builder.add_edge(root, fold_win_terminal, 1);
+    builder.add_edge(chance_node, showdown_terminal, 0);
+    builder.add_edge(chance_node, fold_lose_terminal, 1);
+    builder.set_infoset_id(root, 0);
+    std::vector<uint32_t> remap;
+    auto graph_result = builder.build(remap);
+    BOOST_REQUIRE_MESSAGE(graph_result.has_value(), zeta::holdem::cfr::to_string(graph_result.error().kind));
+    auto graph = std::move(*graph_result);
+    const auto root_id = remap[root];
+    const auto chance_node_id = remap[chance_node];
+    const auto fold_win_terminal_id = remap[fold_win_terminal];
+    const auto showdown_terminal_id = remap[showdown_terminal];
+    const auto fold_lose_terminal_id = remap[fold_lose_terminal];
+
+    cfr::action_table_layout layout;
+    layout.action_offsets = {0, 2};
+    cfr::strategy_sum_table strategy_sums(layout);
+    strategy_sums.value(0, 0) = 1.0f;
+    strategy_sums.value(0, 1) = 0.0f;
+
+    const auto board = extraction_test_river_board();
+    const auto cache = zeta::holdem::make_river_terminal_cache(board);
+    const auto [oop_combo, ip_combo] = first_extraction_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_range{};
+    zeta::holdem::reach_vector ip_range{};
+    oop_range[oop_combo] = 1.0f;
+    ip_range[ip_combo] = 1.0f;
+
+    const auto context = zeta::holdem::make_heads_up_context(200.0, 0.0, 50.0, 50.0);
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context)); // 0
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::ip)); // 1
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::oop)); // 2
+
+    std::vector<cfr::traversal::river_terminal_leaf> terminal_leaves(graph.node_count);
+    terminal_leaves[fold_win_terminal_id] = cfr::traversal::river_terminal_leaf{1};
+    terminal_leaves[showdown_terminal_id] = cfr::traversal::river_terminal_leaf{0};
+    terminal_leaves[fold_lose_terminal_id] = cfr::traversal::river_terminal_leaf{2};
+
+    cfr::solver::solver_graph_annotations annotations;
+    annotations.actor_by_node.assign(graph.node_count, cfr::solver::INVALID_PLAYER);
+    annotations.actor_by_node[root_id] = 0u;
+    annotations.state_by_node.assign(graph.node_count, cfr::solver::solver_node_state_metadata{
+        .street = cfr::solver::holdem_street::river,
+        .public_state_id = 31u,
+        .betting_state_id = 0u
+    });
+
+    cfr::chance_event_table chance_events;
+    chance_events.event_id_by_node.assign(graph.node_count, cfr::INVALID_CHANCE_EVENT);
+    chance_events.events.push_back(cfr::chance_event{
+        .node_id = chance_node_id,
+        .first_outcome = 0u,
+        .outcome_count = 2u
+    });
+    chance_events.outcomes.push_back(cfr::chance_outcome{
+        .child_node = showdown_terminal_id,
+        .action_index = 0u,
+        .probability = 0.8f
+    });
+    chance_events.outcomes.push_back(cfr::chance_outcome{
+        .child_node = fold_lose_terminal_id,
+        .action_index = 1u,
+        .probability = 0.2f
+    });
+    chance_events.event_id_by_node[chance_node_id] = 0u;
+
+    auto extracted = extract_river_heads_up_result_store(river_heads_up_extraction_input{
+        .graph = &graph,
+        .annotations = &annotations,
+        .strategy_sums = &strategy_sums,
+        .chance_events = &chance_events,
+        .river_cache = &cache,
+        .terminal_leaves = terminal_leaves,
+        .terminal_states = terminal_states.view(),
+        .ranges = {oop_range, ip_range}
+    });
+    BOOST_REQUIRE(extracted.has_value());
+    BOOST_REQUIRE_EQUAL(extracted->node_count(), 1u);
+
+    const auto node = extracted->node(0);
+    uint32_t hero_local = INVALID_COMBO_LOCAL_INDEX;
+    for (uint32_t local = 0; local < node.combo_count(); ++local) {
+        if (node.combo_index(local) == oop_combo) {
+            hero_local = local;
+            break;
+        }
+    }
+    BOOST_REQUIRE_NE(hero_local, INVALID_COMBO_LOCAL_INDEX);
+
+    const std::array<zeta::holdem::river_reach_index, 2> reach_indices{
+        zeta::holdem::make_river_reach_index(cache, oop_range),
+        zeta::holdem::make_river_reach_index(cache, ip_range)
+    };
+    const zeta::holdem::terminal_engine<2> engine{};
+    const auto showdown_value = static_cast<double>(
+        engine.evaluate_terminal_values(cache, reach_indices, terminal_states[0])[zeta::holdem::heads_up_player::oop][oop_combo]);
+    const auto fold_lose_value = static_cast<double>(
+        engine.evaluate_terminal_values(cache, reach_indices, terminal_states[2])[zeta::holdem::heads_up_player::oop][oop_combo]);
+    const auto fold_win_value = static_cast<double>(
+        engine.evaluate_terminal_values(cache, reach_indices, terminal_states[1])[zeta::holdem::heads_up_player::oop][oop_combo]);
+
+    const auto expected_chance_q = 0.8 * showdown_value + 0.2 * fold_lose_value;
+    BOOST_CHECK_CLOSE(node.values().q_value(hero_local, 0), expected_chance_q, 1e-6);
+    BOOST_CHECK_CLOSE(node.values().q_value(hero_local, 1), fold_win_value, 1e-6);
+    BOOST_CHECK_CLOSE(node.values().combo_ev(hero_local), expected_chance_q, 1e-6);
 }
 
 BOOST_AUTO_TEST_CASE(river_hu_extraction_aliases_shared_infoset_strategy_surfaces)
