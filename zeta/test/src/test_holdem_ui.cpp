@@ -1017,7 +1017,13 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_roundtrips_action_tree_without_com
                 zeta::holdem::cli::solved_node_action{.action = "call", .child_node_id = 2, .action_index = 1},
                 zeta::holdem::cli::solved_node_action{.action = "raise_50", .child_node_id = 3, .action_index = 2}
             },
-            .range_action_frequencies = artifact.root_strategy
+            .range_action_frequencies = artifact.root_strategy,
+            .seat_values = {
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.2, .conditional_range_ev = 0.2, .counterfactual_value = 0.2},
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = -0.2, .conditional_range_ev = -0.2, .counterfactual_value = -0.2}
+            }
         },
         zeta::holdem::cli::solved_node{
             .node_id = 1,
@@ -1026,7 +1032,13 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_roundtrips_action_tree_without_com
             .parent_node_id = 0,
             .acting_seat = zeta::holdem::ui::solver::invalid_solution_seat,
             .terminal = true,
-            .board = artifact.board
+            .board = artifact.board,
+            .seat_values = {
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.0, .conditional_range_ev = 0.0, .counterfactual_value = 0.0},
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = 0.0, .conditional_range_ev = 0.0, .counterfactual_value = 0.0}
+            }
         }
     };
     auto solution = zeta::holdem::ui::solver::make_action_tree_solution_store(spot, artifact);
@@ -1108,7 +1120,13 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
                 zeta::holdem::cli::solved_node_action{.action = "call", .child_node_id = 2, .action_index = 1},
                 zeta::holdem::cli::solved_node_action{.action = "raise_50", .child_node_id = 3, .action_index = 2}
             },
-            .range_action_frequencies = artifact.root_strategy
+            .range_action_frequencies = artifact.root_strategy,
+            .seat_values = {
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.2, .conditional_range_ev = 0.2, .counterfactual_value = 0.2},
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = -0.2, .conditional_range_ev = -0.2, .counterfactual_value = -0.2}
+            }
         },
         zeta::holdem::cli::solved_node{
             .node_id = 1,
@@ -1121,6 +1139,12 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
             .actions = {
                 zeta::holdem::cli::solved_node_action{.action = "deal", .child_node_id = 2, .action_index = 0, .probability = 0.5f, .chance_event_id = 0, .board_partition_id = 0, .chance_outcome_id = 0, .dealt_cards = {"6s"}},
                 zeta::holdem::cli::solved_node_action{.action = "deal", .child_node_id = 3, .action_index = 1, .probability = 0.5f, .chance_event_id = 0, .board_partition_id = 1, .chance_outcome_id = 1, .dealt_cards = {"6d"}}
+            },
+            .seat_values = {
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.1, .conditional_range_ev = 0.1, .counterfactual_value = 0.1},
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = -0.1, .conditional_range_ev = -0.1, .counterfactual_value = -0.1}
             }
         },
         zeta::holdem::cli::solved_node{
@@ -1130,7 +1154,13 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
             .parent_node_id = 1,
             .acting_seat = zeta::holdem::ui::solver::invalid_solution_seat,
             .terminal = true,
-            .board = artifact.board
+            .board = artifact.board,
+            .seat_values = {
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.0, .conditional_range_ev = 0.0, .counterfactual_value = 0.0},
+                zeta::holdem::cli::solved_node_seat_value{
+                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = 0.0, .conditional_range_ev = 0.0, .counterfactual_value = 0.0}
+            }
         }
     };
     auto solution = zeta::holdem::ui::solver::make_action_tree_solution_store(spot, artifact);

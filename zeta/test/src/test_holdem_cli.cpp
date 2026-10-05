@@ -23,6 +23,20 @@ namespace {
         return 0;
     }
 
+    std::size_t count_substring(const std::string& haystack, const std::string& needle)
+    {
+        if (needle.empty()) {
+            return 0u;
+        }
+        std::size_t count = 0u;
+        std::size_t pos = 0u;
+        while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+            ++count;
+            pos += needle.size();
+        }
+        return count;
+    }
+
     constexpr const char* sample_spot = R"({
   "players": ["BTN", "BB"],
   "board": ["As", "Kd", "7c", "4h", "2s"],
@@ -411,6 +425,61 @@ BOOST_AUTO_TEST_CASE(holdem_cli_roundtrips_artifact_json_and_dump) {
     BOOST_CHECK(dump.find("Hand") != std::string::npos);
     BOOST_CHECK(dump.find("EV") != std::string::npos);
     BOOST_CHECK(dump.find('%') != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_phase3_export_modes_are_deterministic) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
+    BOOST_REQUIRE(spot.has_value());
+    auto output = zeta::holdem::cli::solve_spot(*spot, 8, {.worker_threads = 2});
+    BOOST_REQUIRE(output.has_value());
+
+    const auto summary_json = zeta::holdem::cli::serialize_artifact_json(
+        output->artifact,
+        zeta::holdem::cli::solve_artifact_export_mode::summary);
+    const auto standard_json = zeta::holdem::cli::serialize_artifact_json(
+        output->artifact,
+        zeta::holdem::cli::solve_artifact_export_mode::standard);
+    const auto full_json = zeta::holdem::cli::serialize_artifact_json(
+        output->artifact,
+        zeta::holdem::cli::solve_artifact_export_mode::full);
+
+    BOOST_CHECK_EQUAL(count_substring(summary_json, "\"strategy_rows\""), 0u);
+    const auto standard_rows = count_substring(standard_json, "\"strategy_rows\"");
+    const auto full_rows = count_substring(full_json, "\"strategy_rows\"");
+    BOOST_CHECK_GT(standard_rows, 0u);
+    BOOST_CHECK_GE(full_rows, standard_rows);
+
+    BOOST_CHECK_GT(count_substring(summary_json, "\"seat_values\""), 0u);
+    BOOST_CHECK_GT(count_substring(summary_json, "\"category_summaries\""), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_phase3_roundtrips_node_surfaces) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_turn);
+    BOOST_REQUIRE(spot.has_value());
+    auto output = zeta::holdem::cli::solve_spot(*spot, 8, {.worker_threads = 2});
+    BOOST_REQUIRE(output.has_value());
+
+    const auto json = zeta::holdem::cli::serialize_artifact_json(output->artifact);
+    auto parsed = zeta::holdem::cli::parse_artifact_json(json);
+    BOOST_REQUIRE(parsed.has_value());
+
+    BOOST_REQUIRE_EQUAL(parsed->solved_nodes.size(), output->artifact.solved_nodes.size());
+    for (std::size_t i = 0; i < output->artifact.solved_nodes.size(); ++i) {
+        const auto& lhs = output->artifact.solved_nodes[i];
+        const auto& rhs = parsed->solved_nodes[i];
+        BOOST_CHECK_EQUAL(rhs.seat_values.size(), lhs.seat_values.size());
+        BOOST_CHECK_EQUAL(rhs.category_summary_derivation_version, 1u);
+        BOOST_CHECK_EQUAL(rhs.category_summary_derivation_version, lhs.category_summary_derivation_version);
+        BOOST_CHECK_EQUAL(rhs.category_summaries.size(), lhs.category_summaries.size());
+        BOOST_CHECK_EQUAL(rhs.strategy_rows.size(), lhs.strategy_rows.size());
+        for (std::size_t seat = 0; seat < lhs.seat_values.size(); ++seat) {
+            BOOST_CHECK_EQUAL(rhs.seat_values[seat].seat, lhs.seat_values[seat].seat);
+            BOOST_CHECK_CLOSE(rhs.seat_values[seat].range_reach_mass, lhs.seat_values[seat].range_reach_mass, 1e-7);
+            BOOST_CHECK_CLOSE(rhs.seat_values[seat].reach_weighted_value, lhs.seat_values[seat].reach_weighted_value, 1e-7);
+            BOOST_CHECK_CLOSE(rhs.seat_values[seat].conditional_range_ev, lhs.seat_values[seat].conditional_range_ev, 1e-7);
+            BOOST_CHECK_CLOSE(rhs.seat_values[seat].counterfactual_value, lhs.seat_values[seat].counterfactual_value, 1e-7);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_artifact_json_accepts_nested_objects_and_escaped_actions) {

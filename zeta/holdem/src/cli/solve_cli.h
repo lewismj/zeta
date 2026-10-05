@@ -61,7 +61,30 @@ namespace zeta::holdem::cli {
             std::numeric_limits<::zeta::holdem::combination_index>::max();
         std::string hand;
         std::vector<action_strategy> strategy;
+        double range_weight = 0.0;
+        double reach_probability = 0.0;
         double ev = 0.0;
+    };
+
+    struct solved_node_seat_value {
+        uint8_t seat = 0;
+        double range_reach_mass = 0.0;
+        double reach_weighted_value = 0.0;
+        double conditional_range_ev = 0.0;
+        double counterfactual_value = 0.0;
+    };
+
+    struct category_summary_action_frequency {
+        uint16_t action_index = 0;
+        double frequency = 0.0;
+    };
+
+    struct category_summary_item {
+        std::string category_name;
+        double frequency = 0.0;
+        double range_weight = 0.0;
+        double average_ev = 0.0;
+        std::vector<category_summary_action_frequency> action_frequencies;
     };
 
     /**
@@ -152,6 +175,9 @@ namespace zeta::holdem::cli {
         std::vector<std::string> board;
         std::vector<solved_node_action> actions;
         std::vector<action_strategy> range_action_frequencies;
+        std::vector<solved_node_seat_value> seat_values;
+        uint32_t category_summary_derivation_version = 1;
+        std::vector<category_summary_item> category_summaries;
         std::vector<hand_strategy> strategy_rows;
     };
 
@@ -418,6 +444,41 @@ namespace zeta::holdem::cli {
                 std::swap(first, second);
             }
             return card_text_from_id(first) + card_text_from_id(second);
+        }
+
+        [[nodiscard]] inline std::string hand_class_text_from_combo(const combination_index combo)
+        {
+            const auto mask = combination_mask(combo);
+            std::array<uint8_t, 2> cards{};
+            std::size_t count = 0;
+            for (uint8_t id = 0; id < 52; ++id) {
+                if ((mask & (card_mask{1} << id)) != 0) {
+                    assert(count < cards.size());
+                    cards[count++] = id;
+                }
+            }
+            assert(count == 2u);
+
+            const auto first = cards[0];
+            const auto second = cards[1];
+            const auto first_rank = static_cast<uint8_t>(first % 13);
+            const auto second_rank = static_cast<uint8_t>(second % 13);
+            const auto first_suit = static_cast<uint8_t>(first / 13);
+            const auto second_suit = static_cast<uint8_t>(second / 13);
+            if (first_rank == second_rank) {
+                std::string out;
+                out.push_back(rank_char(first_rank));
+                out.push_back(rank_char(first_rank));
+                return out;
+            }
+
+            const auto high_rank = std::max(first_rank, second_rank);
+            const auto low_rank = std::min(first_rank, second_rank);
+            std::string out;
+            out.push_back(rank_char(high_rank));
+            out.push_back(rank_char(low_rank));
+            out.push_back(first_suit == second_suit ? 's' : 'o');
+            return out;
         }
 
         [[nodiscard]] inline std::expected<cfr::solver::holdem_street, cli_error> parse_holdem_street(const std::string_view text)
@@ -748,11 +809,86 @@ namespace zeta::holdem::cli {
                     return result;
                 }
             }
+            if (node.seat_values.empty()) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "solved_nodes.seat_values must not be empty."});
+            }
+            std::set<uint8_t> solved_node_seats;
+            for (const auto& seat_value : node.seat_values) {
+                if (seat_value.seat >= artifact.players.size()) {
+                    return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "solved_nodes.seat_values contains an out-of-range seat."});
+                }
+                if (!solved_node_seats.insert(seat_value.seat).second) {
+                    return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "solved_nodes.seat_values contains duplicate seat entries."});
+                }
+                if (!std::isfinite(seat_value.range_reach_mass) || seat_value.range_reach_mass < 0.0) {
+                    return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "solved_nodes.seat_values.range_reach_mass must be finite and non-negative."});
+                }
+                if (!std::isfinite(seat_value.reach_weighted_value)
+                    || !std::isfinite(seat_value.conditional_range_ev)
+                    || !std::isfinite(seat_value.counterfactual_value)) {
+                    return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "solved_nodes.seat_values metrics must be finite."});
+                }
+                if (seat_value.range_reach_mass > 0.0) {
+                    const auto reconstructed = seat_value.reach_weighted_value / seat_value.range_reach_mass;
+                    if (std::abs(reconstructed - seat_value.conditional_range_ev) > 1.0e-5) {
+                        return std::unexpected(cli_error{
+                            cli_error_kind::invalid_artifact,
+                            "solved_nodes.seat_values.conditional_range_ev must equal reach_weighted_value / range_reach_mass."
+                        });
+                    }
+                }
+            }
+            if (node.category_summary_derivation_version != 1u) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::invalid_artifact,
+                    "solved_nodes.derived.category_summaries.derivation_version must be 1."
+                });
+            }
+            for (const auto& item : node.category_summaries) {
+                if (item.category_name.empty()) {
+                    return std::unexpected(cli_error{
+                        cli_error_kind::invalid_artifact,
+                        "solved_nodes.derived.category_summaries.items.category_name must not be empty."
+                    });
+                }
+                if (!std::isfinite(item.frequency) || item.frequency < 0.0 || item.frequency > 1.0) {
+                    return std::unexpected(cli_error{
+                        cli_error_kind::invalid_artifact,
+                        "solved_nodes.derived.category_summaries.items.frequency must be finite and in [0,1]."
+                    });
+                }
+                if (!std::isfinite(item.range_weight) || item.range_weight < 0.0 || !std::isfinite(item.average_ev)) {
+                    return std::unexpected(cli_error{
+                        cli_error_kind::invalid_artifact,
+                        "solved_nodes.derived.category_summaries.items metrics must be finite and non-negative where applicable."
+                    });
+                }
+                for (const auto& action : item.action_frequencies) {
+                    if (!std::isfinite(action.frequency) || action.frequency < 0.0 || action.frequency > 1.0) {
+                        return std::unexpected(cli_error{
+                            cli_error_kind::invalid_artifact,
+                            "solved_nodes.derived.category_summaries.items.action_frequencies frequency must be finite and in [0,1]."
+                        });
+                    }
+                }
+            }
             for (const auto& row : node.strategy_rows) {
                 if (!row.strategy.empty()) {
                     if (auto result = validate_action_distribution(row.strategy, "solved node combo strategy"); !result) {
                         return result;
                     }
+                }
+                if (!std::isfinite(row.range_weight) || row.range_weight < 0.0) {
+                    return std::unexpected(cli_error{
+                        cli_error_kind::invalid_artifact,
+                        "solved_nodes.strategy_rows.range_weight must be finite and non-negative."
+                    });
+                }
+                if (!std::isfinite(row.reach_probability) || row.reach_probability < 0.0 || row.reach_probability > 1.0) {
+                    return std::unexpected(cli_error{
+                        cli_error_kind::invalid_artifact,
+                        "solved_nodes.strategy_rows.reach_probability must be finite and in [0,1]."
+                    });
                 }
             }
         }
@@ -792,6 +928,12 @@ namespace zeta::holdem::cli {
                 if (auto result = validate_action_distribution(row.strategy, "hand: " + row.hand); !result) {
                     return result;
                 }
+            }
+            if (!std::isfinite(row.range_weight) || row.range_weight < 0.0) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "range_weight must be finite and non-negative for hand: " + row.hand});
+            }
+            if (!std::isfinite(row.reach_probability) || row.reach_probability < 0.0 || row.reach_probability > 1.0) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "reach_probability must be finite and in [0,1] for hand: " + row.hand});
             }
             if (!std::isfinite(row.ev)) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "EV must be finite for hand: " + row.hand});
@@ -1809,6 +1951,181 @@ namespace zeta::holdem::cli {
             return root_strategy;
         }
 
+        template <std::size_t N>
+        [[nodiscard]] inline std::vector<solved_node_seat_value> compute_node_seat_values(
+            const uint32_t node_id,
+            const std::array<reach_vector, N>& base_reach,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const std::vector<std::array<reach_vector, N>>& node_reach,
+            const std::array<std::vector<reach_vector>, N>& node_values_by_seat)
+        {
+            std::vector<solved_node_seat_value> out;
+            out.reserve(N);
+            for (uint8_t seat = 0; seat < N; ++seat) {
+                double range_reach_mass = 0.0;
+                double reach_weighted_value = 0.0;
+                double counterfactual_value = 0.0;
+                for (const auto combo : active_combos[seat]) {
+                    const auto base_weight = std::max(0.0f, base_reach[seat][combo]);
+                    const auto path_weight = std::max(0.0f, node_reach[node_id][seat][combo]);
+                    const auto profile_value = static_cast<double>(node_values_by_seat[seat][node_id][combo]);
+                    range_reach_mass += static_cast<double>(path_weight);
+                    reach_weighted_value += static_cast<double>(path_weight) * profile_value;
+                    counterfactual_value += static_cast<double>(base_weight) * profile_value;
+                }
+                out.push_back(solved_node_seat_value{
+                    .seat = seat,
+                    .range_reach_mass = range_reach_mass,
+                    .reach_weighted_value = reach_weighted_value,
+                    .conditional_range_ev = range_reach_mass > 0.0 ? reach_weighted_value / range_reach_mass : 0.0,
+                    .counterfactual_value = counterfactual_value
+                });
+            }
+            return out;
+        }
+
+        template <std::size_t N>
+        [[nodiscard]] inline std::vector<hand_strategy> compute_node_strategy_rows(
+            const uint32_t node_id,
+            const cfr::game_graph& graph,
+            const cfr::solver::solver_graph_annotations& annotations,
+            const combo_action_table& average_strategy,
+            const std::array<reach_vector, N>& base_reach,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const std::vector<std::array<reach_vector, N>>& node_reach,
+            const std::array<std::vector<reach_vector>, N>& node_values_by_seat,
+            const uint8_t hero_seat)
+        {
+            const auto is_player = graph.is_player_node(node_id);
+            const auto seat = is_player ? annotations.actor_by_node[node_id] : hero_seat;
+            std::vector<hand_strategy> rows;
+            rows.reserve(active_combos[seat].size());
+            const auto infoset_id = is_player ? graph.infoset_id[node_id] : cfr::game_graph::INVALID_INFOSET;
+            const auto action_count = is_player ? average_strategy.action_count(infoset_id) : 0u;
+
+            for (const auto combo : active_combos[seat]) {
+                std::vector<action_strategy> combo_strategy;
+                combo_strategy.reserve(action_count);
+                if (is_player) {
+                    for (uint32_t action_index = 0; action_index < action_count; ++action_index) {
+                        combo_strategy.push_back(action_strategy{
+                            .action = std::to_string(action_index),
+                            .frequency = average_strategy.value(combo, infoset_id, action_index)
+                        });
+                    }
+                }
+                const auto range_weight = std::max(0.0f, base_reach[seat][combo]);
+                const auto path_weight = std::max(0.0f, node_reach[node_id][seat][combo]);
+                rows.push_back(hand_strategy{
+                    .combination_index = combo,
+                    .hand = hand_text_from_combo(combo),
+                    .strategy = std::move(combo_strategy),
+                    .range_weight = range_weight,
+                    .reach_probability = range_weight > 0.0 ? path_weight / range_weight : 0.0,
+                    .ev = node_values_by_seat[seat][node_id][combo]
+                });
+            }
+            return rows;
+        }
+
+        [[nodiscard]] inline std::vector<category_summary_item> compute_category_summaries(
+            const std::vector<hand_strategy>& strategy_rows)
+        {
+            struct category_accumulator {
+                std::string category_name;
+                double mass = 0.0;
+                double weighted_ev = 0.0;
+                std::vector<double> weighted_action_mass;
+            };
+
+            std::vector<category_accumulator> accumulators;
+            double total_mass = 0.0;
+            for (const auto& row : strategy_rows) {
+                const auto row_mass = row.range_weight * row.reach_probability;
+                if (row_mass <= 0.0) {
+                    continue;
+                }
+                total_mass += row_mass;
+                const auto category = hand_class_text_from_combo(row.combination_index);
+                auto it = std::find_if(accumulators.begin(), accumulators.end(), [&](const category_accumulator& candidate) {
+                    return candidate.category_name == category;
+                });
+                if (it == accumulators.end()) {
+                    accumulators.push_back(category_accumulator{
+                        .category_name = category,
+                        .mass = 0.0,
+                        .weighted_ev = 0.0,
+                        .weighted_action_mass = std::vector<double>(row.strategy.size(), 0.0)
+                    });
+                    it = std::prev(accumulators.end());
+                } else if (it->weighted_action_mass.size() < row.strategy.size()) {
+                    it->weighted_action_mass.resize(row.strategy.size(), 0.0);
+                }
+                it->mass += row_mass;
+                it->weighted_ev += row_mass * row.ev;
+                for (std::size_t action_index = 0; action_index < row.strategy.size(); ++action_index) {
+                    it->weighted_action_mass[action_index] += row_mass * row.strategy[action_index].frequency;
+                }
+            }
+
+            std::vector<category_summary_item> summaries;
+            summaries.reserve(accumulators.size());
+            for (const auto& accumulator : accumulators) {
+                std::vector<category_summary_action_frequency> action_frequencies;
+                action_frequencies.reserve(accumulator.weighted_action_mass.size());
+                for (std::size_t action_index = 0; action_index < accumulator.weighted_action_mass.size(); ++action_index) {
+                    action_frequencies.push_back(category_summary_action_frequency{
+                        .action_index = static_cast<uint16_t>(action_index),
+                        .frequency = accumulator.mass > 0.0
+                            ? accumulator.weighted_action_mass[action_index] / accumulator.mass
+                            : 0.0
+                    });
+                }
+                summaries.push_back(category_summary_item{
+                    .category_name = accumulator.category_name,
+                    .frequency = total_mass > 0.0 ? accumulator.mass / total_mass : 0.0,
+                    .range_weight = accumulator.mass,
+                    .average_ev = accumulator.mass > 0.0 ? accumulator.weighted_ev / accumulator.mass : 0.0,
+                    .action_frequencies = std::move(action_frequencies)
+                });
+            }
+            return summaries;
+        }
+
+        template <std::size_t N>
+        inline void populate_solved_node_profiles(
+            solve_artifact& artifact,
+            const cfr::game_graph& graph,
+            const cfr::solver::solver_graph_annotations& annotations,
+            const combo_action_table& average_strategy,
+            const std::array<reach_vector, N>& base_reach,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const std::vector<std::array<reach_vector, N>>& node_reach,
+            const std::array<std::vector<reach_vector>, N>& node_values_by_seat)
+        {
+            const auto hero_seat = static_cast<uint8_t>(std::min<std::size_t>(artifact.hero_seat, N - 1u));
+            for (auto& node : artifact.solved_nodes) {
+                node.seat_values = compute_node_seat_values(
+                    node.node_id,
+                    base_reach,
+                    active_combos,
+                    node_reach,
+                    node_values_by_seat);
+                node.strategy_rows = compute_node_strategy_rows(
+                    node.node_id,
+                    graph,
+                    annotations,
+                    average_strategy,
+                    base_reach,
+                    active_combos,
+                    node_reach,
+                    node_values_by_seat,
+                    hero_seat);
+                node.category_summary_derivation_version = 1;
+                node.category_summaries = compute_category_summaries(node.strategy_rows);
+            }
+        }
+
         inline void append_solved_graph_payload(
             solve_artifact& artifact,
             const cfr::game_graph& graph,
@@ -2240,17 +2557,21 @@ namespace zeta::holdem::cli {
                 normalize_combo_action_table(graph, annotations, strategy_sums, average_strategy, active_combos, pruning);
                 build_node_reach_vectors(graph, annotations, average_strategy, reach_vectors, active_combos, node_reach, pruning);
                 const auto hero = static_cast<uint8_t>(spot.hero_seat);
-                evaluate_multi_street_combo_profile(
-                    public_game,
-                    average_strategy,
-                    active_combos,
-                    node_reach,
-                    terminal_table,
-                    river_base_index_by_state,
-                    hero,
-                    node_values,
-                    spot.samples_per_combo,
-                    pruning);
+                std::array<std::vector<reach_vector>, N> node_values_by_seat{};
+                for (uint8_t seat = 0; seat < N; ++seat) {
+                    evaluate_multi_street_combo_profile(
+                        public_game,
+                        average_strategy,
+                        active_combos,
+                        node_reach,
+                        terminal_table,
+                        river_base_index_by_state,
+                        seat,
+                        node_values_by_seat[seat],
+                        spot.samples_per_combo,
+                        pruning);
+                }
+                node_values = node_values_by_seat[hero];
 
                 solve_artifact artifact{};
                 artifact.players.assign(spot.players.begin(), std::next(spot.players.begin(), N));
@@ -2307,6 +2628,8 @@ namespace zeta::holdem::cli {
                         .combination_index = combo,
                         .hand = hand_text_from_combo(combo),
                         .strategy = std::move(combo_strategy),
+                        .range_weight = reach_vectors[hero][combo],
+                        .reach_probability = reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
                         .ev = node_values[graph.root_node][combo]
                     });
                 }
@@ -2354,6 +2677,15 @@ namespace zeta::holdem::cli {
                     &public_game.chance_events,
                     &public_game.runouts,
                     node_strategies);
+                populate_solved_node_profiles(
+                    artifact,
+                    graph,
+                    annotations,
+                    average_strategy,
+                    reach_vectors,
+                    active_combos,
+                    node_reach,
+                    node_values_by_seat);
                 output.artifact = std::move(artifact);
                 output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - extraction_begin).count();
@@ -2537,17 +2869,21 @@ namespace zeta::holdem::cli {
             normalize_combo_action_table(lowered.graph, lowered.annotations, strategy_sums, average_strategy, active_combos);
             build_node_reach_vectors(lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach);
             const auto hero = static_cast<uint8_t>(spot.hero_seat);
-            evaluate_combo_profile(
-                lowered,
-                average_strategy,
-                reach_vectors,
-                active_combos,
-                node_reach,
-                cache,
-                base_indices,
-                hero,
-                node_values,
-                spot.samples_per_combo);
+            std::array<std::vector<reach_vector>, N> node_values_by_seat{};
+            for (uint8_t seat = 0; seat < N; ++seat) {
+                evaluate_combo_profile(
+                    lowered,
+                    average_strategy,
+                    reach_vectors,
+                    active_combos,
+                    node_reach,
+                    cache,
+                    base_indices,
+                    seat,
+                    node_values_by_seat[seat],
+                    spot.samples_per_combo);
+            }
+            node_values = node_values_by_seat[hero];
 
             solve_artifact artifact{};
             artifact.players.assign(spot.players.begin(), std::next(spot.players.begin(), N));
@@ -2601,6 +2937,8 @@ namespace zeta::holdem::cli {
                     .combination_index = combo,
                     .hand = hand_text_from_combo(combo),
                     .strategy = std::move(combo_strategy),
+                    .range_weight = reach_vectors[hero][combo],
+                    .reach_probability = reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
                     .ev = node_values[lowered.graph.root_node][combo]
                 });
             }
@@ -2646,6 +2984,15 @@ namespace zeta::holdem::cli {
                 nullptr,
                 nullptr,
                 node_strategies);
+            populate_solved_node_profiles(
+                artifact,
+                lowered.graph,
+                lowered.annotations,
+                average_strategy,
+                reach_vectors,
+                active_combos,
+                node_reach,
+                node_values_by_seat);
             output.artifact = std::move(artifact);
             output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - extraction_begin).count();
@@ -2989,13 +3336,34 @@ namespace zeta::holdem::cli {
                     .frequency = frequency
                 });
             }
-
-            terminal_context<N> terminal{};
-            terminal.gross_pot = spot.gross_pot;
-            terminal.rake = spot.rake;
-            for (std::size_t seat = 0; seat < N; ++seat) {
-                terminal.contribution[seat] = spot.contributions[seat];
+            combo_action_table average_strategy(*layout_result);
+            for (uint32_t infoset_id = 0; infoset_id < lowered_graph->infoset_count; ++infoset_id) {
+                const auto sums = strategy_sums.infoset_sums(infoset_id);
+                if (sums.empty()) {
+                    continue;
+                }
+                double positive = 0.0;
+                for (const auto value : sums) {
+                    positive += std::max(0.0f, value);
+                }
+                const auto fallback = 1.0f / static_cast<float>(sums.size());
+                for (combination_index combo = 0; combo < combination_count; ++combo) {
+                    for (std::size_t action_index = 0; action_index < sums.size(); ++action_index) {
+                        average_strategy.value(combo, infoset_id, static_cast<uint32_t>(action_index)) = positive > 0.0
+                            ? std::max(0.0f, sums[action_index]) / static_cast<float>(positive)
+                            : fallback;
+                    }
+                }
             }
+            const auto active_combos = active_combos_by_player(reach_vectors);
+            std::vector<std::array<reach_vector, N>> node_reach;
+            build_node_reach_vectors(
+                *lowered_graph,
+                *lowered_annotations,
+                average_strategy,
+                reach_vectors,
+                active_combos,
+                node_reach);
 
             const auto cache = make_river_terminal_cache(public_board);
             std::array<reach_vector, N> hero_reach{};
@@ -3004,17 +3372,20 @@ namespace zeta::holdem::cli {
                 hero_reach[seat] = reach_vectors[seat];
                 hero_indices[seat] = make_river_reach_index(cache, hero_reach[seat]);
             }
-            terminal_values<N> showdown_values{};
-            if constexpr (N == 2) {
-                showdown_values = evaluate_showdown(cache, hero_indices[0], hero_indices[1], terminal).values;
-            } else {
-                showdown_values = evaluate_showdown_values_multiplayer_sampled(
+            std::array<std::vector<reach_vector>, N> node_values_by_seat{};
+            for (uint8_t seat = 0; seat < N; ++seat) {
+                evaluate_combo_profile(
+                    lowered_storage,
+                    average_strategy,
+                    reach_vectors,
+                    active_combos,
+                    node_reach,
                     cache,
                     hero_indices,
-                    terminal,
+                    seat,
+                    node_values_by_seat[seat],
                     spot.samples_per_combo);
             }
-
             solve_artifact artifact{};
             artifact.players.assign(spot.players.begin(), std::next(spot.players.begin(), N));
             artifact.board = spot.board;
@@ -3042,10 +3413,21 @@ namespace zeta::holdem::cli {
                 if (reach_vectors[hero][combo] <= 0.0f) {
                     continue;
                 }
+                std::vector<action_strategy> combo_strategy;
+                combo_strategy.reserve(root_actions.size());
+                for (std::size_t action_index = 0; action_index < root_actions.size(); ++action_index) {
+                    combo_strategy.push_back(action_strategy{
+                        .action = root_strategy[action_index].action,
+                        .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
+                    });
+                }
                 artifact.strategy.push_back(hand_strategy{
                     .combination_index = combo,
                     .hand = hand_text_from_combo(combo),
-                    .ev = showdown_values[hero][combo]
+                    .strategy = std::move(combo_strategy),
+                    .range_weight = reach_vectors[hero][combo],
+                    .reach_probability = 1.0,
+                    .ev = node_values_by_seat[hero][lowered_graph->root_node][combo]
                 });
             }
             artifact.root_strategy = std::move(root_strategy);
@@ -3081,6 +3463,15 @@ namespace zeta::holdem::cli {
                 nullptr,
                 nullptr,
                 node_strategies);
+            populate_solved_node_profiles(
+                artifact,
+                *lowered_graph,
+                *lowered_annotations,
+                average_strategy,
+                reach_vectors,
+                active_combos,
+                node_reach,
+                node_values_by_seat);
             output.artifact = std::move(artifact);
 
             output.timing.extraction_ms = std::chrono::duration<double, std::milli>(

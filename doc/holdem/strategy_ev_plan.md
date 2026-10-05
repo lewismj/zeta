@@ -1488,7 +1488,7 @@ Across every extracted node, test suites assert:
 - [x] Phase 1.6 isolated algorithmic board-flush blocker rules (`nut_flush_blocker`, `second_nut_blocker`).
 - [x] Phase 2 exact river HU extraction pass with average-profile value extraction ($Q_{\text{profile}}, V_{\text{profile}}, A_{\text{profile}}$) and direct pre-sized flat buffer writing.
 - [x] Phase 2.5 differential validation (Production Result Store vs Oracle), bitwise determinism (Golden 6), and performance benchmarks.
-- [ ] Phase 3 full Schema v4 serializer/deserializer with export modes, explicit `seat_values`, deduplicated `public_states`, and versioned derived category summaries.
+- [x] Phase 3 full Schema v4 serializer/deserializer with export modes, explicit `seat_values`, deduplicated `public_states`, and versioned derived category summaries.
 - [ ] Phase 4 flop/turn exact HU runout evaluators and chance-node extraction contracts.
 - [ ] Phase 5 multiway exact equity evaluator with joint pot-share distribution conservation ($\sum_i E_i = 1$) and range interaction classification.
 - [ ] Phase 6 UI `solution_store` and `strategy_explorer` integration with category matrices and action EV inspection.

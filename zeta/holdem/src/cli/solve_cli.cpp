@@ -140,6 +140,17 @@ namespace zeta::holdem::cli {
             return number_value(*value, key);
         }
 
+        [[nodiscard]] std::expected<double, cli_error> required_double(
+            const json::object& object,
+            const std::string_view key)
+        {
+            const auto* value = find_value(object, key);
+            if (value == nullptr) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "Missing " + key_name(key) + " field."});
+            }
+            return number_value(*value, key);
+        }
+
         [[nodiscard]] std::expected<bool, cli_error> optional_bool(
             const json::object& object,
             const std::string_view key,
@@ -469,8 +480,94 @@ namespace zeta::holdem::cli {
             if (!ev) {
                 return std::unexpected(ev.error());
             }
+            auto range_weight = required_double(object, "range_weight");
+            if (!range_weight) {
+                return std::unexpected(range_weight.error());
+            }
+            auto reach_probability = required_double(object, "reach_probability");
+            if (!reach_probability) {
+                return std::unexpected(reach_probability.error());
+            }
+            row.range_weight = *range_weight;
+            row.reach_probability = *reach_probability;
             row.ev = *ev;
             return row;
+        }
+
+        [[nodiscard]] std::expected<solved_node_seat_value, cli_error> parse_solved_node_seat_value(const json::value& value)
+        {
+            if (!value.is_object()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.seat_values entries must be objects."});
+            }
+            const auto& object = value.as_object();
+            auto seat = required_uint<uint8_t>(object, "seat");
+            auto range_reach_mass = required_double(object, "range_reach_mass");
+            auto reach_weighted_value = required_double(object, "reach_weighted_value");
+            auto conditional_range_ev = required_double(object, "conditional_range_ev");
+            auto counterfactual_value = required_double(object, "counterfactual_value");
+            if (!seat) return std::unexpected(seat.error());
+            if (!range_reach_mass) return std::unexpected(range_reach_mass.error());
+            if (!reach_weighted_value) return std::unexpected(reach_weighted_value.error());
+            if (!conditional_range_ev) return std::unexpected(conditional_range_ev.error());
+            if (!counterfactual_value) return std::unexpected(counterfactual_value.error());
+            return solved_node_seat_value{
+                .seat = *seat,
+                .range_reach_mass = *range_reach_mass,
+                .reach_weighted_value = *reach_weighted_value,
+                .conditional_range_ev = *conditional_range_ev,
+                .counterfactual_value = *counterfactual_value
+            };
+        }
+
+        [[nodiscard]] std::expected<category_summary_item, cli_error> parse_category_summary_item(const json::value& value)
+        {
+            if (!value.is_object()) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::parse,
+                    "solved_nodes.derived.category_summaries.items entries must be objects."
+                });
+            }
+            const auto& object = value.as_object();
+            auto category_name = required_string(object, "category_name");
+            auto frequency = required_double(object, "frequency");
+            auto range_weight = required_double(object, "range_weight");
+            auto average_ev = required_double(object, "average_ev");
+            if (!category_name) return std::unexpected(category_name.error());
+            if (!frequency) return std::unexpected(frequency.error());
+            if (!range_weight) return std::unexpected(range_weight.error());
+            if (!average_ev) return std::unexpected(average_ev.error());
+
+            category_summary_item item{
+                .category_name = std::move(*category_name),
+                .frequency = *frequency,
+                .range_weight = *range_weight,
+                .average_ev = *average_ev
+            };
+            const auto* actions_value = find_value(object, "action_frequencies");
+            if (actions_value == nullptr || !actions_value->is_array()) {
+                return std::unexpected(cli_error{
+                    cli_error_kind::parse,
+                    "solved_nodes.derived.category_summaries.items.action_frequencies must be an array."
+                });
+            }
+            for (const auto& action_value : actions_value->as_array()) {
+                if (!action_value.is_object()) {
+                    return std::unexpected(cli_error{
+                        cli_error_kind::parse,
+                        "solved_nodes.derived.category_summaries.items.action_frequencies entries must be objects."
+                    });
+                }
+                const auto& action_object = action_value.as_object();
+                auto action_index = required_uint<uint16_t>(action_object, "action_index");
+                auto action_frequency = required_double(action_object, "frequency");
+                if (!action_index) return std::unexpected(action_index.error());
+                if (!action_frequency) return std::unexpected(action_frequency.error());
+                item.action_frequencies.push_back(category_summary_action_frequency{
+                    .action_index = *action_index,
+                    .frequency = *action_frequency
+                });
+            }
+            return item;
         }
 
         [[nodiscard]] std::expected<uint32_t, cli_error> nullable_uint32(
@@ -655,10 +752,57 @@ namespace zeta::holdem::cli {
                 row_object["combination_index"] = static_cast<uint64_t>(row.combination_index);
                 row_object["hand"] = row.hand;
                 row_object["strategy"] = action_strategy_json(row.strategy);
+                row_object["range_weight"] = row.range_weight;
+                row_object["reach_probability"] = row.reach_probability;
                 row_object["ev"] = row.ev;
                 rows.emplace_back(std::move(row_object));
             }
             return rows;
+        }
+
+        [[nodiscard]] json::array solved_node_seat_values_json(const std::vector<solved_node_seat_value>& seat_values)
+        {
+            json::array out;
+            out.reserve(seat_values.size());
+            for (const auto& seat_value : seat_values) {
+                json::object object;
+                object["seat"] = static_cast<uint64_t>(seat_value.seat);
+                object["range_reach_mass"] = seat_value.range_reach_mass;
+                object["reach_weighted_value"] = seat_value.reach_weighted_value;
+                object["conditional_range_ev"] = seat_value.conditional_range_ev;
+                object["counterfactual_value"] = seat_value.counterfactual_value;
+                out.emplace_back(std::move(object));
+            }
+            return out;
+        }
+
+        [[nodiscard]] json::object category_summaries_json(
+            const uint32_t derivation_version,
+            const std::vector<category_summary_item>& items)
+        {
+            json::array item_array;
+            item_array.reserve(items.size());
+            for (const auto& item : items) {
+                json::object item_object;
+                item_object["category_name"] = item.category_name;
+                item_object["frequency"] = item.frequency;
+                item_object["range_weight"] = item.range_weight;
+                item_object["average_ev"] = item.average_ev;
+                json::array action_frequencies;
+                action_frequencies.reserve(item.action_frequencies.size());
+                for (const auto& action : item.action_frequencies) {
+                    json::object action_object;
+                    action_object["action_index"] = static_cast<uint64_t>(action.action_index);
+                    action_object["frequency"] = action.frequency;
+                    action_frequencies.emplace_back(std::move(action_object));
+                }
+                item_object["action_frequencies"] = std::move(action_frequencies);
+                item_array.emplace_back(std::move(item_object));
+            }
+            json::object category_summaries;
+            category_summaries["derivation_version"] = static_cast<uint64_t>(derivation_version);
+            category_summaries["items"] = std::move(item_array);
+            return category_summaries;
         }
 
         [[nodiscard]] json::array public_states_json(const std::vector<solve_artifact_public_state>& states)
@@ -741,7 +885,14 @@ namespace zeta::holdem::cli {
                 object["board"] = string_array_json(node.board);
                 object["actions"] = solved_node_action_json(node.actions);
                 object["range_action_frequencies"] = action_strategy_json(node.range_action_frequencies);
-                if (mode == solve_artifact_export_mode::full) {
+                object["seat_values"] = solved_node_seat_values_json(node.seat_values);
+                json::object derived;
+                derived["category_summaries"] = category_summaries_json(
+                    node.category_summary_derivation_version,
+                    node.category_summaries);
+                object["derived"] = std::move(derived);
+                if (mode == solve_artifact_export_mode::full
+                    || (mode == solve_artifact_export_mode::standard && node.kind == "player")) {
                     object["strategy_rows"] = strategy_json(node.strategy_rows);
                 }
                 out.emplace_back(std::move(object));
@@ -1389,6 +1540,43 @@ namespace zeta::holdem::cli {
                         }
                         node.range_action_frequencies.push_back(std::move(*action));
                     }
+                }
+                const auto* seat_values_value = find_value(object, "seat_values");
+                if (seat_values_value == nullptr || !seat_values_value->is_array()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.seat_values must be an array."});
+                }
+                for (const auto& seat_value : seat_values_value->as_array()) {
+                    auto parsed_seat_value = parse_solved_node_seat_value(seat_value);
+                    if (!parsed_seat_value) {
+                        return std::unexpected(parsed_seat_value.error());
+                    }
+                    node.seat_values.push_back(std::move(*parsed_seat_value));
+                }
+                const auto* derived_value = find_value(object, "derived");
+                if (derived_value == nullptr || !derived_value->is_object()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.derived must be an object."});
+                }
+                const auto& derived_object = derived_value->as_object();
+                const auto* category_summaries_value = find_value(derived_object, "category_summaries");
+                if (category_summaries_value == nullptr || !category_summaries_value->is_object()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.derived.category_summaries must be an object."});
+                }
+                const auto& category_summaries_object = category_summaries_value->as_object();
+                auto derivation_version = required_uint<uint32_t>(category_summaries_object, "derivation_version");
+                if (!derivation_version) {
+                    return std::unexpected(derivation_version.error());
+                }
+                node.category_summary_derivation_version = *derivation_version;
+                const auto* category_items_value = find_value(category_summaries_object, "items");
+                if (category_items_value == nullptr || !category_items_value->is_array()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.derived.category_summaries.items must be an array."});
+                }
+                for (const auto& category_item : category_items_value->as_array()) {
+                    auto parsed_item = parse_category_summary_item(category_item);
+                    if (!parsed_item) {
+                        return std::unexpected(parsed_item.error());
+                    }
+                    node.category_summaries.push_back(std::move(*parsed_item));
                 }
                 if (const auto* rows_value = find_value(object, "strategy_rows"); rows_value != nullptr) {
                     if (!rows_value->is_array()) {
