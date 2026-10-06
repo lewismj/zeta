@@ -49,7 +49,8 @@ runtime combinatorics are needed in this path.
 ### 1.3 Non-flush path: canonical multiplicity layers
 
 For non-flush hands, suit identity is irrelevant; rank multiplicity is enough.
-The runtime derives four threshold layers:
+The runtime derives four threshold layers (where each layer is a threshold mask,
+not an exact multiplicity mask):
 
 - `ones`: rank appears at least once
 - `twos`: rank appears at least twice
@@ -93,8 +94,9 @@ index += quinary_dp[count][remaining_ranks][remaining_cards]
 remaining_cards -= count
 ```
 
-At runtime, the hot path avoids a full 13-step loop by splitting into
-`4 + 4 + 5` rank chunks and using generated chunk tables:
+At runtime, the evaluator performs $O(1)$ table lookups with small fixed arithmetic/bitwise work.
+The hot path avoids a full 13-step loop by splitting into `4 + 4 + 5` rank chunks and using generated
+chunk tables:
 
 - `quinary_chunk0` over ranks `0..3`
 - `quinary_chunk1` over ranks `4..7`
@@ -189,6 +191,8 @@ The key blocker-correction identity is:
 compatible_mass = total_mass - mass(card1) - mass(card2) + mass(exact_same_combo)
 ```
 
+where `mass(card)` is the total reach mass of opponent combos containing that card,
+and `mass(exact_same_combo)` is the mass of the unique two-card combo containing both cards.
 The final addend corrects double subtraction of the exact same two-card combo.
 
 ### 3.3 Numerical safety
@@ -201,11 +205,12 @@ point noise), while retaining assertions against materially invalid negatives.
 ### 4.1 Heads-up exact kernel (rank-bucket sweep)
 
 `evaluate_showdown_heads_up(...)` merges OOP/IP bucket streams by ascending
-`rank_key`. For each hero combo:
+`rank_key`. With `rank_order` / `rank_key` ascending from weakest to strongest hand rank,
+for each hero combo:
 
-1. lower compatible opponent mass is win mass
-2. equal compatible opponent mass is tie mass
-3. higher compatible opponent mass is loss mass
+1. buckets strictly below the hero bucket (lower compatible opponent mass) are wins
+2. equal buckets (equal compatible opponent mass) are ties
+3. buckets strictly above the hero bucket (higher compatible opponent mass) are losses
 
 Value is:
 
@@ -287,6 +292,8 @@ This guarantees traversal sees a coherent stochastic process.
 
 `lower_holdem_infoset_keys(...)` validates per-node descriptions and lowers
 shared keys to dense infoset ids, while preserving legal-action vectors.
+The action set represents legal actions after betting/action abstraction; all nodes
+sharing the same lowered infoset share the same lowered action layout.
 
 Separately, `make_action_table_layout(graph)` builds a contiguous infoset-major
 offset array:
@@ -309,7 +316,8 @@ p(a)  = 1 / |A|              otherwise
 
 Only legal actions for the current node participate (`edges` span).
 
-Per action strategy-sum increment in traversal:
+Average strategy accumulation uses the solver's configured realization-weighted
+convention. For combo `h` at actor `i`, the per-action strategy-sum increment in traversal is:
 
 ```text
 strategy_delta(a) += strategy_weight
@@ -320,8 +328,12 @@ strategy_delta(a) += strategy_weight
 
 Where:
 
+- `strategy_weight` is the configured iteration/range weighting
 - `chance_reach` is product of chance probabilities on path
-- `own_reach(actor)` is current actor's path reach
+- `own_reach(actor)` is current actor's path reach $\pi_i(n \mid h)$
+
+Note that while CFR regret updates scale by counterfactual reach of opponents ($\Pi_{-i} \cdot \pi_c$),
+average-strategy accumulation weights by realization reach ($\pi_i \cdot \pi_c$) and `strategy_weight`.
 
 ## 9. CFR value backup and regret updates
 
@@ -391,7 +403,7 @@ Each worker accumulates sparse local deltas (`table_delta_buffer`), then global
 tables are merged under a deterministic owner/range plan:
 
 1. infosets are assigned contiguous owner ranges
-2. reductions apply in a stable worker order
+2. reductions apply in a fixed owner/worker order, giving a deterministic floating-point accumulation order for a fixed worker partition and configuration
 3. diagnostics capture remote-routing and per-owner touched values/time
 
 This keeps runtime scaling while preserving deterministic merge semantics.
@@ -417,7 +429,7 @@ unsafe resume into a different graph/layout/configuration.
 - showdown -> showdown evaluator
 - fold -> fold evaluator
 
-Unsupported terminal kinds assert-fail by design in current implementation.
+Unsupported terminal kinds are treated as an internal invariant violation and currently fail via assertion; user-facing validation rejects unsupported terminal configurations before traversal.
 
 > [!NOTE]
 > The dispatch boundary means solver traversal can remain generic over `N` while
@@ -468,13 +480,13 @@ Let:
 - `i` be a seat index
 - `n` be a concrete game node in the solved game graph
 - `h` be a private combo for seat `i`
-- `a` be a legal action at the decision context of `n`
+- `a` be an action in the represented legal action set at `(n, h)` after betting/action abstraction
 - `z` be a terminal history
 
 Define domains:
 
 - `H_i(n)`: legal private combos for seat `i` at node `n`
-- `A(n, h)`: legal actions for `(n, h)` (same action set across the strategy context)
+- `A(n, h)`: legal actions for `(n, h)` (same action set across the lowered infoset strategy context)
 - `Z(n, h)`: terminal histories reachable from `(n, h)`
 
 For every represented combo:
@@ -492,7 +504,7 @@ Use the decomposition from the contract:
 ```text
 w0_i(h)        : initial range mass for seat i, combo h
 pi_i(n | h)    : seat i path reach to node n given h
-Pi_-i(n | h)   : product of all opponents' path reaches to n, conditioned on h
+Pi_-i(n | h)   : product of all opponents' path reaches to n, conditioned on hero holding h (including card-removal effects)
 pi_c(n)        : chance reach to n
 ```
 
@@ -507,6 +519,7 @@ Seat-level aggregates:
 
 ```text
 W_i(n) = range_reach_mass_i(n)
+       = Σ_{h in H_i(n)} range_reach_weight_i(n, h)
        = Σ_{h in H_i(n)} w0_i(h) * pi_i(n | h)
 
 J_i(n) = Σ_{h in H_i(n)} joint_reach_mass_i(n, h)
@@ -527,7 +540,9 @@ Q_profile_i(n, h, a)
 = E_{z ~ P(· | n, h, σ̄^{n,h→a})}[ u_i(z) ]
 ```
 
-This is a one-step deviation value with all downstream play frozen to `σ̄`.
+This is a one-step deviation value under the expectation over chance transitions,
+opponent strategy $\bar{\sigma}_{-i}$, future own strategy $\bar{\sigma}_i$, and terminal payoff/rake
+conventions, while only the current decision at `(n, h)` is intervened to action `a`.
 
 ### 15.4 Profile combo value and advantage
 
@@ -588,6 +603,8 @@ CFV_i(n)
 = Σ_{h in H_i(n)} w0_i(h) * Pi_-i(n|h) * pi_c(n) * V_profile_i(n,h)
 ```
 
+`Pi_-i(n|h)` includes the card-removal-conditioned opponent reach distribution induced by fixing hero combo `h`.
+
 The only difference versus `reach_weighted_ev` is conditioning:
 
 - `reach_weighted_ev` uses own path factor `pi_i`
@@ -609,45 +626,65 @@ CFV_i(n) = Σ_h w0_i(h) * ( Π_{k != i} pi_k(n|h) ) * pi_c(n) * V_profile_i(n,h)
 
 ### 15.8 Showdown equity vs strategic EV
 
-For seat `i`, combo `h`, node `n`, pot-share showdown equity is:
+For seat `i`, combo `h`, node `n`, pot-share showdown equity is evaluated over all
+mutually compatible joint opponent combo assignments $h_{-i} = (h_j)_{j \neq i}$:
 
 ```text
-Equity_i(n,h)
-=
-  [ Σ_{h' compatible with h} μ_-i(n,h') * share_i(h,h') ]
-  / [ Σ_{h' compatible with h} μ_-i(n,h') ]
+μ_-i(n, h_-i)
+= P(initial opponent combo assignment h_-i) * P(reach n | h, h_-i)
 ```
 
-where:
+Then:
 
 ```text
-μ_-i(n,h') = w0_-i(h') * pi_-i(n|h')
+Equity_i(n, h)
+= [ Σ_{h_-i compatible with h} μ_-i(n, h_-i) * share_i(h, h_-i) ]
+  / [ Σ_{h_-i compatible with h} μ_-i(n, h_-i) ]
 ```
 
-and `share_i(h,h')` is 1 for win, 1/2 for tie (HU), 0 for loss (generalized to
-fractional tie share in N-way).
+For heads-up ($N = 2$), this reduces to the single-opponent marginal:
+
+```text
+μ_-i(n, h') = w0_-i(h') * pi_-i(n | h')
+```
+
+where `share_i(h, h')` is 1 for win, 1/2 for tie, and 0 for loss. In $N$-way ($N > 2$), `share_i(h, h_-i)`
+is the exact fractional pot share partitioned across eligible winners.
 
 This is not betting EV; it is no-further-betting pot share under the reaching
 distribution.
 
 ### 15.9 Conservation identities
 
-For heads-up zero-sum terminal conventions:
+For a fixed public node $n$ and compatible joint private-hand distribution, zero-sum conservation
+holds at the joint-state / jointly weighted level:
 
 ```text
-V_profile_0(n, ·) + V_profile_1(n, ·) = 0
+Σ_{h_0, h_1 compatible} P(h_0, h_1 | n) [ V_0(n, h_0, h_1) + V_1(n, h_0, h_1) ] = 0
 ```
 
-at aligned conditioning (up to rake model and floating-point tolerance).
+Equivalently, integrating over the joint reach distribution:
 
-For equity:
+```text
+U_0(n) + U_1(n) = 0       (without rake)
+U_0(n) + U_1(n) = -rake(n) (with rake)
+```
+
+where:
+
+```text
+U_i(n) = Σ_{h in H_i(n)} P(h | n) * V_profile_i(n, h)
+```
+
+Pointwise unweighted combo EVs $V\_profile\_0(n, h_0) + V\_profile\_1(n, h_1)$ do not sum to zero
+because they are conditioned on differing private hands and opponent distributions.
+
+For normalized showdown pot-share equity with fractional ties:
 
 ```text
 HU:    Equity_0 + Equity_1 = 1
 N-way: Σ_i Equity_i = 1
 ```
-
-with fractional tie splitting.
 
 ### 15.10 Regret-matching and extracted profile relationship
 
@@ -666,8 +703,14 @@ weighted average over iterations:
 σ̄(a|I,h) = [ Σ_t w_t * σ_t(a|I,h) ] / [ Σ_t w_t ]
 ```
 
+where $w_t(n, h)$ is the realization-weight assigned to the strategy context:
+
+```text
+w_t(n, h) = strategy_weight * w0_i(h) * pi_i^t(n | h) * pi_c^t(n)
+```
+
 The extraction math (`Q_profile`, `V_profile`, `A_profile`) is evaluated on that
-frozen `σ̄`.
+frozen average profile `σ̄`.
 
 ### 15.11 Exploitability and NashConv linkage
 
@@ -679,6 +722,8 @@ Exploitability = NashConv / 2
 ```
 
 where `BR_i` is best-response value for seat `i` and `u_i(σ̄)` is profile value.
+This definition assumes the same utility normalization and player-perspective convention
+are used for both `BR_i` and `u_i`.
 
 In multiway or unsupported exact BR paths, normalized regret is reported instead
 of exact exploitability, consistent with the solver metadata contract.
@@ -690,7 +735,7 @@ The extraction/store surfaces correspond directly to the math:
 | Stored field | Mathematical quantity |
 |---|---|
 | `combo_reach_entry.range_weight` | `w0_i(h)` |
-| `combo_reach_entry.reach_probability` | `pi_i(n|h)` |
+| `combo_reach_entry.reach_probability` | `pi_i(n\|h)` |
 | `combo_value_entry.combo_profile_value` | `V_profile_i(n,h)` |
 | `action_value_entry.q_profile` | `Q_profile_i(n,h,a)` |
 | `action_value_entry.profile_advantage` | `A_profile_i(n,h,a)` |

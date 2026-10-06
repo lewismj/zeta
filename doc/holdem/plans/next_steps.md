@@ -95,7 +95,13 @@ Delivered tests:
 Why it matters: users need to know whether a strategy is stable enough to trust.
 This is more valuable than simply running more iterations blindly.
 
-## 3. Strategy and EV result surfaces
+## 3. Strategy and EV result surfaces (delivered)
+
+**Status: Delivered.** Solved-node outputs now expose the full strategy/EV
+inspection surfaces needed for postflop analysis workflows: per-node action
+frequencies, per-hand strategy/EV/equity, range-level EV by player, action EV
+and regret summaries, hand-category aggregation, and versioned solved-node JSON
+payloads.
 
 The solver should emit enough structured data for detailed inspection, not just
 a flat hand/action table.
@@ -129,6 +135,8 @@ Core deliverables:
 Why it matters: users often want to answer exploitative questions: "What if
 villain over-folds?", "What if BTN never raises?", or "How should OOP respond to
 this population strategy?"
+
+Detailed phased implementation plan: [`node_locking_plan.md`](node_locking_plan.md).
 
 ## 5. Range editing beyond preflop syntax
 
@@ -199,14 +207,14 @@ accurate per-node strategy and EV data first.
 
 1. Per-street betting expansion for flop/turn solves. (delivered)
 2. Robust convergence and exploitability reporting.
-3. Strategy and EV result surfaces.
+3. Strategy and EV result surfaces. (delivered)
 4. Node locking.
 5. Postflop range tools.
 6. Saved spot library and solve cache.
 7. Compare mode and reports.
 8. Trainer/drill mode.
 
-The first four items are the core solver foundation; item 1 is delivered, so
-convergence reporting, EV/strategy result surfaces, and node locking are what
-remain of it. Items five through eight are what make the solver feel like a
-complete analysis product.
+The first four items are the core solver foundation; items 1 through 3 are now
+delivered, leaving node locking as the final remaining core-solver foundation
+step. Items five through eight are what make the solver feel like a complete
+analysis product.
