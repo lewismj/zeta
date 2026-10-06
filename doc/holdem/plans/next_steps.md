@@ -192,16 +192,74 @@ behavior.
 
 Training should come after the solver result surfaces are strong.
 
-Core deliverables:
+### Architectural Assessment: Dedicated Engine/Module
 
-- sample decision nodes from solved studies
-- ask the user for an action/frequency
-- score by EV loss and frequency match
-- filter drills by street, position, pot type, or hand category
-- spaced repetition over missed spots
+Item 8 should have its own dedicated engine/module (`zeta::trainer` / `libzeta_trainer`), designed as a lightweight **Training & Simulation Engine** that consumes solved game artifacts rather than another numerical CFR solver.
 
-Why it matters: this turns solver output into study workflow, but it depends on
-accurate per-node strategy and EV data first.
+To keep Zeta clean, performant, and maintainable, Item 8 should not duplicate CFR/solver logic, nor should it be tightly coupled to the UI layer.
+
+#### 1. Why a Separate Engine/Module is Necessary
+
+A trainer mode has entirely different responsibilities, runtime lifecycles, and state management compared to the CFR solver engine:
+
+| Characteristic | Core CFR Solver Engine (`zeta::solver`) | Trainer / Drill Engine (`zeta::trainer`) |
+| :--- | :--- | :--- |
+| **Primary Goal** | Compute equilibrium strategies, EVs, and counterfactual regrets via CFR+ iterations. | Sample game states, validate user choices, track drill sessions, and evaluate EV loss. |
+| **Workload Type** | Compute-heavy, multi-threaded numerical batch processing. | Interactive, low-latency, stateful turn-by-turn game simulation and scoring. |
+| **Inputs** | Raw game parameters (ranges, board, tree configuration, stopping criteria). | Solved game trees / artifacts (from Item 3 & Item 6), drill configuration/filters. |
+| **Outputs** | Strategy tensors, reach probabilities, exploitability metrics, EV tables. | Feedback metrics (EV loss, blunders, frequency divergence), user session stats, drill queues. |
+
+Placing drill logic directly into the solver engine would pollute the numerical CFR core, while placing it directly inside Qt UI widgets would make drills impossible to test headless, script via CLI, or reuse across web/desktop frontends.
+
+#### 2. Core Responsibilities of the Trainer Engine
+
+The trainer engine should be structured around three primary functional subsystems:
+
+- **A. Spot & Node Sampling Engine:**
+  - **Tree Traversal & Node Filtering:** Filter nodes across solved spots by criteria (e.g., Street: Turn, Pot Type: Single Raised Pot, Position: OOP Check-Raise, Texture: Monotone boards, Hand Class: Nut Flush Draw).
+  - **Probability-Weighted State Sampling:** Sample deal runouts and villain actions according to equilibrium reach probabilities (or custom villain profile distributions).
+- **B. Decision Evaluator & Scoring Engine:**
+  - **EV Loss Calculation:** Compute $\Delta\text{EV} = \text{EV}(\text{optimal}) - \text{EV}(\text{action chosen})$.
+  - **Mixed Frequency Scoring:** Score user decisions based on strategy distribution overlap (e.g., comparing user's chosen frequency vs. solver's equilibrium mixing frequency).
+  - **Blunder & Inaccuracy Classification:** Classify decisions using standard thresholds (e.g., Best Action, Acceptable Alternative, Inaccuracy (< 0.25 bb), Mistake (0.25 - 1.0 bb), Blunder (> 1.0 bb)).
+- **C. Session & Practice Progression (SRS) Engine:**
+  - **Spaced Repetition System (SRS):** Track error history per spot category/pattern and requeue failed hands for future practice sessions.
+  - **Session State & History:** Record history of drills, user streaks, aggregate EV lost, and accuracy percentages.
+
+#### 3. Recommended Architectural Integration in Zeta
+
+```text
+┌────────────────────────────────────────────────────────┐
+│                   User Interfaces                      │
+│        (Qt GUI Drill Widget / CLI Interactive Tool)    │
+└───────────────────────────┬────────────────────────────┘
+                            │ (Events & User Actions)
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│             Trainer Engine (`zeta_trainer`)            │
+│  - Spot & Hand Sampler (Board/Runout/Action sampling)  │
+│  - Session Manager & SRS / Mistake Queue               │
+│  - Evaluation & Scoring (EV Loss, Blunder flags)       │
+└──────────────┬──────────────────────────┬──────────────┘
+               │                          │
+               ▼                          ▼
+┌──────────────────────────────┐ ┌──────────────────────────────┐
+│  Spot Library & Cache        │ │  Result Surfaces & Data      │
+│  (`zeta_library` / Item 6)   │ │  (`zeta_artifacts` / Item 3) │
+│  - Pre-solved trees          │ │  - Per-node strategy / EV    │
+│  - Canonical spot queries    │ │  - Hand categories / equity  │
+└──────────────────────────────┘ └──────────────────────────────┘
+```
+
+### Core Deliverables
+
+- Separate standalone engine/library (`libzeta_trainer` / `zeta::trainer`) decoupled from CFR solving and UI widgets
+- Spot & node sampling across solved studies with probability weighting (deal runouts, villain actions)
+- Evaluation and scoring by EV loss, strategy mixing fidelity, and blunder/mistake classification
+- Filter drills by street, position, pot type, board texture, or hand category
+- Session tracking and Spaced Repetition System (SRS) over missed spots and blunder queues
+
+Why it matters: this turns solver output into an interactive study and practice workflow, while maintaining modularity and headless testability by consuming solved artifacts without solver coupling.
 
 ## Recommended implementation order
 
