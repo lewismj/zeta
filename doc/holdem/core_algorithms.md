@@ -2,6 +2,10 @@
 
 This document describes the major algorithms used by Hold'em runtime paths: evaluation, terminal value computation, and CFR iteration.
 
+> [!NOTE]
+> For the full mathematics and implementation-level walkthrough, see
+> [Hold'em Core Algorithms: Maths and Implementation Deep Dive](core_algorithms_deep_dive.md).
+
 ## 1. 7-card hand evaluation
 
 The evaluator uses a two-path design:
