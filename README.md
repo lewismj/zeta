@@ -20,8 +20,8 @@ can be used to implement trick taking card games. The Texas Hold'em module has i
 
 The Hold'em module currently includes a lookup-based native 7-card evaluator and supporting card/board structures.
 
+- [Core algorithms (math + implementation deep dive)](doc/holdem/core_algorithms_deep_dive.md)
 - [Core structures](doc/holdem/core_structures.md)
-- [Core algorithms](doc/holdem/core_algorithms.md)
 - [Lookup-based 7-card evaluator](doc/holdem/post_flop_hand_evaluator.md)
 - [PokerStove-compatible range parser](doc/holdem/range_parser.md)
 - [River terminal evaluator](doc/holdem/terminal_evaluator.md)
