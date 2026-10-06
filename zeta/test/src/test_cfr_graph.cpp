@@ -1452,6 +1452,93 @@ BOOST_AUTO_TEST_CASE(holdem_infoset_layout_hash_is_stable_and_action_sensitive) 
     BOOST_CHECK_EQUAL(dense_layout->value_count(), lhs->legal_action_ids.size());
 }
 
+BOOST_AUTO_TEST_CASE(holdem_infoset_lowering_preserves_private_card_separation_and_hidden_state_aliasing) {
+    {
+        // Golden 8 (part A): two otherwise-identical nodes with different hero
+        // private classes must map to different dense infosets.
+        graph_builder builder;
+        const auto root = builder.add_node(node_kind::chance);
+        const auto hero_a = builder.add_node(node_kind::player);
+        const auto hero_b = builder.add_node(node_kind::player);
+        const auto terminal_a = builder.add_node(node_kind::terminal);
+        const auto terminal_b = builder.add_node(node_kind::terminal);
+        builder.add_edge(root, hero_a, 0);
+        builder.add_edge(root, hero_b, 1);
+        builder.add_edge(hero_a, terminal_a, 0);
+        builder.add_edge(hero_b, terminal_b, 0);
+        builder.set_infoset_id(hero_a, 0);
+        builder.set_infoset_id(hero_b, 1);
+        std::vector<uint32_t> remap;
+        auto graph_result = builder.build(remap);
+        BOOST_REQUIRE(graph_result.has_value());
+        auto graph = std::move(*graph_result);
+        const auto hero_a_node = remap[hero_a];
+        const auto hero_b_node = remap[hero_b];
+
+        holdem_infoset_key key_a = test_infoset_key(0, 2, 5);
+        holdem_infoset_key key_b = test_infoset_key(0, 2, 5);
+        key_a.private_hand_class_id = 101u;
+        key_b.private_hand_class_id = 202u;
+
+        std::vector<holdem_infoset_description> descriptions{
+            holdem_infoset_description{
+                .node_id = hero_a_node,
+                .key = key_a,
+                .owner_id = 0,
+                .legal_action_ids = legal_action_ids_for_node(graph, hero_a_node)
+            },
+            holdem_infoset_description{
+                .node_id = hero_b_node,
+                .key = key_b,
+                .owner_id = 0,
+                .legal_action_ids = legal_action_ids_for_node(graph, hero_b_node)
+            }
+        };
+
+        auto lowering = lower_holdem_infoset_keys<2>(graph, descriptions, 1);
+        BOOST_REQUIRE(lowering.has_value());
+        BOOST_REQUIRE(validate_holdem_infoset_lowering(graph, *lowering).has_value());
+        BOOST_CHECK_EQUAL(lowering->infoset_count(), 2u);
+        BOOST_CHECK_NE(lowering->dense_id_by_node[hero_a_node], lowering->dense_id_by_node[hero_b_node]);
+    }
+
+    {
+        // Golden 8 (part B): changing hidden opponent state while hero private
+        // class is unchanged must preserve infoset aliasing.
+        auto graph = create_shared_infoset_tree();
+        std::vector<uint32_t> player_nodes;
+        for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+            if (graph.is_player_node(node_id)) {
+                player_nodes.push_back(node_id);
+            }
+        }
+        BOOST_REQUIRE_EQUAL(player_nodes.size(), 2u);
+
+        holdem_infoset_key shared_key = test_infoset_key(0, 2, 5);
+        shared_key.private_hand_class_id = 303u;
+        std::vector<holdem_infoset_description> descriptions{
+            holdem_infoset_description{
+                .node_id = player_nodes[0],
+                .key = shared_key,
+                .owner_id = 0,
+                .legal_action_ids = legal_action_ids_for_node(graph, player_nodes[0])
+            },
+            holdem_infoset_description{
+                .node_id = player_nodes[1],
+                .key = shared_key,
+                .owner_id = 0,
+                .legal_action_ids = legal_action_ids_for_node(graph, player_nodes[1])
+            }
+        };
+
+        auto lowering = lower_holdem_infoset_keys<2>(graph, descriptions, 1);
+        BOOST_REQUIRE(lowering.has_value());
+        BOOST_REQUIRE(validate_holdem_infoset_lowering(graph, *lowering).has_value());
+        BOOST_CHECK_EQUAL(lowering->infoset_count(), 1u);
+        BOOST_CHECK_EQUAL(lowering->dense_id_by_node[player_nodes[0]], lowering->dense_id_by_node[player_nodes[1]]);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(holdem_infoset_lowering_rejects_conflicting_shared_infoset_identity) {
     auto graph = create_shared_infoset_tree();
     std::vector<uint32_t> player_nodes;

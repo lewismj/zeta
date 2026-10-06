@@ -467,6 +467,15 @@ BOOST_AUTO_TEST_CASE(holdem_cli_phase3_roundtrips_node_surfaces) {
     for (std::size_t i = 0; i < output->artifact.solved_nodes.size(); ++i) {
         const auto& lhs = output->artifact.solved_nodes[i];
         const auto& rhs = parsed->solved_nodes[i];
+        BOOST_CHECK_EQUAL(rhs.node_id, lhs.node_id);
+        BOOST_CHECK_EQUAL(rhs.kind, lhs.kind);
+        BOOST_CHECK_EQUAL(rhs.public_state_id, lhs.public_state_id);
+        BOOST_CHECK_EQUAL(rhs.parent_node_id, lhs.parent_node_id);
+        BOOST_CHECK_EQUAL(rhs.acting_seat, lhs.acting_seat);
+        BOOST_CHECK_EQUAL(rhs.terminal, lhs.terminal);
+        BOOST_CHECK(rhs.board == lhs.board);
+        BOOST_CHECK_EQUAL(rhs.actions.size(), lhs.actions.size());
+        BOOST_CHECK_EQUAL(rhs.range_action_frequencies.size(), lhs.range_action_frequencies.size());
         BOOST_CHECK_EQUAL(rhs.seat_values.size(), lhs.seat_values.size());
         BOOST_CHECK_EQUAL(rhs.category_summary_derivation_version, 1u);
         BOOST_CHECK_EQUAL(rhs.category_summary_derivation_version, lhs.category_summary_derivation_version);
@@ -478,6 +487,55 @@ BOOST_AUTO_TEST_CASE(holdem_cli_phase3_roundtrips_node_surfaces) {
             BOOST_CHECK_CLOSE(rhs.seat_values[seat].reach_weighted_value, lhs.seat_values[seat].reach_weighted_value, 1e-7);
             BOOST_CHECK_CLOSE(rhs.seat_values[seat].conditional_range_ev, lhs.seat_values[seat].conditional_range_ev, 1e-7);
             BOOST_CHECK_CLOSE(rhs.seat_values[seat].counterfactual_value, lhs.seat_values[seat].counterfactual_value, 1e-7);
+        }
+        for (std::size_t action = 0; action < lhs.actions.size(); ++action) {
+            BOOST_CHECK_EQUAL(rhs.actions[action].action, lhs.actions[action].action);
+            BOOST_CHECK_EQUAL(rhs.actions[action].child_node_id, lhs.actions[action].child_node_id);
+            BOOST_CHECK_EQUAL(rhs.actions[action].action_index, lhs.actions[action].action_index);
+            BOOST_CHECK_CLOSE(rhs.actions[action].probability, lhs.actions[action].probability, 1e-7);
+            BOOST_CHECK_EQUAL(rhs.actions[action].chance_event_id, lhs.actions[action].chance_event_id);
+            BOOST_CHECK_EQUAL(rhs.actions[action].board_partition_id, lhs.actions[action].board_partition_id);
+            BOOST_CHECK_EQUAL(rhs.actions[action].chance_outcome_id, lhs.actions[action].chance_outcome_id);
+            BOOST_CHECK(rhs.actions[action].dealt_cards == lhs.actions[action].dealt_cards);
+        }
+        for (std::size_t action = 0; action < lhs.range_action_frequencies.size(); ++action) {
+            BOOST_CHECK_EQUAL(rhs.range_action_frequencies[action].action, lhs.range_action_frequencies[action].action);
+            BOOST_CHECK_CLOSE(rhs.range_action_frequencies[action].frequency, lhs.range_action_frequencies[action].frequency, 1e-7);
+        }
+        for (std::size_t category = 0; category < lhs.category_summaries.size(); ++category) {
+            BOOST_CHECK_EQUAL(rhs.category_summaries[category].category_name, lhs.category_summaries[category].category_name);
+            BOOST_CHECK_CLOSE(rhs.category_summaries[category].frequency, lhs.category_summaries[category].frequency, 1e-7);
+            BOOST_CHECK_CLOSE(rhs.category_summaries[category].range_weight, lhs.category_summaries[category].range_weight, 1e-7);
+            BOOST_CHECK_CLOSE(rhs.category_summaries[category].average_ev, lhs.category_summaries[category].average_ev, 1e-7);
+            BOOST_CHECK_EQUAL(
+                rhs.category_summaries[category].action_frequencies.size(),
+                lhs.category_summaries[category].action_frequencies.size());
+            for (std::size_t freq = 0; freq < lhs.category_summaries[category].action_frequencies.size(); ++freq) {
+                BOOST_CHECK_EQUAL(
+                    rhs.category_summaries[category].action_frequencies[freq].action_index,
+                    lhs.category_summaries[category].action_frequencies[freq].action_index);
+                BOOST_CHECK_CLOSE(
+                    rhs.category_summaries[category].action_frequencies[freq].frequency,
+                    lhs.category_summaries[category].action_frequencies[freq].frequency,
+                    1e-7);
+            }
+        }
+        for (std::size_t row = 0; row < lhs.strategy_rows.size(); ++row) {
+            BOOST_CHECK_EQUAL(rhs.strategy_rows[row].combination_index, lhs.strategy_rows[row].combination_index);
+            BOOST_CHECK_EQUAL(rhs.strategy_rows[row].hand, lhs.strategy_rows[row].hand);
+            BOOST_CHECK_CLOSE(rhs.strategy_rows[row].range_weight, lhs.strategy_rows[row].range_weight, 1e-7);
+            BOOST_CHECK_CLOSE(rhs.strategy_rows[row].reach_probability, lhs.strategy_rows[row].reach_probability, 1e-7);
+            BOOST_CHECK_CLOSE(rhs.strategy_rows[row].ev, lhs.strategy_rows[row].ev, 1e-7);
+            BOOST_CHECK_EQUAL(rhs.strategy_rows[row].strategy.size(), lhs.strategy_rows[row].strategy.size());
+            for (std::size_t action = 0; action < lhs.strategy_rows[row].strategy.size(); ++action) {
+                BOOST_CHECK_EQUAL(
+                    rhs.strategy_rows[row].strategy[action].action,
+                    lhs.strategy_rows[row].strategy[action].action);
+                BOOST_CHECK_CLOSE(
+                    rhs.strategy_rows[row].strategy[action].frequency,
+                    lhs.strategy_rows[row].strategy[action].frequency,
+                    1e-7);
+            }
         }
     }
 }

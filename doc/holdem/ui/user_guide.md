@@ -108,7 +108,7 @@ The **Spot Builder** provides templates for common starting points:
 | **Hero** | Seat used for hero-centered artifact metadata and EV display. |
 | **Gross pot** | Total pot before rake. Must be positive. |
 | **Rake** | Rake removed from the pot. Must be between zero and gross pot. |
-| **Bet size** | Compatibility/fallback pot-fraction field. In normal use this mirrors the first configured betting fraction. |
+| **Bet size** | Single-size pot-fraction shorthand. Mirrors the first configured betting fraction. |
 | **Max history** | Betting-history cap used when building the game tree. |
 | **Public state** | User-defined public-state identifier stored with the spot. |
 | **Samples/combo** | Sampling budget for multiplayer/pre-river terminal estimation. Higher values reduce variance and increase runtime. |

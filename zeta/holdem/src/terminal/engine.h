@@ -112,7 +112,7 @@ namespace zeta::holdem {
         }
     };
 
-    /** Heads-up convenience overloads for engine callers that keep the legacy two-range style. */
+    /** Heads-up convenience overloads for two-range engine callers. */
     template <>
     struct terminal_engine<2> {
         [[nodiscard]] static constexpr terminal_kernel_family kernel_family() noexcept {

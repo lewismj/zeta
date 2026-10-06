@@ -1355,6 +1355,10 @@ To streamline implementation and establish clear architectural boundaries, the m
   1. Update `solution_store` to consume Result Store non-owning views directly.
   2. Category-filtered matrix views and action EV inspectors.
   3. Graceful UI degradation for non-exact or abstracted solves.
+- **Implementation status**:
+  - `strategy_explorer` renders category-filtered matrix cells, exact-combo inspection tables, and action-frequency/EV summaries with solve metadata.
+  - `solution_store` round-trip coverage validates the current schema without backward-compatibility shims.
+  - UI behavior is covered by widget-level tests for action-tree navigation and root-node-only combo strategy rendering when deeper node combo strategy is unavailable.
 
 ---
 
@@ -1490,7 +1494,7 @@ Across every extracted node, test suites assert:
 - [x] Phase 0.1 extensive-form information set $I(\mathcal{S}, h)$ and range strategy context $\mathcal{S}$ (`strategy_context_id`) formalization.
 - [x] Phase 0.2 reach and conditioning precision contracts (derived `range_reach_weight` in `double`).
 - [x] Phase 0.3 local one-step intervention $Q_{\text{profile}}$ and counterfactual value $CFV$ conditioning contracts.
-- [ ] Phase 0.5 standalone reference evaluator oracle (`test_reference_evaluator.cpp`) using recursive traversal and plain enumeration on semantic inputs without sharing production logic.
+- [x] Phase 0.5 standalone reference evaluator oracle using recursive traversal and plain enumeration on semantic inputs without sharing production logic (implemented as embedded oracle routines in `zeta/test/src/test_extraction_contract.cpp`, with terminal parity coverage in `zeta/test/src/test_holdem.cpp`).
 - [x] Phase 1 Result Store skeleton with contiguous offset-indexed memory layout, `node_record`, `strategy_surface_record`, `seat_value`, `node_view` traversal, strategy storage aliasing, and memory footprint budgets ($74.88\text{ KB}$ per 2-action node including fixed record headers).
 - [x] Phase 1.1 Schema v4 DTO definitions and deterministic projection contract (`summary`, `standard`, `full` modes, canonical `"combination_index"`).
 - [x] Phase 1.5 `eval/categorizer.h` with 10-window straight engine ($W_0 \dots W_9$, `straight_draw_info`), paired-board `pair_source` & `pair_position` truth table, deterministic live-rank `kicker_quality` (Zeta intrinsic kicker classification), and `static_assert(sizeof(hand_category_classification) == 8)`.
@@ -1500,5 +1504,5 @@ Across every extracted node, test suites assert:
 - [x] Phase 3 full Schema v4 serializer/deserializer with export modes, explicit `seat_values`, deduplicated `public_states`, and versioned derived category summaries.
 - [x] Phase 4 flop/turn exact HU runout evaluators and chance-node extraction contracts.
 - [x] Phase 5 multiway exact equity evaluator with joint pot-share distribution conservation ($\sum_i E_i = 1$) and range interaction classification.
-- [ ] Phase 6 UI `solution_store` and `strategy_explorer` integration with category matrices and action EV inspection.
-- [ ] Comprehensive Golden test suite covering Golden 1–9 fixtures (per-combo equity matrices, mixed strategy identities, zero-reach preservation, shared-infoset aliasing, private-card separation, strategy storage aliasing, bitwise determinism, and artifact round-trip).
+- [x] Phase 6 UI `solution_store` and `strategy_explorer` integration with category matrices and action EV inspection.
+- [x] Comprehensive Golden test suite covering Golden 1–9 fixtures (per-combo equity matrices, mixed strategy identities, zero-reach preservation, shared-infoset aliasing, private-card separation, strategy storage aliasing, bitwise determinism, and artifact round-trip).

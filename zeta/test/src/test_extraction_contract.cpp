@@ -1067,6 +1067,130 @@ BOOST_AUTO_TEST_CASE(river_hu_extraction_aliases_shared_infoset_strategy_surface
     BOOST_CHECK_CLOSE(extracted->node(1).values().range_reach_mass(), 1.0, 0.001);
 }
 
+BOOST_AUTO_TEST_CASE(river_hu_extraction_shared_infoset_keeps_strategy_aliased_with_independent_node_values)
+{
+    namespace cfr = zeta::holdem::cfr;
+
+    cfr::graph_builder builder;
+    const auto root = builder.add_node(cfr::node_kind::player);
+    const auto lhs_player = builder.add_node(cfr::node_kind::player);
+    const auto rhs_player = builder.add_node(cfr::node_kind::player);
+    const auto lhs_terminal = builder.add_node(cfr::node_kind::terminal);
+    const auto rhs_terminal = builder.add_node(cfr::node_kind::terminal);
+    builder.add_edge(root, lhs_player, 0);
+    builder.add_edge(root, rhs_player, 1);
+    builder.add_edge(lhs_player, lhs_terminal, 0);
+    builder.add_edge(rhs_player, rhs_terminal, 0);
+    builder.set_infoset_id(root, 0);
+    builder.set_infoset_id(lhs_player, 1);
+    builder.set_infoset_id(rhs_player, 1);
+    std::vector<uint32_t> remap;
+    auto graph_result = builder.build(remap);
+    BOOST_REQUIRE_MESSAGE(graph_result.has_value(), zeta::holdem::cfr::to_string(graph_result.error().kind));
+    auto graph = std::move(*graph_result);
+    const auto root_id = remap[root];
+    const auto lhs_player_id = remap[lhs_player];
+    const auto rhs_player_id = remap[rhs_player];
+    const auto lhs_terminal_id = remap[lhs_terminal];
+    const auto rhs_terminal_id = remap[rhs_terminal];
+
+    cfr::action_table_layout layout;
+    layout.action_offsets = {0, 2, 3};
+    cfr::strategy_sum_table strategy_sums(layout);
+    strategy_sums.value(0, 0) = 8.0f; // Root sends more reach to lhs_player.
+    strategy_sums.value(0, 1) = 2.0f;
+    strategy_sums.value(1, 0) = 1.0f; // Shared one-action infoset for lhs/rhs.
+
+    const auto board = extraction_test_river_board();
+    const auto cache = zeta::holdem::make_river_terminal_cache(board);
+    const auto [oop_combo, ip_combo] = first_extraction_compatible_live_combos(cache);
+    zeta::holdem::reach_vector oop_range{};
+    zeta::holdem::reach_vector ip_range{};
+    oop_range[oop_combo] = 1.0f;
+    ip_range[ip_combo] = 1.0f;
+
+    zeta::holdem::terminal_state_table<2> terminal_states;
+    const auto context = zeta::holdem::make_heads_up_context(180.0, 0.0, 45.0, 45.0);
+    terminal_states.states.push_back(zeta::holdem::make_showdown_terminal_state(context));
+    terminal_states.states.push_back(zeta::holdem::make_fold_terminal_state(context, zeta::holdem::heads_up_player::ip));
+
+    std::vector<cfr::traversal::river_terminal_leaf> terminal_leaves(graph.node_count);
+    terminal_leaves[lhs_terminal_id] = cfr::traversal::river_terminal_leaf{0}; // showdown
+    terminal_leaves[rhs_terminal_id] = cfr::traversal::river_terminal_leaf{1}; // opponent fold
+
+    cfr::solver::solver_graph_annotations annotations;
+    annotations.actor_by_node.assign(graph.node_count, cfr::solver::INVALID_PLAYER);
+    annotations.actor_by_node[root_id] = 1u; // Opponent chooses path reach.
+    annotations.actor_by_node[lhs_player_id] = 0u;
+    annotations.actor_by_node[rhs_player_id] = 0u;
+    annotations.state_by_node.assign(graph.node_count, cfr::solver::solver_node_state_metadata{
+        .street = cfr::solver::holdem_street::river,
+        .public_state_id = 37u,
+        .betting_state_id = 0u
+    });
+
+    auto extracted = extract_river_heads_up_result_store(river_heads_up_extraction_input{
+        .graph = &graph,
+        .annotations = &annotations,
+        .strategy_sums = &strategy_sums,
+        .river_cache = &cache,
+        .terminal_leaves = terminal_leaves,
+        .terminal_states = terminal_states.view(),
+        .ranges = {oop_range, ip_range}
+    });
+    BOOST_REQUIRE(extracted.has_value());
+    BOOST_REQUIRE_EQUAL(extracted->node_count(), 3u);
+    BOOST_REQUIRE_EQUAL(extracted->strategy_context_count(), 2u);
+
+    uint32_t shared_context = INVALID_STRATEGY_CONTEXT_ID;
+    uint32_t lhs_node_id = std::numeric_limits<uint32_t>::max();
+    uint32_t rhs_node_id = std::numeric_limits<uint32_t>::max();
+    for (uint32_t node_id = 0; node_id < extracted->node_count(); ++node_id) {
+        const auto node = extracted->node(node_id);
+        if (node.action_count() == 1u) {
+            if (shared_context == INVALID_STRATEGY_CONTEXT_ID) {
+                shared_context = node.strategy_context_id();
+            }
+            if (node.strategy_context_id() != shared_context) {
+                continue;
+            }
+            if (lhs_node_id == std::numeric_limits<uint32_t>::max()) {
+                lhs_node_id = node_id;
+            } else {
+                rhs_node_id = node_id;
+                break;
+            }
+        }
+    }
+    BOOST_REQUIRE_NE(lhs_node_id, std::numeric_limits<uint32_t>::max());
+    BOOST_REQUIRE_NE(rhs_node_id, std::numeric_limits<uint32_t>::max());
+
+    const auto lhs = extracted->node(lhs_node_id);
+    const auto rhs = extracted->node(rhs_node_id);
+    BOOST_CHECK_EQUAL(lhs.strategy_context_id(), rhs.strategy_context_id());
+    BOOST_CHECK_EQUAL(lhs.strategy().entries().data(), rhs.strategy().entries().data());
+    BOOST_CHECK_NE(lhs.values().action_values().data(), rhs.values().action_values().data());
+
+    uint32_t lhs_local = INVALID_COMBO_LOCAL_INDEX;
+    uint32_t rhs_local = INVALID_COMBO_LOCAL_INDEX;
+    for (uint32_t local = 0; local < lhs.combo_count(); ++local) {
+        if (lhs.combo_index(local) == oop_combo) {
+            lhs_local = local;
+            break;
+        }
+    }
+    for (uint32_t local = 0; local < rhs.combo_count(); ++local) {
+        if (rhs.combo_index(local) == oop_combo) {
+            rhs_local = local;
+            break;
+        }
+    }
+    BOOST_REQUIRE_NE(lhs_local, INVALID_COMBO_LOCAL_INDEX);
+    BOOST_REQUIRE_NE(rhs_local, INVALID_COMBO_LOCAL_INDEX);
+    BOOST_CHECK_NE(double_bits(lhs.values().combo_ev(lhs_local)), double_bits(rhs.values().combo_ev(rhs_local)));
+    BOOST_CHECK_NE(double_bits(lhs.values().conditional_range_ev()), double_bits(rhs.values().conditional_range_ev()));
+}
+
 BOOST_AUTO_TEST_CASE(river_hu_extraction_preserves_zero_reach_combos)
 {
     namespace cfr = zeta::holdem::cfr;
