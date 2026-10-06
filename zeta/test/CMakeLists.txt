@@ -16,6 +16,15 @@ add_executable(zeta_tests
     ../ui/holdem/src/app/app_settings.cpp
     ../ui/holdem/src/document/document_json.cpp
     ../ui/holdem/src/main_window.cpp
+    ../ui/holdem/src/main_window_shell.cpp
+    ../ui/holdem/src/main_window_documents.cpp
+    ../ui/holdem/src/main_window_solver.cpp
+    ../ui/holdem/src/main_window_settings_dialog.cpp
+    ../ui/holdem/src/main_window_dialogs.cpp
+    ../ui/holdem/src/main_window_visuals.cpp
+    ../ui/holdem/src/spot_summary_helpers.cpp
+    ../ui/holdem/src/configuration_dialog.cpp
+    ../ui/holdem/src/document_workspace_widget.cpp
     ../ui/holdem/src/solver/solution_store.cpp
     ../ui/holdem/src/solver/solver_session.cpp
     ../ui/holdem/src/study/study_workflow.cpp
