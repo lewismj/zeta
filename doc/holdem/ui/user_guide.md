@@ -29,6 +29,21 @@ Debug builds use:
 .\build\zeta\ui\holdem\Debug\zeta-ui-holdem.exe
 ```
 
+### UI source layout
+
+The `main_window` implementation is split by responsibility to keep UI shell, document lifecycle, solver orchestration, and settings logic independent:
+
+| File | Responsibility |
+|---|---|
+| `src/main_window_shell.cpp` | Command bar, shell layout, theme/density application, document rail, window title, and persisted shell sizing. |
+| `src/main_window_documents.cpp` | New/open/save flows, close prompts, JSON parsing and validation, and document tab lifecycle. |
+| `src/main_window_solver.cpp` | Solve start/cancel/finish transitions, session state, and solver control enablement. |
+| `src/main_window_settings_dialog.cpp` | Configuration action wiring to a dedicated `configuration_dialog` class. |
+| `src/document_workspace_widget.{h,cpp}` | Per-document workspace composition (builder, ranges/strategy, JSON editor, inspector, console). |
+| `src/main_window_dialogs.{h,cpp}` | Shared themed dialog helpers and validation message formatting. |
+| `src/main_window_visuals.{h,cpp}` | Shared visual helpers such as app logo fallback rendering and widget re-polish. |
+| `src/spot_summary_helpers.{h,cpp}` | Shared spot summary formatting used by the workspace inspector. |
+
 ### First solve
 
 1. Click **New** to create a spot document.

@@ -7,6 +7,21 @@ add_executable(zeta-ui-holdem
     src/main.cpp
     src/main_window.h
     src/main_window.cpp
+    src/main_window_shell.cpp
+    src/main_window_documents.cpp
+    src/main_window_solver.cpp
+    src/main_window_settings_dialog.cpp
+    src/main_window_constants.h
+    src/main_window_dialogs.h
+    src/main_window_dialogs.cpp
+    src/main_window_visuals.h
+    src/main_window_visuals.cpp
+    src/spot_summary_helpers.h
+    src/spot_summary_helpers.cpp
+    src/configuration_dialog.h
+    src/configuration_dialog.cpp
+    src/document_workspace_widget.h
+    src/document_workspace_widget.cpp
     src/app/app_settings.h
     src/app/app_settings.cpp
     src/document/document_json.h

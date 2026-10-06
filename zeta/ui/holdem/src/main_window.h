@@ -6,6 +6,7 @@
 #include "spot_document.h"
 #include "theme/theme.h"
 
+#include <QList>
 #include <QMainWindow>
 
 #include <future>
@@ -28,6 +29,13 @@ class QWidget;
 
 namespace zeta::holdem::ui {
 
+    class document_workspace_widget;
+    class configuration_dialog;
+
+    namespace widgets {
+        class spot_json_editor;
+    }
+
     /**
      * Hosts multiple spot documents and exposes file actions with dirty-state prompts.
      */
@@ -41,7 +49,7 @@ namespace zeta::holdem::ui {
     private:
         struct document_entry {
             spot_document document;
-            QPlainTextEdit* editor = nullptr;
+            widgets::spot_json_editor* editor = nullptr;
             QPlainTextEdit* solve_console = nullptr;
             QSplitter* workspace_splitter = nullptr;
             std::string solve_console_text;
@@ -67,6 +75,7 @@ namespace zeta::holdem::ui {
         void add_document_tab(spot_document document);
         [[nodiscard]] QWidget* create_document_widget(int index);
         void refresh_document_tab(int index);
+        void refresh_workspace_from_document(int index);
         void append_solve_console(document_entry& entry, const QString& text);
         void set_solve_console(document_entry& entry, const QString& text);
         void apply_active_theme();
