@@ -1161,11 +1161,27 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_artifact_and_act
     auto* hand_table = explorer.findChild<QTableWidget*>("strategyHandTable");
     auto* detail_table = explorer.findChild<QTableWidget*>("strategyDetailTable");
     auto* metadata = explorer.findChild<QLabel*>("artifactMetadataSummary");
+    auto* node_actions = explorer.findChild<QTableWidget*>("solutionNodeActionTable");
 
     BOOST_REQUIRE(filter != nullptr);
     BOOST_REQUIRE(hand_table != nullptr);
     BOOST_REQUIRE(detail_table != nullptr);
     BOOST_REQUIRE(metadata != nullptr);
+    BOOST_REQUIRE(node_actions != nullptr);
+    BOOST_CHECK_EQUAL(node_actions->horizontalHeaderItem(2)->text().toStdString(), "EV (node)");
+    BOOST_CHECK(!node_actions->horizontalHeaderItem(2)->toolTip().isEmpty());
+    BOOST_CHECK_EQUAL(hand_table->horizontalHeaderItem(3)->text().toStdString(), "EV (hand)");
+    BOOST_CHECK(!hand_table->horizontalHeaderItem(3)->toolTip().isEmpty());
+    BOOST_CHECK_EQUAL(detail_table->horizontalHeaderItem(2)->text().toStdString(), "EV (hand)");
+    BOOST_CHECK(!detail_table->horizontalHeaderItem(2)->toolTip().isEmpty());
+    auto* cards = explorer.findChild<QWidget*>("aggregateActionCards");
+    BOOST_REQUIRE(cards != nullptr);
+    const auto card_buttons = cards->findChildren<QPushButton*>();
+    BOOST_REQUIRE(!card_buttons.empty());
+    for (const auto* card : card_buttons) {
+        BOOST_CHECK(card->text().contains(QStringLiteral("EV (hand)")));
+        BOOST_CHECK(card->toolTip().contains(QStringLiteral("not the EV of choosing this action")));
+    }
     BOOST_CHECK(metadata->text().contains(QStringLiteral("players 2")));
     BOOST_CHECK_EQUAL(hand_table->rowCount(), 3);
 
