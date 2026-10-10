@@ -187,7 +187,7 @@ shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "extraction_version": 1,
   "game": "holdem",
   "street": "turn",
@@ -255,6 +255,13 @@ so older artifacts without these fields still load. `exploitability`,
 `exploitability_pot_fraction`, `nash_conv`, and `best_response_gap` are populated
 only when `exploitability_available` is `true`; otherwise `normalized_regret`
 carries the multiway quality signal.
+
+When the solved graph payload is emitted, the top-level `root_node_id` field
+identifies which `solved_nodes[*].node_id` is the decision root. Graph nodes are
+numbered in DFS post-order, so the root is **not** node `0` (node `0` is the first
+terminal leaf); consumers must use `root_node_id` rather than assuming `0`. It is
+validated to reference an existing solved node whose `parent_node_id` is absent
+(the parentless root).
 
 ## Examples
 

@@ -531,13 +531,38 @@ namespace zeta::holdem::ui::solver {
             return table;
         }
 
+        [[nodiscard]] std::string solution_node_id_label(const uint32_t node_id, const uint32_t root_node_id)
+        {
+            return node_id == root_node_id ? std::string{"root"} : ("node-" + std::to_string(node_id));
+        }
+
+        [[nodiscard]] uint32_t resolve_artifact_root_id(const cli::solve_artifact& artifact)
+        {
+            const auto node_exists = [&artifact](const uint32_t id) {
+                return std::ranges::any_of(artifact.solved_nodes, [id](const auto& node) {
+                    return node.node_id == id;
+                });
+            };
+            if (artifact.root_node_id != cfr::game_graph::INVALID_NODE && node_exists(artifact.root_node_id)) {
+                return artifact.root_node_id;
+            }
+            const auto parentless = std::ranges::find_if(artifact.solved_nodes, [](const auto& node) {
+                return node.parent_node_id == cfr::game_graph::INVALID_NODE;
+            });
+            if (parentless != artifact.solved_nodes.end()) {
+                return parentless->node_id;
+            }
+            return artifact.solved_nodes.empty() ? 0u : artifact.solved_nodes.front().node_id;
+        }
+
         [[nodiscard]] solution_node make_solution_node_from_artifact_node(
             const cli::solved_node& node,
             const struct cli::solve_spot& spot,
-            const cli::solve_artifact& artifact)
+            const cli::solve_artifact& artifact,
+            const uint32_t root_node_id)
         {
             solution_node out;
-            out.node_id = node.node_id == 0 ? "root" : ("node-" + std::to_string(node.node_id));
+            out.node_id = solution_node_id_label(node.node_id, root_node_id);
             out.kind = node.kind;
             out.graph_node_id = node.node_id;
             out.public_state_id = node.public_state_id;
@@ -547,7 +572,7 @@ namespace zeta::holdem::ui::solver {
             out.truncated = false;
             out.board = node.board;
             out.table_state = solution_table_state_from_solved_node(node, spot);
-            if (node.node_id == 0) {
+            if (node.node_id == root_node_id) {
                 out.average_strategy = aggregate_root_strategy(artifact);
                 out.seat_evs = aggregate_root_evs(artifact);
             } else {
@@ -566,7 +591,7 @@ namespace zeta::holdem::ui::solver {
             }
             for (const auto& action : node.actions) {
                 if (action.child_node_id != cfr::game_graph::INVALID_NODE) {
-                    out.children.push_back(action.child_node_id == 0 ? "root" : ("node-" + std::to_string(action.child_node_id)));
+                    out.children.push_back(solution_node_id_label(action.child_node_id, root_node_id));
                 }
             }
             return out;
@@ -976,9 +1001,11 @@ namespace zeta::holdem::ui::solver {
         store.source = make_source_summary(spot, artifact);
         store.root_node_id = "root";
         if (!artifact.solved_nodes.empty()) {
+            const auto root_node_id = resolve_artifact_root_id(artifact);
+            store.root_node_id = solution_node_id_label(root_node_id, root_node_id);
             store.nodes.reserve(artifact.solved_nodes.size());
             for (const auto& node : artifact.solved_nodes) {
-                store.nodes.push_back(make_solution_node_from_artifact_node(node, spot, artifact));
+                store.nodes.push_back(make_solution_node_from_artifact_node(node, spot, artifact, root_node_id));
             }
             const auto find_solved_node = [&artifact](const uint32_t node_id) -> const cli::solved_node* {
                 const auto found = std::ranges::find_if(artifact.solved_nodes, [node_id](const auto& candidate) {

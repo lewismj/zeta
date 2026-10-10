@@ -350,7 +350,7 @@ BOOST_AUTO_TEST_CASE(holdem_cli_solve_produces_valid_artifact) {
     BOOST_CHECK(std::ranges::all_of(output->artifact.strategy, [](const auto& row) {
         return !row.strategy.empty();
     }));
-    BOOST_CHECK_EQUAL(output->artifact.schema_version, 4u);
+    BOOST_CHECK_EQUAL(output->artifact.schema_version, 5u);
     BOOST_CHECK_EQUAL(output->artifact.extraction_version, 1u);
     BOOST_CHECK_EQUAL(output->artifact.game, "holdem");
     BOOST_CHECK_EQUAL(output->artifact.street, "river");
@@ -538,6 +538,15 @@ BOOST_AUTO_TEST_CASE(holdem_cli_phase3_roundtrips_node_surfaces) {
             }
         }
     }
+
+    BOOST_CHECK_EQUAL(parsed->root_node_id, output->artifact.root_node_id);
+    BOOST_CHECK(output->artifact.root_node_id != zeta::holdem::cfr::game_graph::INVALID_NODE);
+    const auto root_it = std::ranges::find_if(output->artifact.solved_nodes, [&](const auto& node) {
+        return node.node_id == output->artifact.root_node_id;
+    });
+    BOOST_REQUIRE(root_it != output->artifact.solved_nodes.end());
+    BOOST_CHECK_EQUAL(root_it->parent_node_id, zeta::holdem::cfr::game_graph::INVALID_NODE);
+    BOOST_CHECK_EQUAL(root_it->kind, "player");
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_artifact_json_accepts_nested_objects_and_escaped_actions) {
@@ -980,7 +989,7 @@ BOOST_AUTO_TEST_CASE(holdem_cli_nonriver_artifact_persists_multi_street_graph_pa
 
     auto turn_output = zeta::holdem::cli::solve_spot(*turn_spot, 16, {.worker_threads = 2});
     BOOST_REQUIRE(turn_output.has_value());
-    BOOST_CHECK_EQUAL(turn_output->artifact.schema_version, 4u);
+    BOOST_CHECK_EQUAL(turn_output->artifact.schema_version, 5u);
     BOOST_CHECK_EQUAL(turn_output->artifact.extraction_version, 1u);
     BOOST_CHECK_EQUAL(turn_output->artifact.solver.algorithm, "cfr+");
     BOOST_CHECK(!turn_output->artifact.public_states.empty());

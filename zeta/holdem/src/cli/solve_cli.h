@@ -145,7 +145,7 @@ namespace zeta::holdem::cli {
         std::vector<std::string> warnings;
     };
 
-    inline constexpr uint32_t current_artifact_schema_version = 4;
+    inline constexpr uint32_t current_artifact_schema_version = 5;
     inline constexpr uint32_t current_extraction_version = 1;
 
     enum class solve_artifact_export_mode : uint8_t {
@@ -223,6 +223,7 @@ namespace zeta::holdem::cli {
         std::vector<solve_artifact_chance_event> chance_events;
         std::vector<solve_artifact_runout> runouts;
         std::vector<solved_node> solved_nodes;
+        uint32_t root_node_id = cfr::game_graph::INVALID_NODE;
     };
 
     struct solve_spot {
@@ -890,6 +891,21 @@ namespace zeta::holdem::cli {
                         "solved_nodes.strategy_rows.reach_probability must be finite and in [0,1]."
                     });
                 }
+            }
+        }
+
+        if (!artifact.solved_nodes.empty()) {
+            if (artifact.root_node_id == cfr::game_graph::INVALID_NODE
+                || solved_node_ids.find(artifact.root_node_id) == solved_node_ids.end()) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
+                    "root_node_id must reference an existing solved node."});
+            }
+            const auto root_it = std::ranges::find_if(artifact.solved_nodes, [&](const auto& node) {
+                return node.node_id == artifact.root_node_id;
+            });
+            if (root_it->parent_node_id != cfr::game_graph::INVALID_NODE) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
+                    "root_node_id must reference the parentless root node."});
             }
         }
 
@@ -2247,6 +2263,7 @@ namespace zeta::holdem::cli {
 
                 artifact.solved_nodes.push_back(std::move(persisted));
             }
+            artifact.root_node_id = graph.root_node;
         }
 
         // Fraction of detected available memory the solver may plan to use when no

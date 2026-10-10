@@ -1593,6 +1593,12 @@ namespace zeta::holdem::cli {
             }
         }
 
+        auto root_node_id = optional_uint<uint32_t>(*root, "root_node_id", cfr::game_graph::INVALID_NODE);
+        if (!root_node_id) {
+            return std::unexpected(root_node_id.error());
+        }
+        artifact.root_node_id = *root_node_id;
+
         if (auto validation = validate_artifact(artifact); !validation) {
             return std::unexpected(validation.error());
         }
@@ -1620,6 +1626,7 @@ namespace zeta::holdem::cli {
         out["chance_events"] = chance_events_json(artifact.chance_events);
         out["runouts"] = runouts_json(artifact.runouts);
         out["solved_nodes"] = solved_nodes_json(artifact.solved_nodes, mode);
+        out["root_node_id"] = static_cast<uint64_t>(artifact.root_node_id);
         return json::serialize(out);
     }
 

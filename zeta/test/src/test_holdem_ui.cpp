@@ -1041,6 +1041,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_roundtrips_action_tree_without_com
             }
         }
     };
+    artifact.root_node_id = 0;
     auto solution = zeta::holdem::ui::solver::make_action_tree_solution_store(spot, artifact);
 
     const auto* root = zeta::holdem::ui::solver::root_solution_node(solution);
@@ -1163,6 +1164,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
             }
         }
     };
+    artifact.root_node_id = 0;
     auto solution = zeta::holdem::ui::solver::make_action_tree_solution_store(spot, artifact);
 
     zeta::holdem::ui::widgets::strategy_explorer explorer{

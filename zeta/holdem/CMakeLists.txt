@@ -55,8 +55,7 @@ target_include_directories(zeta-holdem
 )
 
 target_link_libraries(zeta-holdem
-    PUBLIC zeta-core
-    PRIVATE Boost::json
+    PUBLIC zeta-core Boost::json
 )
 
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
