@@ -280,6 +280,9 @@ namespace zeta::holdem::ui {
                             refreshed->set_current_sub_tab_by_text(target_tab);
                         }
                     });
+                },
+                .on_resolve_requested = [this] {
+                    solve_active_document();
                 }
             },
             this};
@@ -325,6 +328,7 @@ namespace zeta::holdem::ui {
         workspace->set_updating_editor(false);
         entry.updating_editor = false;
         workspace->refresh_inspector(entry.document);
+        workspace->update_strategy_staleness(entry.document.is_strategy_stale());
         update_tab_title(index);
         update_window_title();
     }

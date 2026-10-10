@@ -114,25 +114,53 @@ namespace zeta::holdem::ui {
             },
             left_tabs_};
         left_tabs_->addTab(builder, tr("Spot Builder"));
+        auto* range_editor = new widgets::range_editor{
+            document.current_spot(),
+            metrics_,
+            [this](spot next_spot) {
+                if (callbacks_.on_spot_changed) {
+                    callbacks_.on_spot_changed(std::move(next_spot));
+                }
+            },
+            left_tabs_,
+            active_theme_};
+        left_tabs_->addTab(range_editor, tr("Ranges"));
         if (document.artifact()) {
-            left_tabs_->addTab(new widgets::strategy_explorer{
+            strategy_tab_ = new QWidget{left_tabs_};
+            auto* strategy_layout = new QVBoxLayout{strategy_tab_};
+            strategy_layout->setContentsMargins(0, 0, 0, 0);
+            strategy_layout->setSpacing(metrics_.panel_spacing);
+
+            auto* banner = new QFrame{strategy_tab_};
+            banner->setObjectName("staleBanner");
+            auto* banner_layout = new QHBoxLayout{banner};
+            banner_layout->setContentsMargins(metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin);
+            banner_layout->setSpacing(metrics_.panel_spacing);
+            auto* banner_label = new QLabel{
+                tr("Inputs changed since this solve \u2014 the strategy below may be out of date."),
+                banner};
+            banner_label->setObjectName("staleBannerLabel");
+            banner_label->setWordWrap(true);
+            banner_layout->addWidget(banner_label, 1);
+            auto* resolve_button = new QPushButton{tr("Re-run solve"), banner};
+            resolve_button->setObjectName("staleBannerButton");
+            connect(resolve_button, &QPushButton::clicked, this, [this] {
+                if (callbacks_.on_resolve_requested) {
+                    callbacks_.on_resolve_requested();
+                }
+            });
+            banner_layout->addWidget(resolve_button, 0);
+            banner->setVisible(false);
+            stale_banner_ = banner;
+            strategy_layout->addWidget(banner);
+
+            strategy_layout->addWidget(new widgets::strategy_explorer{
                 document.current_spot(),
                 *document.artifact(),
                 document.solution(),
                 metrics_,
-                left_tabs_}, tr("Strategy Explorer"));
-        } else {
-            auto* range_editor = new widgets::range_editor{
-                document.current_spot(),
-                metrics_,
-                [this](spot next_spot) {
-                    if (callbacks_.on_spot_changed) {
-                        callbacks_.on_spot_changed(std::move(next_spot));
-                    }
-                },
-                left_tabs_,
-                active_theme_};
-            left_tabs_->addTab(range_editor, tr("Ranges"));
+                strategy_tab_}, 1);
+            left_tabs_->addTab(strategy_tab_, tr("Strategy Explorer"));
         }
         left_tabs_->addTab(raw_editor_, tr("Spot JSON"));
 
@@ -176,6 +204,22 @@ namespace zeta::holdem::ui {
             }
             callbacks_.on_leaving_raw_editor(left_tabs_->tabText(current));
         });
+
+        update_strategy_staleness(document.is_strategy_stale());
+    }
+
+    void document_workspace_widget::update_strategy_staleness(const bool stale)
+    {
+        if (strategy_tab_ == nullptr || left_tabs_ == nullptr) {
+            return;
+        }
+        if (stale_banner_ != nullptr) {
+            stale_banner_->setVisible(stale);
+        }
+        const int index = left_tabs_->indexOf(strategy_tab_);
+        if (index >= 0) {
+            left_tabs_->setTabText(index, stale ? tr("Strategy Explorer *") : tr("Strategy Explorer"));
+        }
     }
 
     widgets::spot_json_editor* document_workspace_widget::editor() const
@@ -206,9 +250,18 @@ namespace zeta::holdem::ui {
         if (left_tabs_ == nullptr || tab_text.isEmpty()) {
             return;
         }
+        // Tab labels may carry a trailing " *" stale marker; match on the base label so
+        // tab restoration survives staleness changes across a rebuild.
+        const auto normalize = [](QString text) {
+            if (text.endsWith(QStringLiteral(" *"))) {
+                text.chop(2);
+            }
+            return text;
+        };
+        const auto target = normalize(tab_text);
         QSignalBlocker blocker{left_tabs_};
         for (int i = 0; i < left_tabs_->count(); ++i) {
-            if (left_tabs_->tabText(i) == tab_text) {
+            if (normalize(left_tabs_->tabText(i)) == target) {
                 left_tabs_->setCurrentIndex(i);
                 return;
             }

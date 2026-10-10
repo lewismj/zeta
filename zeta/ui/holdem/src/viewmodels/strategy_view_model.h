@@ -30,6 +30,9 @@ namespace zeta::holdem::ui::viewmodels {
         double ev = 0.0;
         double range_weight = 0.0;
         bool live = true;
+        /// False when no opponent combo is compatible with this holding (fully
+        /// blocked matchup); the EV is undefined rather than a real 0.0.
+        bool reachable = true;
         std::vector<std::string> blocked_by;
     };
 
@@ -41,6 +44,8 @@ namespace zeta::holdem::ui::viewmodels {
         double ev = 0.0;
         double range_weight = 0.0;
         bool available = false;
+        /// True when at least one combo in the class has a reachable matchup.
+        bool reachable = true;
     };
 
     struct strategy_action_card {

@@ -963,6 +963,80 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_aggregates_matrix_table_cards
     BOOST_CHECK(model.metadata.seat_ranges[0].find("AhAd:0.5") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_marks_fully_blocked_combos_unreachable) {
+    // Board holds the As, so the hero's AA combos are AhAd, AhAc, AdAc. The villain's
+    // entire range is AA, which every hero AA combo fully blocks (no two remaining aces
+    // survive). The matchup can never occur, so AA EV is undefined rather than 0.0. KK
+    // shares no cards with the villain's aces and stays reachable.
+    zeta::holdem::cli::solve_artifact artifact;
+    artifact.players = {"BTN", "BB"};
+    artifact.street = "river";
+    artifact.board = {"As", "Kd", "7c", "4h", "2s"};
+    artifact.hero_seat = 0;
+    artifact.solver.algorithm = "cfr+";
+    artifact.solver.iterations = 10;
+    const auto all_in = zeta::holdem::cli::action_strategy{.action = "all_in", .frequency = 1.0};
+    const auto check = zeta::holdem::cli::action_strategy{.action = "check", .frequency = 1.0};
+    artifact.strategy = {
+        {.combination_index = combo_index_for("AhAd"), .hand = "AhAd", .strategy = {all_in}, .ev = 0.0},
+        {.combination_index = combo_index_for("AhAc"), .hand = "AhAc", .strategy = {all_in}, .ev = 0.0},
+        {.combination_index = combo_index_for("AdAc"), .hand = "AdAc", .strategy = {all_in}, .ev = 0.0},
+        {.combination_index = combo_index_for("KhKd"), .hand = "KhKd", .strategy = {check}, .ev = -1.0}
+    };
+
+    auto spot = sample_heads_up_spot();
+    spot.board = {"As", "Kd", "7c", "4h", "2s"};
+    spot.ranges = {"AA,KK", "AA"};
+    spot.hero_seat = 0;
+
+    const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(spot, artifact);
+
+    const auto* aa = strategy_cell(model, "AA");
+    BOOST_REQUIRE(aa != nullptr);
+    BOOST_CHECK(aa->available);
+    BOOST_CHECK(!aa->reachable);
+    BOOST_REQUIRE_EQUAL(aa->exact_combos.size(), 3u);
+    BOOST_CHECK(std::ranges::none_of(aa->exact_combos, [](const auto& row) { return row.reachable; }));
+
+    const auto* kk = strategy_cell(model, "KK");
+    BOOST_REQUIRE(kk != nullptr);
+    BOOST_CHECK(kk->reachable);
+    BOOST_CHECK_CLOSE(kk->ev, -1.0, 0.001);
+    BOOST_CHECK(std::ranges::all_of(kk->exact_combos, [](const auto& row) { return row.reachable; }));
+
+    // Only the reachable KK combo contributes to the average EV; the blocked AA 0.0s
+    // must not drag it toward zero.
+    BOOST_CHECK_CLOSE(model.average_ev, -1.0, 0.001);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_spot_document_tracks_strategy_staleness_against_solved_snapshot) {
+    auto document = zeta::holdem::ui::spot_document::create_new();
+    document.replace_spot(sample_strategy_spot());
+
+    // Without a recorded solve the strategy can never be considered stale.
+    document.replace_artifact(sample_strategy_artifact());
+    BOOST_CHECK(!document.is_strategy_stale());
+
+    // Recording the solved snapshot for the current spot keeps it fresh.
+    document.set_solved_spot(document.current_spot());
+    BOOST_CHECK(!document.is_strategy_stale());
+
+    // Editing the spot after the solve marks the displayed strategy stale.
+    auto edited = sample_strategy_spot();
+    edited.ranges[1] = "AA";
+    document.replace_spot(edited);
+    BOOST_CHECK(document.is_strategy_stale());
+
+    // Re-running the solve on the edited spot clears the stale flag again.
+    document.set_solved_spot(document.current_spot());
+    BOOST_CHECK(!document.is_strategy_stale());
+
+    // Replacing the artifact (a fresh solve result lands here first) resets tracking so
+    // a mismatched leftover snapshot can never report a false positive.
+    document.replace_artifact(sample_strategy_artifact());
+    BOOST_CHECK(!document.is_strategy_stale());
+}
+
 BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_filters_hands_and_formats_ev) {
     const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(
         sample_strategy_spot(),

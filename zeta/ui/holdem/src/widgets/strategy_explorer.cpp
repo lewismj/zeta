@@ -114,6 +114,16 @@ namespace zeta::holdem::ui::widgets {
             return QString::fromStdString(viewmodels::format_strategy_ev(ev));
         }
 
+        [[nodiscard]] QString ev_cell_text(const bool reachable, const double ev)
+        {
+            return reachable ? ev_text(ev) : QStringLiteral("\u2014");
+        }
+
+        [[nodiscard]] QString unreachable_tooltip()
+        {
+            return QStringLiteral("No unblocked opponent combos \u2014 this matchup can't occur, so EV is undefined.");
+        }
+
         [[nodiscard]] QString percent_text(const double frequency)
         {
             return QString::fromStdString(viewmodels::format_strategy_percent(frequency));
@@ -459,7 +469,7 @@ namespace zeta::holdem::ui::widgets {
             if (show_combo_strategy && model.available) {
                 text += QStringLiteral("\n%1\nEV %2")
                     .arg(action_text(model.actions))
-                    .arg(ev_text(model.ev));
+                    .arg(ev_cell_text(model.reachable, model.ev));
             } else if (!show_combo_strategy) {
                 text += QStringLiteral("\nNo node strategy");
             } else {
@@ -469,7 +479,9 @@ namespace zeta::holdem::ui::widgets {
             cell->setEnabled(show_combo_strategy && model.available);
             cell->setObjectName(visible ? "rangeCellPrimary" : "rangeCellMuted");
             cell->setToolTip(show_combo_strategy && model.available
-                ? tr("%1 combos | weight %2").arg(model.exact_combos.size()).arg(model.range_weight, 0, 'f', 3)
+                ? (model.reachable
+                    ? tr("%1 combos | weight %2").arg(model.exact_combos.size()).arg(model.range_weight, 0, 'f', 3)
+                    : unreachable_tooltip())
                 : tr("No combo strategy is available for this node"));
             polish(cell);
         }
@@ -491,7 +503,11 @@ namespace zeta::holdem::ui::widgets {
             hand_table_->setItem(row, 0, hand_item);
             hand_table_->setItem(row, 1, new QTableWidgetItem{display_action_text(hand.best_action)});
             hand_table_->setItem(row, 2, new QTableWidgetItem{action_text(hand.actions)});
-            hand_table_->setItem(row, 3, new numeric_table_item{ev_text(hand.ev), hand.ev});
+            auto* ev_item = new numeric_table_item{ev_cell_text(hand.reachable, hand.ev), hand.ev};
+            if (!hand.reachable) {
+                ev_item->setToolTip(unreachable_tooltip());
+            }
+            hand_table_->setItem(row, 3, ev_item);
             hand_table_->setItem(row, 4, new numeric_table_item{QString::number(hand.range_weight, 'f', 3), hand.range_weight});
         }
         hand_table_->setSortingEnabled(true);
@@ -517,8 +533,9 @@ namespace zeta::holdem::ui::widgets {
         detail_title_->setText(tr("%1 | %2 | EV %3 | weight %4")
             .arg(hand_class)
             .arg(display_action_text(found->best_action))
-            .arg(ev_text(found->ev))
+            .arg(ev_cell_text(found->reachable, found->ev))
             .arg(found->range_weight, 0, 'f', 3));
+        detail_title_->setToolTip(found->reachable ? QString{} : unreachable_tooltip());
 
         std::vector<viewmodels::strategy_hand_row> rows;
         rows.reserve(found->exact_combos.size());
@@ -539,7 +556,11 @@ namespace zeta::holdem::ui::widgets {
             const auto& combo = rows[static_cast<std::size_t>(row)];
             detail_table_->setItem(row, 0, new QTableWidgetItem{q(combo.hand)});
             detail_table_->setItem(row, 1, new QTableWidgetItem{action_text(combo.actions)});
-            detail_table_->setItem(row, 2, new QTableWidgetItem{ev_text(combo.ev)});
+            auto* combo_ev_item = new QTableWidgetItem{ev_cell_text(combo.reachable, combo.ev)};
+            if (!combo.reachable) {
+                combo_ev_item->setToolTip(unreachable_tooltip());
+            }
+            detail_table_->setItem(row, 2, combo_ev_item);
             detail_table_->setItem(row, 3, new QTableWidgetItem{QString::number(combo.range_weight, 'f', 3)});
             detail_table_->setItem(row, 4, new QTableWidgetItem{blocked_text(combo.blocked_by)});
         }

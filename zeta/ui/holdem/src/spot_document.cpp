@@ -108,6 +108,14 @@ namespace zeta::holdem::ui {
         return dirty_;
     }
 
+    bool spot_document::is_strategy_stale() const
+    {
+        if (!artifact_.has_value() || !solved_spot_.has_value()) {
+            return false;
+        }
+        return cli::serialize_spot_json(spot_) != cli::serialize_spot_json(*solved_spot_);
+    }
+
     void spot_document::replace_spot(spot next_spot)
     {
         spot_ = std::move(next_spot);
@@ -119,6 +127,7 @@ namespace zeta::holdem::ui {
     {
         artifact_ = std::move(next_artifact);
         solution_ = std::nullopt;
+        solved_spot_ = std::nullopt;
         metadata_.updated_utc = cli::detail::now_utc_iso8601();
         dirty_ = true;
     }
@@ -128,6 +137,11 @@ namespace zeta::holdem::ui {
         solution_ = std::move(next_solution);
         metadata_.updated_utc = cli::detail::now_utc_iso8601();
         dirty_ = true;
+    }
+
+    void spot_document::set_solved_spot(spot solved_snapshot)
+    {
+        solved_spot_ = std::move(solved_snapshot);
     }
 
     void spot_document::update_metadata(spot_document_metadata next_metadata)

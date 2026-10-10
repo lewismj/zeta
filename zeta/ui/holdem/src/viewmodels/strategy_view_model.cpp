@@ -29,6 +29,7 @@ namespace zeta::holdem::ui::viewmodels {
             std::map<std::string, double> action_totals;
             double weighted_ev = 0.0;
             double total_weight = 0.0;
+            double reachable_weight = 0.0;
         };
 
         [[nodiscard]] std::string join_text(const std::vector<std::string>& values, const std::string_view separator)
@@ -189,6 +190,59 @@ namespace zeta::holdem::ui::viewmodels {
             return lookup;
         }
 
+        // Live opponent combo masks per opposing seat. Each inner vector holds the
+        // card masks of that opponent's combos that survive board blockers and carry
+        // positive weight. Used to decide whether a hero holding has any compatible
+        // opponent hand at all.
+        [[nodiscard]] std::vector<std::vector<card_mask>> opponent_live_masks(
+            const spot& source,
+            const solve_artifact& artifact)
+        {
+            std::vector<std::vector<card_mask>> per_opponent;
+            const auto hero = static_cast<std::size_t>(artifact.hero_seat);
+            const auto seat_count = std::min(source.ranges.size(), artifact.players.size());
+            for (std::size_t seat = 0; seat < seat_count; ++seat) {
+                if (seat == hero) {
+                    continue;
+                }
+                const auto analysis = analyze_range(source.ranges[seat], source.board);
+                if (analysis.parse_issue) {
+                    continue;
+                }
+                std::vector<card_mask> masks;
+                masks.reserve(analysis.exact_combos.size());
+                for (const auto& combo : analysis.exact_combos) {
+                    if (combo.live && combo.weight > 0.0f) {
+                        masks.push_back(combination_masks[combo.combo]);
+                    }
+                }
+                per_opponent.push_back(std::move(masks));
+            }
+            return per_opponent;
+        }
+
+        // A hero holding is reachable when every opponent seat has at least one live
+        // combo whose cards do not collide with the hero's. If any opponent is fully
+        // blocked, the matchup can never occur and the EV is undefined (not 0.0).
+        // Opponents with no determinable constraint are skipped conservatively.
+        [[nodiscard]] bool combo_is_reachable(
+            const std::vector<std::vector<card_mask>>& per_opponent,
+            const card_mask hero_mask)
+        {
+            for (const auto& masks : per_opponent) {
+                if (masks.empty()) {
+                    continue;
+                }
+                const auto compatible = std::ranges::any_of(masks, [hero_mask](const card_mask mask) {
+                    return (mask & hero_mask) == 0;
+                });
+                if (!compatible) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         [[nodiscard]] double entropy_mix_indicator(const std::vector<strategy_action_card>& cards)
         {
             if (cards.size() <= 1u) {
@@ -239,11 +293,13 @@ namespace zeta::holdem::ui::viewmodels {
         }
 
         const auto range_lookup = make_range_lookup(source, artifact);
+        const auto opponent_masks = opponent_live_masks(source, artifact);
         std::map<std::string, hand_class_accumulator> class_totals;
         std::map<std::string, double> action_totals;
         std::map<std::string, double> action_weighted_evs;
         std::map<std::string, double> action_weight_totals;
         double total_weight = 0.0;
+        double reachable_weight = 0.0;
         double weighted_ev = 0.0;
 
         model.hands.reserve(artifact.strategy.size());
@@ -260,6 +316,8 @@ namespace zeta::holdem::ui::viewmodels {
             const auto blocked_by = found_range == range_lookup.end()
                 ? std::vector<std::string>{}
                 : found_range->second.blocked_by;
+            const auto reachable = artifact_row.combination_index >= combination_count
+                || combo_is_reachable(opponent_masks, combination_masks[artifact_row.combination_index]);
 
             const auto& effective_strategy = artifact_row.strategy.empty() ? artifact.root_strategy : artifact_row.strategy;
             std::vector<strategy_action_frequency> row_actions;
@@ -285,27 +343,31 @@ namespace zeta::holdem::ui::viewmodels {
                 .ev = artifact_row.ev,
                 .range_weight = range_weight,
                 .live = live,
+                .reachable = reachable,
                 .blocked_by = blocked_by
             };
 
             const auto positive_weight = std::max(0.0, range_weight);
+            const auto ev_weight = reachable ? positive_weight : 0.0;
             auto& class_total = class_totals[hand_class];
-            class_total.weighted_ev += artifact_row.ev * positive_weight;
+            class_total.weighted_ev += artifact_row.ev * ev_weight;
             class_total.total_weight += positive_weight;
+            class_total.reachable_weight += ev_weight;
             for (const auto& action : row.actions) {
                 const auto contribution = positive_weight * action.frequency;
                 class_total.action_totals[action.action] += contribution;
                 action_totals[action.action] += contribution;
-                action_weighted_evs[action.action] += contribution * artifact_row.ev;
-                action_weight_totals[action.action] += contribution;
+                action_weighted_evs[action.action] += ev_weight * action.frequency * artifact_row.ev;
+                action_weight_totals[action.action] += ev_weight * action.frequency;
             }
             class_total.rows.push_back(row);
-            weighted_ev += artifact_row.ev * positive_weight;
+            weighted_ev += artifact_row.ev * ev_weight;
             total_weight += positive_weight;
+            reachable_weight += ev_weight;
             model.hands.push_back(std::move(row));
         }
 
-        model.average_ev = total_weight > frequency_epsilon ? weighted_ev / total_weight : 0.0;
+        model.average_ev = reachable_weight > frequency_epsilon ? weighted_ev / reachable_weight : 0.0;
 
         for (auto& [hand_class, total] : class_totals) {
             const auto matrix_index = matrix_index_for_class(hand_class);
@@ -314,7 +376,8 @@ namespace zeta::holdem::ui::viewmodels {
             cell.exact_combos = std::move(total.rows);
             cell.actions = normalize_actions(total.action_totals, total.total_weight);
             cell.best_action = best_action_text(cell.actions);
-            cell.ev = total.total_weight > frequency_epsilon ? total.weighted_ev / total.total_weight : 0.0;
+            cell.reachable = total.reachable_weight > frequency_epsilon;
+            cell.ev = cell.reachable ? total.weighted_ev / total.reachable_weight : 0.0;
             cell.range_weight = total.total_weight;
         }
 

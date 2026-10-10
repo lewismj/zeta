@@ -127,6 +127,7 @@ namespace zeta::holdem::ui {
                     auto solution = solver::make_action_tree_solution_store(result.spot_snapshot, *result.artifact);
                     entry.document.replace_artifact(std::move(result.artifact));
                     entry.document.replace_solution(std::move(solution));
+                    entry.document.set_solved_spot(result.spot_snapshot);
                 }
                 summary = tr("completed");
                 append_solve_console(entry, tr("Graph build: %1ms\nCFR: %2ms\nExtraction: %3ms\nFinished %4\nStatus: completed")

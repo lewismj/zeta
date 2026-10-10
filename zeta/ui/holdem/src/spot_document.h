@@ -58,9 +58,16 @@ namespace zeta::holdem::ui {
         [[nodiscard]] const std::filesystem::path& file_path() const noexcept;
         [[nodiscard]] bool is_dirty() const noexcept;
 
+        /**
+         * True when an artifact exists but the current spot differs from the spot that
+         * produced it, i.e. the displayed strategy is stale relative to the inputs.
+         */
+        [[nodiscard]] bool is_strategy_stale() const;
+
         void replace_spot(spot next_spot);
         void replace_artifact(std::optional<solve_artifact> next_artifact);
         void replace_solution(std::optional<solver::solution_store> next_solution);
+        void set_solved_spot(spot solved_snapshot);
         void update_metadata(spot_document_metadata next_metadata);
         void add_history(solve_history_entry entry);
         void set_file_path(std::filesystem::path path);
@@ -74,6 +81,7 @@ namespace zeta::holdem::ui {
     private:
         spot spot_{};
         std::optional<solve_artifact> artifact_{};
+        std::optional<spot> solved_spot_{};
         std::optional<solver::solution_store> solution_{};
         spot_document_metadata metadata_{};
         std::vector<solve_history_entry> recent_history_{};

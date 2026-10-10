@@ -25,6 +25,7 @@ namespace zeta::holdem::ui {
         std::function<void(const spot&)> on_duplicate_requested;
         std::function<void()> on_raw_editor_dirty;
         std::function<void(const QString&)> on_leaving_raw_editor;
+        std::function<void()> on_resolve_requested;
     };
 
     class document_workspace_widget final : public QWidget {
@@ -55,6 +56,12 @@ namespace zeta::holdem::ui {
         [[nodiscard]] bool is_updating_editor() const;
         void refresh_inspector(const spot_document& document);
 
+        /**
+         * Updates the Strategy Explorer tab label and stale banner to reflect whether
+         * the current inputs still match the solved spot.
+         */
+        void update_strategy_staleness(bool stale);
+
     private:
         QWidget* create_actions_panel(const spot_document& document);
         QWidget* create_hands_panel(const spot_document& document);
@@ -72,6 +79,8 @@ namespace zeta::holdem::ui {
         QPlainTextEdit* solve_console_ = nullptr;
         QSplitter* workspace_splitter_ = nullptr;
         QLabel* summary_header_ = nullptr;
+        QWidget* strategy_tab_ = nullptr;
+        QWidget* stale_banner_ = nullptr;
     };
 
 }
