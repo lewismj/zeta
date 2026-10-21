@@ -3,7 +3,7 @@
 #include "board.h"
 #include "cfr/betting/betting.h"
 #include "cfr/scheduler/scheduler.h"
-#include "cfr/solver/iteration.h"
+#include "cfr/tables/table_layout.h"
 #include "range_parser.h"
 #include "terminal.h"
 
@@ -24,6 +24,7 @@
 #include <ios>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -250,7 +251,6 @@ namespace zeta::holdem::cli {
         uint32_t public_state_id = 0;
         uint8_t root_actor = 0;
         uint8_t hero_seat = 0;
-        uint16_t samples_per_combo = 64;
     };
 
     [[nodiscard]] inline cfr::betting_abstraction_policy resolve_spot_betting_policy(const solve_spot& spot)
@@ -553,18 +553,6 @@ namespace zeta::holdem::cli {
                 }
             }
             return river;
-        }
-
-        [[nodiscard]] inline std::vector<card> board_cards_from_mask(card_mask mask)
-        {
-            std::vector<card> cards;
-            cards.reserve(5);
-            for (uint8_t id = 0; id < 52; ++id) {
-                if ((mask & (card_mask{1} << id)) != 0) {
-                    cards.push_back(id);
-                }
-            }
-            return cards;
         }
 
         [[nodiscard]] inline std::string now_utc_iso8601()
@@ -1287,98 +1275,122 @@ namespace zeta::holdem::cli {
             }
         }
 
+        // Graph nodes that are terminal leaves, in ascending id order. Terminal
+        // evaluation is the dominant per-iteration cost and every leaf is independent,
+        // so the evaluators below run it as one parallel batch over this list.
+        [[nodiscard]] inline std::vector<uint32_t> terminal_node_ids(const cfr::game_graph& graph)
+        {
+            std::vector<uint32_t> terminals;
+            for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+                if (graph.node_types[node_id] == cfr::node_kind::terminal) {
+                    terminals.push_back(node_id);
+                }
+            }
+            return terminals;
+        }
+
+        // Backs up a non-terminal node from its children, which precede it in the
+        // graph's post-order. Chance children are weighted by `chance_probability`.
+        // The updating player's own nodes fold in its strategy (or take the best child
+        // for a best response). Every other player's node sums its children, because
+        // that player's strategy is already in the reach the leaves were evaluated with.
+        template <typename ChanceProbability>
+        inline void backup_combo_node(
+            const cfr::game_graph& graph,
+            const cfr::solver::solver_graph_annotations& annotations,
+            const combo_action_table& strategy_profile,
+            const std::vector<combination_index>& updating_combos,
+            const uint8_t updating_player,
+            const uint32_t node_id,
+            std::vector<reach_vector>& node_values,
+            const bool best_response,
+            ChanceProbability&& chance_probability)
+        {
+            auto& values = node_values[node_id];
+            const auto edges = graph.out_edges(node_id);
+            if (graph.node_types[node_id] == cfr::node_kind::chance) {
+                for (const auto& edge : edges) {
+                    const auto probability = chance_probability(edge);
+                    for (const auto combo : updating_combos) {
+                        values[combo] += probability * node_values[edge.child_node][combo];
+                    }
+                }
+                return;
+            }
+
+            if (annotations.actor_by_node[node_id] != updating_player) {
+                for (const auto& edge : edges) {
+                    for (const auto combo : updating_combos) {
+                        values[combo] += node_values[edge.child_node][combo];
+                    }
+                }
+                return;
+            }
+
+            const auto infoset_id = graph.infoset_id[node_id];
+            for (const auto combo : updating_combos) {
+                if (best_response) {
+                    float best = -std::numeric_limits<float>::infinity();
+                    for (const auto& edge : edges) {
+                        best = std::max(best, node_values[edge.child_node][combo]);
+                    }
+                    values[combo] = edges.empty() ? 0.0f : best;
+                } else {
+                    float total = 0.0f;
+                    for (const auto& edge : edges) {
+                        total += strategy_profile.value(combo, infoset_id, edge.action_index)
+                            * node_values[edge.child_node][combo];
+                    }
+                    values[combo] = total;
+                }
+            }
+        }
+
+        // Counterfactual values for the updating player over a single-street river
+        // betting tree, for any player count. Terminal leaves are evaluated in parallel
+        // (each writes only its own node's values, so results do not depend on the
+        // worker count); the backup then runs in post-order.
         template <std::size_t N>
         inline void evaluate_combo_profile(
             const cfr::holdem_betting_graph<N>& lowered,
             const combo_action_table& strategy_profile,
-            const std::array<reach_vector, N>& base_reach,
             const std::array<std::vector<combination_index>, N>& active_combos,
             const std::vector<std::array<reach_vector, N>>& node_reach,
             const river_terminal_cache& cache,
             const std::array<river_reach_index, N>& base_indices,
+            const std::vector<uint32_t>& terminal_nodes,
             const uint8_t updating_player,
             std::vector<reach_vector>& node_values,
-            const uint16_t samples_per_combo,
+            cfr::scheduler::worker_pool& pool,
             const bool best_response = false)
         {
             node_values.assign(lowered.graph.node_count, {});
-            terminal_workspace<N> workspace{};
             const terminal_engine<N> engine{};
+            pool.run(terminal_nodes.size(), [&](uint32_t, const uint64_t task_index) {
+                const auto node_id = terminal_nodes[task_index];
+                const auto& terminal_state = lowered.terminal_states[lowered.terminal_leaves[node_id].terminal_state_id];
+                // The updating player's leaf values must not depend on its own reach,
+                // so it keeps its root range; every other seat uses its reach here.
+                auto reach = std::make_unique<std::array<river_reach_index, N>>();
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    (*reach)[seat] = seat == updating_player
+                        ? base_indices[seat]
+                        : make_river_reach_index(cache, node_reach[node_id][seat]);
+                }
+                const auto values = engine.evaluate_terminal_values(cache, *reach, terminal_state);
+                for (const auto combo : active_combos[updating_player]) {
+                    node_values[node_id][combo] = values[updating_player][combo];
+                }
+            });
+
             for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
-                const auto kind = lowered.graph.node_types[node_id];
-                if (kind == cfr::node_kind::terminal) {
-                    const auto terminal_state_id = lowered.terminal_leaves[node_id].terminal_state_id;
-                    terminal_values<N> values{};
-                    if constexpr (N == 2) {
-                        const auto opponent = static_cast<uint8_t>(1u - updating_player);
-                        const auto opponent_index = make_river_reach_index(cache, node_reach[node_id][opponent]);
-                        if (updating_player == 0u) {
-                            values = engine.evaluate_terminal_values(
-                                cache,
-                                base_indices[0],
-                                opponent_index,
-                                lowered.terminal_states[terminal_state_id],
-                                samples_per_combo);
-                        } else {
-                            values = engine.evaluate_terminal_values(
-                                cache,
-                                opponent_index,
-                                base_indices[1],
-                                lowered.terminal_states[terminal_state_id],
-                                samples_per_combo);
-                        }
-                    } else {
-                        auto terminal_reach = node_reach[node_id];
-                        terminal_reach[updating_player] = base_reach[updating_player];
-                        workspace.materialize(cache, terminal_reach);
-                        values = engine.evaluate_terminal_values(
-                            cache,
-                            workspace.reach,
-                            lowered.terminal_states[terminal_state_id],
-                            samples_per_combo);
-                    }
-                    for (const auto combo : active_combos[updating_player]) {
-                        node_values[node_id][combo] = values[updating_player][combo];
-                    }
+                if (lowered.graph.node_types[node_id] == cfr::node_kind::terminal) {
                     continue;
                 }
-
-                const auto edges = lowered.graph.out_edges(node_id);
-                if (kind == cfr::node_kind::chance) {
-                    for (const auto& edge : edges) {
-                        for (const auto combo : active_combos[updating_player]) {
-                            node_values[node_id][combo] += node_values[edge.child_node][combo];
-                        }
-                    }
-                    continue;
-                }
-
-                const auto actor = lowered.annotations.actor_by_node[node_id];
-                const auto infoset_id = lowered.graph.infoset_id[node_id];
-                if (actor == updating_player) {
-                    for (const auto combo : active_combos[updating_player]) {
-                        if (best_response) {
-                            float best = -std::numeric_limits<float>::infinity();
-                            for (const auto& edge : edges) {
-                                best = std::max(best, node_values[edge.child_node][combo]);
-                            }
-                            node_values[node_id][combo] = edges.empty() ? 0.0f : best;
-                        } else {
-                            float total = 0.0f;
-                            for (const auto& edge : edges) {
-                                total += strategy_profile.value(combo, infoset_id, edge.action_index)
-                                    * node_values[edge.child_node][combo];
-                            }
-                            node_values[node_id][combo] = total;
-                        }
-                    }
-                } else {
-                    for (const auto& edge : edges) {
-                        for (const auto combo : active_combos[updating_player]) {
-                            node_values[node_id][combo] += node_values[edge.child_node][combo];
-                        }
-                    }
-                }
+                backup_combo_node(
+                    lowered.graph, lowered.annotations, strategy_profile, active_combos[updating_player],
+                    updating_player, node_id, node_values, best_response,
+                    [](const cfr::edge&) { return 1.0f; });
             }
         }
 
@@ -1414,11 +1426,70 @@ namespace zeta::holdem::cli {
             return aggregate;
         }
 
-        // Back up counterfactual values for the updating player over the exact
-        // multi-street public game. Terminal leaves dispatch to the per-river terminal
-        // cache (showdown) or a blocker-aware fold evaluation (any street); chance nodes
-        // weight each child by its outcome probability; player nodes fold in the current
-        // strategy for the updating player and sum for the opponent.
+        using combo_mass_array = std::array<double, combination_count>;
+
+        // Reach mass of opponent hands compatible with each of `seat`'s hands at a node
+        // whose public board is `board_mask`: the normaliser that turns a counterfactual
+        // value into an EV in chips. Heads-up this is exact, using the same blocker
+        // inclusion-exclusion as the fold kernel. Multiway it is the product of each
+        // opponent's compatible mass, which ignores card collisions between opponents and
+        // so slightly overstates the joint mass when their ranges share cards.
+        template <std::size_t N>
+        [[nodiscard]] inline combo_mass_array opponent_reach_masses(
+            const std::array<reach_vector, N>& reach,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const card_mask board_mask,
+            const uint8_t seat)
+        {
+            combo_mass_array masses{};
+            for (const auto combo : active_combos[seat]) {
+                if ((combination_mask(combo) & board_mask) == 0) {
+                    masses[combo] = 1.0;
+                }
+            }
+            for (uint8_t opponent = 0; opponent < N; ++opponent) {
+                if (opponent == seat) {
+                    continue;
+                }
+                const auto aggregate = accumulate_fold_opponent_mass(reach[opponent], active_combos[opponent], board_mask);
+                for (const auto combo : active_combos[seat]) {
+                    if (masses[combo] == 0.0) {
+                        continue;
+                    }
+                    const auto [first, second] = extract_combo_cards(combination_mask(combo));
+                    const auto self_weight = static_cast<double>(std::max(0.0f, reach[opponent][combo]));
+                    masses[combo] *= clamp_compatible_mass(
+                        aggregate.total - aggregate.mass_by_card[first] - aggregate.mass_by_card[second] + self_weight);
+                }
+            }
+            return masses;
+        }
+
+        // Public board at every node of a multi-street public game.
+        template <std::size_t N>
+        [[nodiscard]] inline std::vector<card_mask> multi_street_board_by_node(const cfr::holdem_public_game_graph<N>& game)
+        {
+            std::vector<card_mask> boards(game.graph.node_count, 0u);
+            for (uint32_t node_id = 0; node_id < game.graph.node_count; ++node_id) {
+                const auto state_id = game.annotations.state_by_node[node_id].public_state_id;
+                if (state_id < game.public_states.states.size()) {
+                    boards[node_id] = game.public_states.states[state_id].board_cards;
+                }
+            }
+            return boards;
+        }
+
+        // EV in chips from a counterfactual value and its opponent reach mass. A hand
+        // with no compatible opponent hand has no defined EV and reports 0.
+        [[nodiscard]] inline double ev_from_counterfactual_value(const double counterfactual_value, const double opponent_mass) noexcept
+        {
+            return opponent_mass > minimum_ev_reach_mass ? counterfactual_value / opponent_mass : 0.0;
+        }
+
+        // Counterfactual values for the updating player over the exact multi-street
+        // public game. Terminal leaves (evaluated in parallel) dispatch to the per-river
+        // terminal cache (showdown) or a blocker-aware fold evaluation (any street);
+        // chance nodes weight each child by its outcome probability.
         template <std::size_t N>
         inline void evaluate_multi_street_combo_profile(
             const cfr::holdem_public_game_graph<N>& lowered,
@@ -1427,9 +1498,10 @@ namespace zeta::holdem::cli {
             const std::vector<std::array<reach_vector, N>>& node_reach,
             const cfr::runout_terminal_table& terminal_table,
             const std::vector<std::array<river_reach_index, N>>& river_base_index_by_state,
+            const std::vector<uint32_t>& terminal_nodes,
             const uint8_t updating_player,
             std::vector<reach_vector>& node_values,
-            const uint16_t samples_per_combo,
+            cfr::scheduler::worker_pool& pool,
             const pruning_runtime* pruning = nullptr,
             const bool best_response = false)
         {
@@ -1437,95 +1509,61 @@ namespace zeta::holdem::cli {
             node_values.assign(lowered.graph.node_count, {});
             const terminal_engine<N> engine{};
             const auto opponent = static_cast<uint8_t>(1u - updating_player);
-            for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
+            pool.run(terminal_nodes.size(), [&](uint32_t, const uint64_t task_index) {
+                const auto node_id = terminal_nodes[task_index];
                 if (pruning != nullptr && pruning->node_live[node_id] == 0u) {
-                    continue;
+                    return;
                 }
-                const auto kind = lowered.graph.node_types[node_id];
-                if (kind == cfr::node_kind::terminal) {
-                    const auto state_id = lowered.annotations.state_by_node[node_id].public_state_id;
-                    const auto terminal_state_id = lowered.terminal_leaves[node_id].terminal_state_id;
-                    const auto& terminal_state = lowered.terminal_states[terminal_state_id];
-                    if (terminal_state.kind == terminal_state_kind::showdown) {
-                        const auto* entry = terminal_table.find(state_id);
-                        assert(entry != nullptr);
-                        const auto opponent_index = make_river_reach_index(entry->cache, node_reach[node_id][opponent]);
-                        const auto values = updating_player == 0u
-                            ? engine.evaluate_terminal_values(
-                                entry->cache, river_base_index_by_state[state_id][0], opponent_index,
-                                terminal_state, samples_per_combo)
-                            : engine.evaluate_terminal_values(
-                                entry->cache, opponent_index, river_base_index_by_state[state_id][1],
-                                terminal_state, samples_per_combo);
-                        for (const auto combo : active_combos[updating_player]) {
-                            node_values[node_id][combo] = values[updating_player][combo];
-                        }
-                    } else {
-                        const auto board_mask = lowered.public_states.states[state_id].board_cards;
-                        const auto payoff = ::zeta::holdem::detail::fold_payoff(terminal_state);
-                        const auto aggregate = accumulate_fold_opponent_mass(
-                            node_reach[node_id][opponent], active_combos[opponent], board_mask);
-                        for (const auto combo : active_combos[updating_player]) {
-                            const auto mask = combination_mask(combo);
-                            if ((mask & board_mask) != 0) {
-                                continue;
-                            }
-                            const auto [first, second] = extract_combo_cards(mask);
-                            const auto self_weight = std::max(0.0f, node_reach[node_id][opponent][combo]);
-                            const auto compatible = clamp_compatible_mass(
-                                aggregate.total - aggregate.mass_by_card[first] - aggregate.mass_by_card[second]
-                                    + static_cast<double>(self_weight));
-                            node_values[node_id][combo] = static_cast<float>(
-                                compatible * payoff[updating_player]);
-                        }
-                    }
-                    continue;
-                }
-
-                const auto edges = lowered.graph.out_edges(node_id);
-                if (kind == cfr::node_kind::chance) {
-                    // Public outcome probabilities ignore the hole cards; rescale so each
-                    // outcome compatible with a hand pair carries its true conditional weight.
-                    const auto* event = lowered.chance_events.event_for_node(node_id);
-                    const auto private_scale = event == nullptr
-                        ? 1.0
-                        : cfr::private_hand_chance_scale(*event, static_cast<uint32_t>(N));
-                    for (const auto& edge : edges) {
-                        const auto probability = static_cast<float>(
-                            private_scale * lowered.chance_events.probability_for_edge(node_id, edge));
-                        for (const auto combo : active_combos[updating_player]) {
-                            node_values[node_id][combo] += probability * node_values[edge.child_node][combo];
-                        }
-                    }
-                    continue;
-                }
-
-                const auto actor = lowered.annotations.actor_by_node[node_id];
-                const auto infoset_id = lowered.graph.infoset_id[node_id];
-                if (actor == updating_player) {
+                const auto state_id = lowered.annotations.state_by_node[node_id].public_state_id;
+                const auto& terminal_state = lowered.terminal_states[lowered.terminal_leaves[node_id].terminal_state_id];
+                if (terminal_state.kind == terminal_state_kind::showdown) {
+                    const auto* entry = terminal_table.find(state_id);
+                    assert(entry != nullptr);
+                    auto reach = std::make_unique<std::array<river_reach_index, N>>();
+                    (*reach)[updating_player] = river_base_index_by_state[state_id][updating_player];
+                    (*reach)[opponent] = make_river_reach_index(entry->cache, node_reach[node_id][opponent]);
+                    const auto values = engine.evaluate_terminal_values(entry->cache, *reach, terminal_state);
                     for (const auto combo : active_combos[updating_player]) {
-                        if (best_response) {
-                            float best = -std::numeric_limits<float>::infinity();
-                            for (const auto& edge : edges) {
-                                best = std::max(best, node_values[edge.child_node][combo]);
-                            }
-                            node_values[node_id][combo] = edges.empty() ? 0.0f : best;
-                        } else {
-                            float total = 0.0f;
-                            for (const auto& edge : edges) {
-                                total += strategy_profile.value(combo, infoset_id, edge.action_index)
-                                    * node_values[edge.child_node][combo];
-                            }
-                            node_values[node_id][combo] = total;
-                        }
+                        node_values[node_id][combo] = values[updating_player][combo];
                     }
-                } else {
-                    for (const auto& edge : edges) {
-                        for (const auto combo : active_combos[updating_player]) {
-                            node_values[node_id][combo] += node_values[edge.child_node][combo];
-                        }
-                    }
+                    return;
                 }
+
+                const auto board_mask = lowered.public_states.states[state_id].board_cards;
+                const auto payoff = ::zeta::holdem::detail::fold_payoff(terminal_state);
+                const auto aggregate = accumulate_fold_opponent_mass(
+                    node_reach[node_id][opponent], active_combos[opponent], board_mask);
+                for (const auto combo : active_combos[updating_player]) {
+                    const auto mask = combination_mask(combo);
+                    if ((mask & board_mask) != 0) {
+                        continue;
+                    }
+                    const auto [first, second] = extract_combo_cards(mask);
+                    const auto self_weight = std::max(0.0f, node_reach[node_id][opponent][combo]);
+                    const auto compatible = clamp_compatible_mass(
+                        aggregate.total - aggregate.mass_by_card[first] - aggregate.mass_by_card[second]
+                            + static_cast<double>(self_weight));
+                    node_values[node_id][combo] = static_cast<float>(compatible * payoff[updating_player]);
+                }
+            });
+
+            for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
+                if (lowered.graph.node_types[node_id] == cfr::node_kind::terminal
+                    || (pruning != nullptr && pruning->node_live[node_id] == 0u)) {
+                    continue;
+                }
+                // Public outcome probabilities ignore the hole cards; rescale so each
+                // outcome compatible with a hand pair carries its true conditional weight.
+                const auto* event = lowered.chance_events.event_for_node(node_id);
+                const auto private_scale = event == nullptr
+                    ? 1.0
+                    : cfr::private_hand_chance_scale(*event, static_cast<uint32_t>(N));
+                backup_combo_node(
+                    lowered.graph, lowered.annotations, strategy_profile, active_combos[updating_player],
+                    updating_player, node_id, node_values, best_response,
+                    [&](const cfr::edge& edge) {
+                        return static_cast<float>(private_scale * lowered.chance_events.probability_for_edge(node_id, edge));
+                    });
             }
         }
 
@@ -1676,7 +1714,6 @@ namespace zeta::holdem::cli {
             cfr::solver::compatibility_hasher hash;
             hash_add_string(hash, "cfr+");
             hash.add_u64(requested_iterations);
-            hash.add_u64(static_cast<uint64_t>(spot.samples_per_combo));
             hash.add_u64(runtime.enable_card_isomorphism ? 1u : 0u);
             hash.add_u64(runtime.allow_lossy_card_isomorphism ? 1u : 0u);
             hash.add_u64(runtime.pruning.enabled ? 1u : 0u);
@@ -1716,10 +1753,8 @@ namespace zeta::holdem::cli {
         }
 
         [[nodiscard]] inline std::vector<std::string> build_solve_warnings(
-            const std::size_t player_count,
             const solve_runtime_options& runtime,
-            const bool exploitability_available,
-            const uint16_t samples_per_combo)
+            const bool exploitability_available)
         {
             std::vector<std::string> warnings;
             warnings.push_back(
@@ -1727,13 +1762,8 @@ namespace zeta::holdem::cli {
                 "(bet sizings and max raises); it is not the full no-limit game.");
             if (!exploitability_available) {
                 warnings.push_back(
-                    "Exact best-response exploitability was not computed for this solve path "
-                    "(multiway or non-root-actor); reporting a normalized average-regret metric instead.");
-                if (player_count > 2 && samples_per_combo > 0) {
-                    warnings.push_back(
-                        "Showdown equity is Monte-Carlo sampled (samples_per_combo="
-                        + std::to_string(samples_per_combo) + "); reported EVs are estimates.");
-                }
+                    "Exact best-response exploitability is only computed heads-up; "
+                    "reporting a normalized average-regret metric instead.");
             }
             if (runtime.enable_card_isomorphism && runtime.allow_lossy_card_isomorphism) {
                 warnings.push_back(
@@ -1757,123 +1787,104 @@ namespace zeta::holdem::cli {
             std::array<double, 2> seat_gap{};
         };
 
-        template <std::size_t N>
-        [[nodiscard]] inline double range_weighted_root_value(
-            const std::vector<reach_vector>& node_values,
-            const uint32_t root_node,
+        // Root range EV of `seat` in chips: the sum of weight times counterfactual value
+        // over the sum of weight times opponent reach mass, so exploitability is reported
+        // in the same units as the per-hand and range EVs in the artifact.
+        [[nodiscard]] inline double root_range_ev(
+            const reach_vector& root_values,
             const reach_vector& own_reach,
             const std::vector<combination_index>& active,
-            const double weight_sum) noexcept
+            const combo_mass_array& opponent_masses) noexcept
         {
-            if (weight_sum <= 0.0) {
-                return 0.0;
-            }
-            double total = 0.0;
+            double weighted_value = 0.0;
+            double matchup_mass = 0.0;
             for (const auto combo : active) {
                 const auto weight = static_cast<double>(std::max(0.0f, own_reach[combo]));
-                total += weight * static_cast<double>(node_values[root_node][combo]);
+                weighted_value += weight * static_cast<double>(root_values[combo]);
+                matchup_mass += weight * opponent_masses[combo];
             }
-            return total / weight_sum;
+            return ev_from_counterfactual_value(weighted_value, matchup_mass);
         }
 
-        // Measure heads-up exploitability of the (average) strategy over the exact
-        // single-street river graph. For each seat the best response value (max over the
-        // seat's own actions) minus the strategy value gives that seat's exploitability
-        // gap; both gaps are non-negative because a max dominates the strategy-weighted
-        // average at every decision node.
-        template <std::size_t N>
+        // Heads-up exploitability of the (average) strategy. For each seat, the best
+        // response value (max over the seat's own actions) minus the strategy value is
+        // that seat's gap; both gaps are non-negative because a max dominates the
+        // strategy-weighted average at every decision node. `evaluate(seat, best_response,
+        // values)` fills the seat's counterfactual values at every node.
+        template <typename Evaluate>
+        [[nodiscard]] inline hu_exploitability measure_heads_up_exploitability(
+            const uint32_t root_node,
+            const card_mask root_board,
+            const std::array<reach_vector, 2>& reach_vectors,
+            const std::array<std::vector<combination_index>, 2>& active_combos,
+            std::vector<reach_vector>& value_scratch,
+            Evaluate&& evaluate)
+        {
+            hu_exploitability out{};
+            for (uint8_t seat = 0; seat < 2; ++seat) {
+                const auto masses = opponent_reach_masses<2>(reach_vectors, active_combos, root_board, seat);
+                evaluate(seat, false, value_scratch);
+                const auto profile_value = root_range_ev(value_scratch[root_node], reach_vectors[seat], active_combos[seat], masses);
+                evaluate(seat, true, value_scratch);
+                const auto best_response_value = root_range_ev(value_scratch[root_node], reach_vectors[seat], active_combos[seat], masses);
+                const auto gap = std::max(0.0, best_response_value - profile_value);
+                out.seat_gap[seat] = gap;
+                out.nash_conv += gap;
+            }
+            out.exploitability = out.nash_conv / 2.0;
+            return out;
+        }
+
+        // Exploitability over the single-street river graph (heads-up only).
         [[nodiscard]] inline hu_exploitability measure_river_exploitability(
-            const cfr::holdem_betting_graph<N>& lowered,
+            const cfr::holdem_betting_graph<2>& lowered,
             const combo_action_table& average_strategy,
-            const std::array<reach_vector, N>& reach_vectors,
-            const std::array<std::vector<combination_index>, N>& active_combos,
+            const std::array<reach_vector, 2>& reach_vectors,
+            const std::array<std::vector<combination_index>, 2>& active_combos,
             const river_terminal_cache& cache,
-            const std::array<river_reach_index, N>& base_indices,
-            std::vector<std::array<reach_vector, N>>& node_reach_scratch,
+            const std::array<river_reach_index, 2>& base_indices,
+            const std::vector<uint32_t>& terminal_nodes,
+            std::vector<std::array<reach_vector, 2>>& node_reach_scratch,
             std::vector<reach_vector>& value_scratch,
-            const uint16_t samples_per_combo)
+            cfr::scheduler::worker_pool& pool)
         {
-            hu_exploitability out{};
-            if constexpr (N != 2) {
-                return out;
-            } else {
-                build_node_reach_vectors(
-                    lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach_scratch);
-                for (uint8_t seat = 0; seat < N; ++seat) {
-                    double weight_sum = 0.0;
-                    for (const auto combo : active_combos[seat]) {
-                        weight_sum += static_cast<double>(std::max(0.0f, reach_vectors[seat][combo]));
-                    }
-                    if (weight_sum <= 0.0) {
-                        continue;
-                    }
+            build_node_reach_vectors(
+                lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach_scratch);
+            return measure_heads_up_exploitability(
+                lowered.graph.root_node, cache.river_board.mask, reach_vectors, active_combos, value_scratch,
+                [&](const uint8_t seat, const bool best_response, std::vector<reach_vector>& values) {
                     evaluate_combo_profile(
-                        lowered, average_strategy, reach_vectors, active_combos, node_reach_scratch,
-                        cache, base_indices, seat, value_scratch, samples_per_combo, false);
-                    const auto profile_value = range_weighted_root_value<N>(
-                        value_scratch, lowered.graph.root_node, reach_vectors[seat], active_combos[seat], weight_sum);
-                    evaluate_combo_profile(
-                        lowered, average_strategy, reach_vectors, active_combos, node_reach_scratch,
-                        cache, base_indices, seat, value_scratch, samples_per_combo, true);
-                    const auto br_value = range_weighted_root_value<N>(
-                        value_scratch, lowered.graph.root_node, reach_vectors[seat], active_combos[seat], weight_sum);
-                    const auto gap = std::max(0.0, br_value - profile_value);
-                    out.seat_gap[seat] = gap;
-                    out.nash_conv += gap;
-                }
-                out.exploitability = out.nash_conv / static_cast<double>(N);
-                return out;
-            }
+                        lowered, average_strategy, active_combos, node_reach_scratch, cache, base_indices,
+                        terminal_nodes, seat, values, pool, best_response);
+                });
         }
 
-        // Measure heads-up exploitability over the exact multi-street public game. Same
-        // best-response backup as the river case, but terminal leaves dispatch to the
-        // per-river terminal cache / fold evaluation and chance nodes weight children by
-        // outcome probability. Pruning is intentionally ignored so the best response can
-        // exploit actions the pruned solver stopped traversing.
-        template <std::size_t N>
+        // Exploitability over the exact multi-street public game (heads-up only).
+        // Pruning is intentionally ignored so the best response can exploit actions the
+        // pruned solver stopped traversing.
         [[nodiscard]] inline hu_exploitability measure_multi_street_exploitability(
-            const cfr::holdem_public_game_graph<N>& lowered,
+            const cfr::holdem_public_game_graph<2>& lowered,
             const combo_action_table& average_strategy,
-            const std::array<reach_vector, N>& reach_vectors,
-            const std::array<std::vector<combination_index>, N>& active_combos,
+            const std::array<reach_vector, 2>& reach_vectors,
+            const std::array<std::vector<combination_index>, 2>& active_combos,
             const cfr::runout_terminal_table& terminal_table,
-            const std::vector<std::array<river_reach_index, N>>& river_base_index_by_state,
-            std::vector<std::array<reach_vector, N>>& node_reach_scratch,
+            const std::vector<std::array<river_reach_index, 2>>& river_base_index_by_state,
+            const std::vector<uint32_t>& terminal_nodes,
+            std::vector<std::array<reach_vector, 2>>& node_reach_scratch,
             std::vector<reach_vector>& value_scratch,
-            const uint16_t samples_per_combo)
+            cfr::scheduler::worker_pool& pool)
         {
-            hu_exploitability out{};
-            if constexpr (N != 2) {
-                return out;
-            } else {
-                build_node_reach_vectors(
-                    lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach_scratch);
-                for (uint8_t seat = 0; seat < N; ++seat) {
-                    double weight_sum = 0.0;
-                    for (const auto combo : active_combos[seat]) {
-                        weight_sum += static_cast<double>(std::max(0.0f, reach_vectors[seat][combo]));
-                    }
-                    if (weight_sum <= 0.0) {
-                        continue;
-                    }
+            build_node_reach_vectors(
+                lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach_scratch);
+            const auto root_state = lowered.annotations.state_by_node[lowered.graph.root_node].public_state_id;
+            return measure_heads_up_exploitability(
+                lowered.graph.root_node, lowered.public_states.states[root_state].board_cards, reach_vectors,
+                active_combos, value_scratch,
+                [&](const uint8_t seat, const bool best_response, std::vector<reach_vector>& values) {
                     evaluate_multi_street_combo_profile(
                         lowered, average_strategy, active_combos, node_reach_scratch, terminal_table,
-                        river_base_index_by_state, seat, value_scratch, samples_per_combo, nullptr, false);
-                    const auto profile_value = range_weighted_root_value<N>(
-                        value_scratch, lowered.graph.root_node, reach_vectors[seat], active_combos[seat], weight_sum);
-                    evaluate_multi_street_combo_profile(
-                        lowered, average_strategy, active_combos, node_reach_scratch, terminal_table,
-                        river_base_index_by_state, seat, value_scratch, samples_per_combo, nullptr, true);
-                    const auto br_value = range_weighted_root_value<N>(
-                        value_scratch, lowered.graph.root_node, reach_vectors[seat], active_combos[seat], weight_sum);
-                    const auto gap = std::max(0.0, br_value - profile_value);
-                    out.seat_gap[seat] = gap;
-                    out.nash_conv += gap;
-                }
-                out.exploitability = out.nash_conv / static_cast<double>(N);
-                return out;
-            }
+                        river_base_index_by_state, terminal_nodes, seat, values, pool, nullptr, best_response);
+                });
         }
 
         // Mean over player infosets of the maximum positive regret, divided by the
@@ -1913,30 +1924,6 @@ namespace zeta::holdem::cli {
                     sum += static_cast<double>(best);
                     ++count;
                 }
-            }
-            return count == 0 ? 0.0 : sum / (static_cast<double>(count) * static_cast<double>(iterations));
-        }
-
-        [[nodiscard]] inline double normalized_regret_from_table(
-            const cfr::regret_table& regrets,
-            const uint64_t iterations)
-        {
-            if (iterations == 0) {
-                return 0.0;
-            }
-            double sum = 0.0;
-            uint64_t count = 0;
-            for (uint32_t infoset = 0; infoset < regrets.infoset_count(); ++infoset) {
-                const auto span = regrets.infoset_regrets(infoset);
-                if (span.empty()) {
-                    continue;
-                }
-                float best = 0.0f;
-                for (const auto value : span) {
-                    best = std::max(best, value);
-                }
-                sum += static_cast<double>(best);
-                ++count;
             }
             return count == 0 ? 0.0 : sum / (static_cast<double>(count) * static_cast<double>(iterations));
         }
@@ -1988,66 +1975,6 @@ namespace zeta::holdem::cli {
                 });
             }
             return root_strategy;
-        }
-
-        using combo_mass_array = std::array<double, combination_count>;
-
-        // Reach mass of opponent hands compatible with each of `seat`'s hands at a node
-        // whose public board is `board_mask`: the normaliser that turns a counterfactual
-        // value into an EV in chips. Heads-up this is exact, using the same blocker
-        // inclusion-exclusion as the fold kernel. Multiway it is the product of each
-        // opponent's compatible mass, which ignores card collisions between opponents and
-        // so slightly overstates the joint mass when their ranges share cards.
-        template <std::size_t N>
-        [[nodiscard]] inline combo_mass_array opponent_reach_masses(
-            const std::array<reach_vector, N>& reach,
-            const std::array<std::vector<combination_index>, N>& active_combos,
-            const card_mask board_mask,
-            const uint8_t seat)
-        {
-            combo_mass_array masses{};
-            for (const auto combo : active_combos[seat]) {
-                if ((combination_mask(combo) & board_mask) == 0) {
-                    masses[combo] = 1.0;
-                }
-            }
-            for (uint8_t opponent = 0; opponent < N; ++opponent) {
-                if (opponent == seat) {
-                    continue;
-                }
-                const auto aggregate = accumulate_fold_opponent_mass(reach[opponent], active_combos[opponent], board_mask);
-                for (const auto combo : active_combos[seat]) {
-                    if (masses[combo] == 0.0) {
-                        continue;
-                    }
-                    const auto [first, second] = extract_combo_cards(combination_mask(combo));
-                    const auto self_weight = static_cast<double>(std::max(0.0f, reach[opponent][combo]));
-                    masses[combo] *= clamp_compatible_mass(
-                        aggregate.total - aggregate.mass_by_card[first] - aggregate.mass_by_card[second] + self_weight);
-                }
-            }
-            return masses;
-        }
-
-        // Public board at every node of a multi-street public game.
-        template <std::size_t N>
-        [[nodiscard]] inline std::vector<card_mask> multi_street_board_by_node(const cfr::holdem_public_game_graph<N>& game)
-        {
-            std::vector<card_mask> boards(game.graph.node_count, 0u);
-            for (uint32_t node_id = 0; node_id < game.graph.node_count; ++node_id) {
-                const auto state_id = game.annotations.state_by_node[node_id].public_state_id;
-                if (state_id < game.public_states.states.size()) {
-                    boards[node_id] = game.public_states.states[state_id].board_cards;
-                }
-            }
-            return boards;
-        }
-
-        // EV in chips from a counterfactual value and its opponent reach mass. A hand
-        // with no compatible opponent hand has no defined EV and reports 0.
-        [[nodiscard]] inline double ev_from_counterfactual_value(const double counterfactual_value, const double opponent_mass) noexcept
-        {
-            return opponent_mass > minimum_ev_reach_mass ? counterfactual_value / opponent_mass : 0.0;
         }
 
         [[nodiscard]] inline hand_strategy make_hand_strategy_row(
@@ -2388,6 +2315,12 @@ namespace zeta::holdem::cli {
         inline constexpr double default_memory_budget_fraction = 0.8;
         inline constexpr uint64_t fallback_memory_budget_bytes = uint64_t{4} << 30; // 4 GiB
 
+        /** Worker threads for terminal evaluation: the runtime setting, clamped to [1, 64]. */
+        [[nodiscard]] inline uint32_t resolve_worker_count(const solve_runtime_options& runtime) noexcept
+        {
+            return std::clamp<uint32_t>(runtime.worker_threads, 1u, 64u);
+        }
+
         [[nodiscard]] inline uint64_t resolve_memory_budget_bytes(const solve_runtime_options& runtime) noexcept
         {
             if (runtime.memory_budget_bytes != 0u) {
@@ -2491,6 +2424,100 @@ namespace zeta::holdem::cli {
         // blocker-aware fold evaluation (any street), keeping the expensive hand evaluation
         // outside the regret-matching hot loop. Heads-up only; higher seat counts are
         // rejected because the exact terminal kernels are defined for two players.
+        // Root summary of a solve. `root_strategy` is the root actor's range-level
+        // action mix. Hero rows carry the hero's root EV and, when the hero acts at the
+        // root, its per-hand action frequencies; otherwise `strategy` stays empty
+        // because the hero has no decision there (per-node rows cover later decisions).
+        template <std::size_t N>
+        inline void append_root_summary(
+            solve_artifact& artifact,
+            const cfr::game_graph& graph,
+            const cfr::solver::solver_graph_annotations& annotations,
+            const combo_action_table& average_strategy,
+            const std::vector<cfr::betting_action>& root_actions,
+            const std::array<reach_vector, N>& reach_vectors,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const reach_vector& hero_root_values,
+            const card_mask root_board,
+            const uint8_t hero,
+            const utility gross_pot)
+        {
+            const auto root_infoset = graph.infoset_id[graph.root_node];
+            const auto root_actor = annotations.actor_by_node[graph.root_node];
+            artifact.root_strategy = aggregate_root_strategy_for_actor(
+                average_strategy, root_infoset, root_actions, reach_vectors[root_actor], gross_pot);
+
+            const auto masses = opponent_reach_masses<N>(reach_vectors, active_combos, root_board, hero);
+            for (const auto combo : active_combos[hero]) {
+                std::vector<action_strategy> combo_strategy;
+                if (hero == root_actor) {
+                    combo_strategy.reserve(root_actions.size());
+                    for (std::size_t action_index = 0; action_index < root_actions.size(); ++action_index) {
+                        combo_strategy.push_back(action_strategy{
+                            .action = artifact.root_strategy[action_index].action,
+                            .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
+                        });
+                    }
+                }
+                artifact.strategy.push_back(make_hand_strategy_row(
+                    combo,
+                    std::move(combo_strategy),
+                    reach_vectors[hero][combo],
+                    reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
+                    hero_root_values[combo],
+                    masses[combo]));
+            }
+        }
+
+        // Range-level action mix at every player node, weighted by the acting seat's
+        // reach. Root actions keep the root strategy's labels; deeper actions are
+        // labelled by index.
+        template <std::size_t N>
+        [[nodiscard]] inline std::vector<std::vector<action_strategy>> make_node_strategies(
+            const cfr::game_graph& graph,
+            const cfr::solver::solver_graph_annotations& annotations,
+            const combo_action_table& average_strategy,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const std::vector<std::array<reach_vector, N>>& node_reach,
+            const std::vector<action_strategy>& root_strategy)
+        {
+            std::vector<std::vector<action_strategy>> node_strategies(graph.node_count);
+            for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+                if (!graph.is_player_node(node_id)) {
+                    continue;
+                }
+                const auto actor = annotations.actor_by_node[node_id];
+                const auto infoset_id = graph.infoset_id[node_id];
+                const auto edges = graph.out_edges(node_id);
+                std::vector<double> weighted(edges.size(), 0.0);
+                double total = 0.0;
+                for (const auto combo : active_combos[actor]) {
+                    const auto weight = std::max(0.0f, node_reach[node_id][actor][combo]);
+                    if (weight <= 0.0f) {
+                        continue;
+                    }
+                    total += static_cast<double>(weight);
+                    for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
+                        weighted[action_index] += static_cast<double>(weight)
+                            * static_cast<double>(average_strategy.value(combo, infoset_id, action_index));
+                    }
+                }
+                auto& node_strategy = node_strategies[node_id];
+                node_strategy.reserve(edges.size());
+                for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
+                    node_strategy.push_back(action_strategy{
+                        .action = (node_id == graph.root_node && action_index < root_strategy.size())
+                            ? root_strategy[action_index].action
+                            : std::to_string(action_index),
+                        .frequency = total > 0.0
+                            ? weighted[action_index] / total
+                            : (edges.empty() ? 0.0 : 1.0 / static_cast<double>(edges.size()))
+                    });
+                }
+            }
+            return node_strategies;
+        }
+
         template <std::size_t N>
         [[nodiscard]] inline std::expected<void, cli_error> solve_multi_street_public_game(
             const solve_spot& spot,
@@ -2528,6 +2555,8 @@ namespace zeta::holdem::cli {
                 combo_action_table current_strategy(layout);
                 combo_action_table average_strategy(layout);
                 const auto active_combos = active_combos_by_player(reach_vectors);
+                const auto terminal_nodes = terminal_node_ids(graph);
+                cfr::scheduler::worker_pool pool{resolve_worker_count(runtime)};
 
                 // Materialize one river terminal cache per distinct river board and, for
                 // each seat, the range-weighted reach index into that cache. These stay
@@ -2617,9 +2646,10 @@ namespace zeta::holdem::cli {
                             node_reach,
                             terminal_table,
                             river_base_index_by_state,
+                            terminal_nodes,
                             updating_player,
                             node_values,
-                            spot.samples_per_combo,
+                            pool,
                             pruning);
                         update_combo_cfr_tables(
                             graph,
@@ -2640,7 +2670,7 @@ namespace zeta::holdem::cli {
                         normalize_combo_action_table(graph, annotations, strategy_sums, measure_average, active_combos);
                         final_exploitability = measure_multi_street_exploitability(
                             public_game, measure_average, reach_vectors, active_combos, terminal_table,
-                            river_base_index_by_state, measure_reach, measure_values, spot.samples_per_combo);
+                            river_base_index_by_state, terminal_nodes, measure_reach, measure_values, pool);
                         have_exploitability = true;
                         if (at_check && convergence_curve.size() < runtime.convergence.max_curve_samples) {
                             convergence_curve.push_back(convergence_sample{
@@ -2700,12 +2730,12 @@ namespace zeta::holdem::cli {
                         node_reach,
                         terminal_table,
                         river_base_index_by_state,
+                        terminal_nodes,
                         seat,
                         node_values_by_seat[seat],
-                        spot.samples_per_combo,
+                        pool,
                         pruning);
                 }
-                node_values = node_values_by_seat[hero];
 
                 solve_artifact artifact{};
                 artifact.players.assign(spot.players.begin(), std::next(spot.players.begin(), N));
@@ -2722,8 +2752,7 @@ namespace zeta::holdem::cli {
                         .mask = public_game.public_states.states[root_state_id].board_cards};
                     artifact.solver.hashes = make_solve_hashes<N>(
                         graph, annotations, spot, config, reach_vectors, public_board, runtime, iterations);
-                    artifact.solver.warnings = build_solve_warnings(
-                        N, runtime, /*exploitability_available=*/true, spot.samples_per_combo);
+                    artifact.solver.warnings = build_solve_warnings(runtime, /*exploitability_available=*/true);
                     convergence_report report{};
                     report.exploitability_available = have_exploitability;
                     if (have_exploitability) {
@@ -2742,68 +2771,19 @@ namespace zeta::holdem::cli {
                     report.curve = std::move(convergence_curve);
                     artifact.solver.convergence = std::move(report);
                 }
-                artifact.root_strategy = aggregate_root_strategy_for_actor(
-                    average_strategy,
-                    root_infoset,
-                    root_actions,
-                    reach_vectors[hero],
-                    spot.gross_pot);
-
                 const auto board_by_node = multi_street_board_by_node(public_game);
-                const auto root_masses = opponent_reach_masses<N>(
-                    node_reach[graph.root_node], active_combos, board_by_node[graph.root_node], hero);
-                for (const auto combo : active_combos[hero]) {
-                    std::vector<action_strategy> combo_strategy;
-                    combo_strategy.reserve(root_actions.size());
-                    for (std::size_t action_index = 0; action_index < root_actions.size(); ++action_index) {
-                        combo_strategy.push_back(action_strategy{
-                            .action = artifact.root_strategy[action_index].action,
-                            .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
-                        });
-                    }
-                    artifact.strategy.push_back(make_hand_strategy_row(
-                        combo,
-                        std::move(combo_strategy),
-                        reach_vectors[hero][combo],
-                        reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
-                        node_values[graph.root_node][combo],
-                        root_masses[combo]));
-                }
-
-                std::vector<std::vector<action_strategy>> node_strategies(graph.node_count);
-                for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
-                    if (!graph.is_player_node(node_id)) {
-                        continue;
-                    }
-                    const auto actor = annotations.actor_by_node[node_id];
-                    const auto infoset_id = graph.infoset_id[node_id];
-                    const auto edges = graph.out_edges(node_id);
-                    std::vector<double> weighted(edges.size(), 0.0);
-                    double total = 0.0;
-                    for (const auto combo : active_combos[actor]) {
-                        const auto weight = std::max(0.0f, node_reach[node_id][actor][combo]);
-                        if (weight <= 0.0f) {
-                            continue;
-                        }
-                        total += static_cast<double>(weight);
-                        for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
-                            weighted[action_index] += static_cast<double>(weight)
-                                * static_cast<double>(average_strategy.value(combo, infoset_id, action_index));
-                        }
-                    }
-                    auto& node_strategy = node_strategies[node_id];
-                    node_strategy.reserve(edges.size());
-                    for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
-                        node_strategy.push_back(action_strategy{
-                            .action = (node_id == graph.root_node && action_index < artifact.root_strategy.size())
-                                ? artifact.root_strategy[action_index].action
-                                : std::to_string(action_index),
-                            .frequency = total > 0.0
-                                ? weighted[action_index] / total
-                                : (edges.empty() ? 0.0 : 1.0 / static_cast<double>(edges.size()))
-                        });
-                    }
-                }
+                append_root_summary<N>(
+                    artifact,
+                    graph,
+                    annotations,
+                    average_strategy,
+                    root_actions,
+                    reach_vectors,
+                    active_combos,
+                    node_values_by_seat[hero][graph.root_node],
+                    board_by_node[graph.root_node],
+                    hero,
+                    spot.gross_pot);
 
                 append_solved_graph_payload(
                     artifact,
@@ -2812,7 +2792,7 @@ namespace zeta::holdem::cli {
                     &public_game.public_states,
                     &public_game.chance_events,
                     &public_game.runouts,
-                    node_strategies);
+                    make_node_strategies<N>(graph, annotations, average_strategy, active_combos, node_reach, artifact.root_strategy));
                 populate_solved_node_profiles(
                     artifact,
                     graph,
@@ -2843,8 +2823,11 @@ namespace zeta::holdem::cli {
             }
         }
 
+        // Single-street river CFR+ for any player count and hero seat. Exact
+        // best-response exploitability is measured heads-up; multiway solves report
+        // the normalized average regret instead.
         template <std::size_t N>
-        [[nodiscard]] inline std::expected<bool, cli_error> solve_vectorized_root_actor_river(
+        [[nodiscard]] inline std::expected<void, cli_error> solve_river(
             const solve_spot& spot,
             const uint64_t iterations,
             const solve_runtime_options& runtime,
@@ -2855,31 +2838,13 @@ namespace zeta::holdem::cli {
             const std::array<reach_vector, N>& reach_vectors,
             solve_output& output)
         {
-            if constexpr (N != 2) {
-                (void)spot;
-                (void)iterations;
-                (void)runtime;
-                (void)lowered;
-                (void)layout;
-                (void)config;
-                (void)public_board;
-                (void)reach_vectors;
-                (void)output;
-                return false;
-            }
-
-            if (spot.hero_seat != spot.root_actor) {
-                return false;
-            }
-            if (spot.street != "river") {
-                return false;
-            }
-
             combo_action_table regrets(layout);
             combo_action_table strategy_sums(layout);
             combo_action_table current_strategy(layout);
             combo_action_table average_strategy(layout);
             const auto active_combos = active_combos_by_player(reach_vectors);
+            const auto terminal_nodes = terminal_node_ids(lowered.graph);
+            cfr::scheduler::worker_pool pool{resolve_worker_count(runtime)};
             const auto cache = make_river_terminal_cache(public_board);
             std::array<river_reach_index, N> base_indices{};
             for (std::size_t seat = 0; seat < N; ++seat) {
@@ -2889,7 +2854,9 @@ namespace zeta::holdem::cli {
             auto initial_state = cfr::make_initial_betting_state(config);
             const auto root_actions = cfr::legal_betting_actions(initial_state, config.abstraction);
             const auto root_infoset = lowered.graph.infoset_id[lowered.graph.root_node];
-            if (root_actions.empty() || root_actions.size() != layout.action_count(root_infoset)) {
+            if (!lowered.graph.is_player_node(lowered.graph.root_node)
+                || root_actions.empty()
+                || root_actions.size() != layout.action_count(root_infoset)) {
                 return std::unexpected(cli_error{cli_error_kind::solver, "Root action shape does not match strategy table shape."});
             }
 
@@ -2897,7 +2864,8 @@ namespace zeta::holdem::cli {
             const auto progress_batch = std::max<uint64_t>(1, runtime.progress_batch_iterations);
             std::vector<std::array<reach_vector, N>> node_reach;
             std::vector<reach_vector> node_values;
-            const bool measure = runtime.convergence.measure_exploitability;
+            constexpr bool exploitability_supported = N == 2;
+            const bool measure = exploitability_supported && runtime.convergence.measure_exploitability;
             const auto measurement_interval = resolve_measurement_interval(runtime.convergence, iterations);
             combo_action_table measure_average(layout);
             std::vector<std::array<reach_vector, N>> measure_reach;
@@ -2922,21 +2890,21 @@ namespace zeta::holdem::cli {
                             static_cast<uint8_t>(N),
                             std::chrono::duration<double, std::milli>(
                                 std::chrono::steady_clock::now() - iter_begin).count(),
-                            "Vectorized CFR player update.");
+                            "River CFR+ player update.");
                     }
                     normalize_combo_action_table(lowered.graph, lowered.annotations, regrets, current_strategy, active_combos);
                     build_node_reach_vectors(lowered.graph, lowered.annotations, current_strategy, reach_vectors, active_combos, node_reach);
                     evaluate_combo_profile(
                         lowered,
                         current_strategy,
-                        reach_vectors,
                         active_combos,
                         node_reach,
                         cache,
                         base_indices,
+                        terminal_nodes,
                         updating_player,
                         node_values,
-                        spot.samples_per_combo);
+                        pool);
                     update_combo_cfr_tables(
                         lowered.graph,
                         lowered.annotations,
@@ -2951,25 +2919,27 @@ namespace zeta::holdem::cli {
                 const uint64_t done = i + 1;
                 const bool at_final = done == iterations;
                 const bool at_check = measurement_interval > 0 && (done % measurement_interval == 0);
-                if (measure && (at_check || at_final)) {
-                    normalize_combo_action_table(lowered.graph, lowered.annotations, strategy_sums, measure_average, active_combos);
-                    final_exploitability = measure_river_exploitability(
-                        lowered, measure_average, reach_vectors, active_combos, cache, base_indices,
-                        measure_reach, measure_values, spot.samples_per_combo);
-                    have_exploitability = true;
-                    if (at_check && convergence_curve.size() < runtime.convergence.max_curve_samples) {
-                        convergence_curve.push_back(convergence_sample{
-                            .iteration = done,
-                            .metric = final_exploitability.exploitability,
-                            .elapsed_ms = std::chrono::duration<double, std::milli>(
-                                std::chrono::steady_clock::now() - iter_begin).count()
-                        });
-                    }
-                    if (runtime.convergence.target_exploitability > 0.0
-                        && final_exploitability.exploitability <= runtime.convergence.target_exploitability) {
-                        completed_iterations = done;
-                        reached_target = true;
-                        break;
+                if constexpr (exploitability_supported) {
+                    if (measure && (at_check || at_final)) {
+                        normalize_combo_action_table(lowered.graph, lowered.annotations, strategy_sums, measure_average, active_combos);
+                        final_exploitability = measure_river_exploitability(
+                            lowered, measure_average, reach_vectors, active_combos, cache, base_indices,
+                            terminal_nodes, measure_reach, measure_values, pool);
+                        have_exploitability = true;
+                        if (at_check && convergence_curve.size() < runtime.convergence.max_curve_samples) {
+                            convergence_curve.push_back(convergence_sample{
+                                .iteration = done,
+                                .metric = final_exploitability.exploitability,
+                                .elapsed_ms = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - iter_begin).count()
+                            });
+                        }
+                        if (runtime.convergence.target_exploitability > 0.0
+                            && final_exploitability.exploitability <= runtime.convergence.target_exploitability) {
+                            completed_iterations = done;
+                            reached_target = true;
+                            break;
+                        }
                     }
                 }
                 if (((i + 1) % progress_batch) == 0 || (i + 1) == iterations) {
@@ -2982,7 +2952,7 @@ namespace zeta::holdem::cli {
                         static_cast<uint8_t>(N),
                         std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - iter_begin).count(),
-                        "Vectorized CFR iteration batch complete.");
+                        "River CFR+ iteration batch complete.");
                 }
             }
             output.timing.cfr_iterations_ms = std::chrono::duration<double, std::milli>(
@@ -3011,16 +2981,15 @@ namespace zeta::holdem::cli {
                 evaluate_combo_profile(
                     lowered,
                     average_strategy,
-                    reach_vectors,
                     active_combos,
                     node_reach,
                     cache,
                     base_indices,
+                    terminal_nodes,
                     seat,
                     node_values_by_seat[seat],
-                    spot.samples_per_combo);
+                    pool);
             }
-            node_values = node_values_by_seat[hero];
 
             solve_artifact artifact{};
             artifact.players.assign(spot.players.begin(), std::next(spot.players.begin(), N));
@@ -3034,8 +3003,7 @@ namespace zeta::holdem::cli {
             {
                 artifact.solver.hashes = make_solve_hashes<N>(
                     lowered.graph, lowered.annotations, spot, config, reach_vectors, public_board, runtime, iterations);
-                artifact.solver.warnings = build_solve_warnings(
-                    N, runtime, /*exploitability_available=*/true, spot.samples_per_combo);
+                artifact.solver.warnings = build_solve_warnings(runtime, exploitability_supported);
                 convergence_report report{};
                 report.exploitability_available = have_exploitability;
                 if (have_exploitability) {
@@ -3054,65 +3022,18 @@ namespace zeta::holdem::cli {
                 report.curve = std::move(convergence_curve);
                 artifact.solver.convergence = std::move(report);
             }
-            artifact.root_strategy = aggregate_root_strategy_for_actor(
+            append_root_summary<N>(
+                artifact,
+                lowered.graph,
+                lowered.annotations,
                 average_strategy,
-                root_infoset,
                 root_actions,
-                reach_vectors[hero],
+                reach_vectors,
+                active_combos,
+                node_values_by_seat[hero][lowered.graph.root_node],
+                public_board.mask,
+                hero,
                 spot.gross_pot);
-
-            const auto root_masses = opponent_reach_masses<N>(reach_vectors, active_combos, public_board.mask, hero);
-            for (const auto combo : active_combos[hero]) {
-                std::vector<action_strategy> combo_strategy;
-                combo_strategy.reserve(root_actions.size());
-                for (std::size_t action_index = 0; action_index < root_actions.size(); ++action_index) {
-                    combo_strategy.push_back(action_strategy{
-                        .action = artifact.root_strategy[action_index].action,
-                        .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
-                    });
-                }
-                artifact.strategy.push_back(make_hand_strategy_row(
-                    combo,
-                    std::move(combo_strategy),
-                    reach_vectors[hero][combo],
-                    reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
-                    node_values[lowered.graph.root_node][combo],
-                    root_masses[combo]));
-            }
-            std::vector<std::vector<action_strategy>> node_strategies(lowered.graph.node_count);
-            for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
-                if (!lowered.graph.is_player_node(node_id)) {
-                    continue;
-                }
-                const auto actor = lowered.annotations.actor_by_node[node_id];
-                const auto infoset_id = lowered.graph.infoset_id[node_id];
-                const auto edges = lowered.graph.out_edges(node_id);
-                std::vector<double> weighted(edges.size(), 0.0);
-                double total = 0.0;
-                for (const auto combo : active_combos[actor]) {
-                    const auto weight = std::max(0.0f, node_reach[node_id][actor][combo]);
-                    if (weight <= 0.0f) {
-                        continue;
-                    }
-                    total += static_cast<double>(weight);
-                    for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
-                        weighted[action_index] += static_cast<double>(weight)
-                            * static_cast<double>(average_strategy.value(combo, infoset_id, action_index));
-                    }
-                }
-                auto& node_strategy = node_strategies[node_id];
-                node_strategy.reserve(edges.size());
-                for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
-                    node_strategy.push_back(action_strategy{
-                        .action = (node_id == lowered.graph.root_node && action_index < artifact.root_strategy.size())
-                            ? artifact.root_strategy[action_index].action
-                            : std::to_string(action_index),
-                        .frequency = total > 0.0
-                            ? weighted[action_index] / total
-                            : (edges.empty() ? 0.0 : 1.0 / static_cast<double>(edges.size()))
-                    });
-                }
-            }
             append_solved_graph_payload(
                 artifact,
                 lowered.graph,
@@ -3120,7 +3041,8 @@ namespace zeta::holdem::cli {
                 nullptr,
                 nullptr,
                 nullptr,
-                node_strategies);
+                make_node_strategies<N>(
+                    lowered.graph, lowered.annotations, average_strategy, active_combos, node_reach, artifact.root_strategy));
             populate_solved_node_profiles(
                 artifact,
                 lowered.graph,
@@ -3147,7 +3069,7 @@ namespace zeta::holdem::cli {
             if (auto validation = validate_artifact(output.artifact); !validation) {
                 return std::unexpected(validation.error());
             }
-            return true;
+            return {};
         }
 
         template <std::size_t N>
@@ -3236,7 +3158,7 @@ namespace zeta::holdem::cli {
                 // Pre-build budget check: estimate the footprint from the graph shape
                 // without materialising the graph, and refuse to allocate anything if it
                 // exceeds the resolved memory budget.
-                auto estimate = cfr::estimate_multi_street_public_game_memory(public_config);
+                auto estimate = cfr::estimate_multi_street_public_game_memory(public_config, resolve_worker_count(runtime));
                 if (!estimate) {
                     return std::unexpected(cli_error{
                         cli_error_kind::solver,
@@ -3304,12 +3226,8 @@ namespace zeta::holdem::cli {
                     "Failed to lower betting tree to CFR graph."
                 });
             }
-            cfr::holdem_betting_graph<N> lowered_storage = std::move(*lowered_result);
-            cfr::game_graph* lowered_graph = &lowered_storage.graph;
-            cfr::solver::solver_graph_annotations* lowered_annotations = &lowered_storage.annotations;
-            std::span<const cfr::solver::cfr_terminal_leaf> lowered_terminal_leaves{lowered_storage.terminal_leaves};
-            std::span<const ::zeta::holdem::terminal_state<N>> lowered_terminal_states{lowered_storage.terminal_states.states};
-            auto layout_result = cfr::make_action_table_layout(*lowered_graph);
+            const auto& lowered = *lowered_result;
+            auto layout_result = cfr::make_action_table_layout(lowered.graph);
             if (!layout_result) {
                 return std::unexpected(cli_error{
                     cli_error_kind::solver,
@@ -3327,307 +3245,18 @@ namespace zeta::holdem::cli {
                 static_cast<uint8_t>(N),
                 output.timing.graph_build_ms,
                 "Graph built.");
-            if (auto vectorized = solve_vectorized_root_actor_river(
+            if (auto solved = solve_river<N>(
                     spot,
                     iterations,
                     runtime,
-                    lowered_storage,
+                    lowered,
                     *layout_result,
                     config,
                     public_board,
                     reach_vectors,
                     output);
-                !vectorized) {
-                return std::unexpected(vectorized.error());
-            } else if (*vectorized) {
-                return output;
-            }
-            cfr::regret_table regrets(*layout_result);
-            cfr::strategy_sum_table strategy_sums(*layout_result);
-            auto context = cfr::solver::make_cfr_solver_context<N>(
-                *lowered_graph,
-                *lowered_annotations,
-                *layout_result,
-                regrets,
-                strategy_sums);
-
-            if (solve_cancel_requested(runtime)) {
-                return std::unexpected(solve_cancelled_error());
-            }
-
-            const auto iter_begin = std::chrono::steady_clock::now();
-            std::vector<cfr::traversal::worker_context> workers{
-                std::clamp<uint32_t>(runtime.worker_threads, 1u, 64u)};
-            const auto progress_batch = std::max<uint64_t>(1, runtime.progress_batch_iterations);
-            for (uint64_t i = 0; i < iterations; ++i) {
-                if (solve_cancel_requested(runtime)) {
-                    return std::unexpected(solve_cancelled_error());
-                }
-                for (uint8_t updating_player = 0; updating_player < N; ++updating_player) {
-                    if ((i % progress_batch) == 0) {
-                        emit_progress(
-                            runtime,
-                            solve_progress_stage::cfr,
-                            i,
-                            iterations,
-                            updating_player,
-                            static_cast<uint8_t>(N),
-                            std::chrono::duration<double, std::milli>(
-                                std::chrono::steady_clock::now() - iter_begin).count(),
-                            "CFR player update.");
-                    }
-                    auto terminal_state = terminal_context<N>{};
-                    terminal_state.gross_pot = spot.gross_pot;
-                    terminal_state.rake = spot.rake;
-                    for (std::size_t seat = 0; seat < N; ++seat) {
-                        terminal_state.contribution[seat] = spot.contributions[seat];
-                    }
-                    std::array<combination_index, N> combo_by_player{};
-                    for (std::size_t seat = 0; seat < N; ++seat) {
-                        combo_by_player[seat] = 0;
-                    }
-                    const auto cache = make_river_terminal_cache(public_board);
-                    std::array<reach_vector, N> full_reach = reach_vectors;
-                    std::array<river_reach_index, N> reach_indices{};
-                    for (std::size_t seat = 0; seat < N; ++seat) {
-                        reach_indices[seat] = make_river_reach_index(cache, full_reach[seat]);
-                    }
-                    context.terminal_provider = cfr::solver::make_terminal_state_provider<N>(
-                        cache,
-                        reach_indices,
-                        lowered_terminal_leaves,
-                        lowered_terminal_states,
-                        combo_by_player,
-                        spot.samples_per_combo);
-                    auto result = cfr::solver::run_cfr_iteration(
-                        context,
-                        cfr::solver::iteration_config{
-                            .variant = cfr::solver::cfr_variant::cfr_plus,
-                            .iteration = i,
-                            .updating_player = updating_player
-                        },
-                        std::span<cfr::traversal::worker_context>{workers});
-                    if (!result) {
-                        return std::unexpected(cli_error{
-                            cli_error_kind::solver,
-                            "CFR iteration failed for player update."
-                        });
-                    }
-                }
-                if (((i + 1) % progress_batch) == 0 || (i + 1) == iterations) {
-                    emit_progress(
-                        runtime,
-                        solve_progress_stage::cfr,
-                        i + 1,
-                        iterations,
-                        static_cast<uint8_t>(N - 1),
-                        static_cast<uint8_t>(N),
-                        std::chrono::duration<double, std::milli>(
-                            std::chrono::steady_clock::now() - iter_begin).count(),
-                        "CFR iteration batch complete.");
-                }
-            }
-            output.timing.cfr_iterations_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - iter_begin).count();
-
-            if (solve_cancel_requested(runtime)) {
-                return std::unexpected(solve_cancelled_error());
-            }
-
-            const auto extraction_begin = std::chrono::steady_clock::now();
-            emit_progress(
-                runtime,
-                solve_progress_stage::extraction,
-                iterations,
-                iterations,
-                0,
-                static_cast<uint8_t>(N),
-                0.0,
-                "Extracting root strategy.");
-            const auto root_infoset = lowered_graph->infoset_id[lowered_graph->root_node];
-            const auto root_sums = strategy_sums.infoset_sums(root_infoset);
-            if (root_sums.empty()) {
-                return std::unexpected(cli_error{cli_error_kind::solver, "Root infoset has no actions."});
-            }
-
-            auto initial_state = cfr::make_initial_betting_state(config);
-            const auto root_actions = cfr::legal_betting_actions(initial_state, config.abstraction);
-            if (root_actions.size() != root_sums.size()) {
-                return std::unexpected(cli_error{cli_error_kind::solver, "Root action shape does not match strategy table shape."});
-            }
-
-            double sum = 0.0;
-            for (const auto value : root_sums) {
-                if (value > 0.0f) {
-                    sum += value;
-                }
-            }
-            std::vector<action_strategy> root_strategy;
-            root_strategy.reserve(root_sums.size());
-            const auto uniform = 1.0 / static_cast<double>(root_sums.size());
-            for (std::size_t action_index = 0; action_index < root_sums.size(); ++action_index) {
-                const auto frequency = sum > 0.0
-                    ? static_cast<double>(std::max(root_sums[action_index], 0.0f)) / sum
-                    : uniform;
-                root_strategy.push_back(action_strategy{
-                    .action = action_label(root_actions[action_index], spot.gross_pot),
-                    .frequency = frequency
-                });
-            }
-            combo_action_table average_strategy(*layout_result);
-            for (uint32_t infoset_id = 0; infoset_id < lowered_graph->infoset_count; ++infoset_id) {
-                const auto sums = strategy_sums.infoset_sums(infoset_id);
-                if (sums.empty()) {
-                    continue;
-                }
-                double positive = 0.0;
-                for (const auto value : sums) {
-                    positive += std::max(0.0f, value);
-                }
-                const auto fallback = 1.0f / static_cast<float>(sums.size());
-                for (combination_index combo = 0; combo < combination_count; ++combo) {
-                    for (std::size_t action_index = 0; action_index < sums.size(); ++action_index) {
-                        average_strategy.value(combo, infoset_id, static_cast<uint32_t>(action_index)) = positive > 0.0
-                            ? std::max(0.0f, sums[action_index]) / static_cast<float>(positive)
-                            : fallback;
-                    }
-                }
-            }
-            const auto active_combos = active_combos_by_player(reach_vectors);
-            std::vector<std::array<reach_vector, N>> node_reach;
-            build_node_reach_vectors(
-                *lowered_graph,
-                *lowered_annotations,
-                average_strategy,
-                reach_vectors,
-                active_combos,
-                node_reach);
-
-            const auto cache = make_river_terminal_cache(public_board);
-            std::array<reach_vector, N> hero_reach{};
-            std::array<river_reach_index, N> hero_indices{};
-            for (std::size_t seat = 0; seat < N; ++seat) {
-                hero_reach[seat] = reach_vectors[seat];
-                hero_indices[seat] = make_river_reach_index(cache, hero_reach[seat]);
-            }
-            std::array<std::vector<reach_vector>, N> node_values_by_seat{};
-            for (uint8_t seat = 0; seat < N; ++seat) {
-                evaluate_combo_profile(
-                    lowered_storage,
-                    average_strategy,
-                    reach_vectors,
-                    active_combos,
-                    node_reach,
-                    cache,
-                    hero_indices,
-                    seat,
-                    node_values_by_seat[seat],
-                    spot.samples_per_combo);
-            }
-            solve_artifact artifact{};
-            artifact.players.assign(spot.players.begin(), std::next(spot.players.begin(), N));
-            artifact.board = spot.board;
-            artifact.street = spot.street;
-            artifact.hero_seat = spot.hero_seat;
-            artifact.solver.algorithm = "cfr+";
-            artifact.solver.iterations = iterations;
-            artifact.solver.timestamp = runtime.timestamp_utc.empty() ? now_utc_iso8601() : runtime.timestamp_utc;
-            artifact.solver.git_revision = runtime.git_revision;
-            {
-                artifact.solver.hashes = make_solve_hashes<N>(
-                    *lowered_graph, *lowered_annotations, spot, config, reach_vectors, public_board, runtime, iterations);
-                artifact.solver.warnings = build_solve_warnings(
-                    N, runtime, /*exploitability_available=*/false, spot.samples_per_combo);
-                convergence_report report{};
-                report.exploitability_available = false;
-                report.normalized_regret = normalized_regret_from_table(regrets, iterations);
-                report.target_exploitability = runtime.convergence.target_exploitability;
-                report.reached_target = false;
-                artifact.solver.convergence = std::move(report);
-            }
-
-            const auto hero = static_cast<std::size_t>(spot.hero_seat);
-            const auto root_masses = opponent_reach_masses<N>(
-                reach_vectors, active_combos, public_board.mask, static_cast<uint8_t>(hero));
-            for (combination_index combo = 0; combo < combination_count; ++combo) {
-                if (reach_vectors[hero][combo] <= 0.0f) {
-                    continue;
-                }
-                std::vector<action_strategy> combo_strategy;
-                combo_strategy.reserve(root_actions.size());
-                for (std::size_t action_index = 0; action_index < root_actions.size(); ++action_index) {
-                    combo_strategy.push_back(action_strategy{
-                        .action = root_strategy[action_index].action,
-                        .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
-                    });
-                }
-                artifact.strategy.push_back(make_hand_strategy_row(
-                    combo,
-                    std::move(combo_strategy),
-                    reach_vectors[hero][combo],
-                    1.0,
-                    node_values_by_seat[hero][lowered_graph->root_node][combo],
-                    root_masses[combo]));
-            }
-            artifact.root_strategy = std::move(root_strategy);
-            std::vector<std::vector<action_strategy>> node_strategies(lowered_graph->node_count);
-            for (uint32_t node_id = 0; node_id < lowered_graph->node_count; ++node_id) {
-                if (!lowered_graph->is_player_node(node_id)) {
-                    continue;
-                }
-                const auto infoset_id = lowered_graph->infoset_id[node_id];
-                const auto sums = strategy_sums.infoset_sums(infoset_id);
-                double positive = 0.0;
-                for (const auto value : sums) {
-                    positive += std::max(0.0f, value);
-                }
-                auto& node_strategy = node_strategies[node_id];
-                node_strategy.reserve(sums.size());
-                for (uint32_t action_index = 0; action_index < sums.size(); ++action_index) {
-                    node_strategy.push_back(action_strategy{
-                        .action = (node_id == lowered_graph->root_node && action_index < artifact.root_strategy.size())
-                            ? artifact.root_strategy[action_index].action
-                            : std::to_string(action_index),
-                        .frequency = positive > 0.0
-                            ? static_cast<double>(std::max(0.0f, sums[action_index])) / positive
-                            : (sums.empty() ? 0.0 : 1.0 / static_cast<double>(sums.size()))
-                    });
-                }
-            }
-            append_solved_graph_payload(
-                artifact,
-                *lowered_graph,
-                *lowered_annotations,
-                nullptr,
-                nullptr,
-                nullptr,
-                node_strategies);
-            populate_solved_node_profiles(
-                artifact,
-                *lowered_graph,
-                *lowered_annotations,
-                average_strategy,
-                reach_vectors,
-                active_combos,
-                node_reach,
-                node_values_by_seat,
-                std::vector<card_mask>(lowered_graph->node_count, public_board.mask));
-            output.artifact = std::move(artifact);
-
-            output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - extraction_begin).count();
-            emit_progress(
-                runtime,
-                solve_progress_stage::extraction,
-                iterations,
-                iterations,
-                0,
-                static_cast<uint8_t>(N),
-                output.timing.extraction_ms,
-                "Extraction complete.");
-
-            if (auto validation = validate_artifact(output.artifact); !validation) {
-                return std::unexpected(validation.error());
+                !solved) {
+                return std::unexpected(solved.error());
             }
             return output;
         }
@@ -3670,6 +3299,7 @@ namespace zeta::holdem::cli {
             case 4: return detail::solve_spot_impl<4>(spot, iterations, runtime);
             case 5: return detail::solve_spot_impl<5>(spot, iterations, runtime);
             case 6: return detail::solve_spot_impl<6>(spot, iterations, runtime);
+            case 7: return detail::solve_spot_impl<7>(spot, iterations, runtime);
             default:
                 return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Unsupported player count."});
         }

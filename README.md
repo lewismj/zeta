@@ -27,12 +27,13 @@ The Hold'em module currently includes a lookup-based native 7-card evaluator and
 - [River terminal evaluator](doc/holdem/terminal_evaluator.md)
 - [zeta-solve CLI](doc/holdem/cli_usage.md)
 - [Hold'em solver UI user guide](doc/holdem/ui/user_guide.md)
-- [Hold'em solver next steps](doc/holdem/next_steps.md)
+- [Hold'em solver next steps](doc/holdem/plans/next_steps.md)
 
 ### GTO postflop analyser
 
-Zeta includes a multiway postflop CFR solver for **flop**, **turn**, and **river** Hold'em
-analysis, exposed through both `zeta-solve` CLI and the solver UI. River leaves are
+Zeta includes a combo-vectorised CFR+ solver for Hold'em postflop analysis: heads-up
+**flop**, **turn**, and **river** spots, and multiway (up to 7 players) **river** spots. It
+is exposed through both the `zeta-solve` CLI and the solver UI. River leaves are
 evaluated by the terminal evaluator documented in
 [River terminal evaluator](doc/holdem/terminal_evaluator.md), which currently
 implements:
@@ -41,34 +42,33 @@ implements:
 - per-player reach indices with blocker-corrected mass accounting
 - dedicated heads-up evaluator with exact showdown and fold kernels
 - exact N-way terminal-state evaluation for explicit showdown/fold states
-- sampled N-way showdown value estimation for scalable multi-player contexts
 - side-pot and rake-aware terminal-state payoff distribution
-- thread-local terminal workspaces for solver traversal
+- parallel evaluation of terminal leaves (`worker_threads`), bit-identical for any thread count
 
 | Solver overview | Range editor | Strategy Explorer |
 |---|---|---|
 | ![Zeta solver UI overview](doc/holdem/ui/images/solver-ui-overview.png) | ![Zeta solver UI ranges](doc/holdem/ui/images/solver-ui-overview-ranges.png) | ![Zeta solver UI strategy explorer](doc/holdem/ui/images/solver-ui-strategy-explorer.png) |
 
- The core next [next_steps](doc/holdem/next_steps.md) to a useful product.
+ The core next [next_steps](doc/holdem/plans/next_steps.md) to a useful product.
 
-#### Benchmark baseline (CFR runtime and scheduler)
+#### Benchmark baseline (solver)
 
-Latest Google Benchmark summary from `zeta-bench-holdem-cfr` on Release WSL Clang (`setarch x86_64 -R`):
+`zeta-bench-holdem-solve` times complete solves on the production solver. Each
+benchmark's argument is `worker_threads`:
 
-| Benchmark | Throughput | CPU time | Purpose |
-|---|---:|---:|---|
-| `BM_CFRIterationMedium/1/real_time` | `edges/s=54.7146M/s` | `17.205 us` | Medium graph single-worker CFR iteration baseline |
-| `BM_CFRIterationMedium/4/real_time` | `edges/s=162.42M/s` | `58.487 us` | Medium graph CFR scaling at 4 workers |
-| `BM_CFRIterationMedium/8/real_time` | `edges/s=186.081M/s` | `128.162 us` | Medium graph CFR scaling at 8 workers |
-| `BM_CFRIterationLarge/1/real_time` | `edges/s=53.1613M/s` | `26.777 us` | Large graph single-worker CFR iteration baseline |
-| `BM_CFRIterationLarge/4/real_time` | `edges/s=151.907M/s` | `93.186 us` | Large graph CFR scaling at 4 workers |
-| `BM_CFRIterationLarge/12/real_time` | `edges/s=223.395M/s` | `336.141 us` | Large graph CFR scaling at 12 workers |
-| `BM_CFRIterationLargeRealistic/8/real_time` | `edges/s=168.171M/s` | `210.954 us` | Large realistic scheduling profile (chunk size 64) |
-| `BM_CFRIterationLargeChunkSize/12/1/real_time` | `edges/s=225.67M/s` | `316.873 us` | Chunk-size sweep best point on large graph (12 workers) |
-| `BM_CFRIterationLargeChunkSize/12/64/real_time` | `edges/s=160.533M/s` | `308.604 us` | Chunk-size sweep larger chunks on same workload |
-| `BM_CFRIterationLargeChunkSize/12/128/real_time` | `edges/s=118.043M/s` | `263.516 us` | Chunk-size sweep upper bound (over-chunked) |
-| `BM_BoardPartitionSchedulerRealistic/12/real_time` | `actions/s=6.19082G/s, tasks/s=154.884M/s` | `197.977 us` | Dynamic board-partition scheduler realistic workload |
-| `BM_BoardPartitionStaticRangeRealistic/12/real_time` | `actions/s=8.44126G/s` | `205.034 us` | Static-range scheduler comparison point |
+| Benchmark | Spot | Iterations |
+|---|---|---:|
+| `BM_SolveRiverHeadsUp/{1,4,8}` | Heads-up river | 50 |
+| `BM_SolveRiverThreeWay/{1,4,8}` | Three-way river | 10 |
+| `BM_SolveTurnHeadsUp/{1,4,8}` | Heads-up turn | 10 |
+| `BM_SolveFlopHeadsUp/{1,4,8}` | Heads-up flop | 2 |
+| `BM_SizeFlopRealistic` | Memory pre-flight for a realistic flop tree | - |
+
+```sh
+cmake --build build --target zeta-bench-holdem-solve-json
+```
+
+Results are pending a fresh Release run.
 
 ### Evaluator benchmark summary
 

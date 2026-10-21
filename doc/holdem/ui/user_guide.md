@@ -47,7 +47,7 @@ The `main_window` implementation is split by responsibility to keep UI shell, do
 ### First solve
 
 1. Click **New** to create a spot document.
-2. In **Spot Builder**, choose a template such as **New heads-up river** or **New 3-way flop**.
+2. In **Spot Builder**, choose a template such as **New heads-up river** or **New 3-way river**.
 3. Fill every visible board card. The selected street determines the required count: flop = 3, turn = 4, river = 5.
 4. Check **Players**, **Root actor**, **Hero**, pot, rake, **Betting config**, and the seats table.
 5. Open **Ranges** and enter or select each player's range.
@@ -104,11 +104,14 @@ The **Spot Builder** provides templates for common starting points:
 | Template | Street | Players | Default board |
 |---|---|---:|---|
 | **New heads-up river** | river | 2 | `As Kd 7c 4h 2s` |
-| **New 3-way flop** | flop | 3 | `As Kd 7c` |
-| **New 4-way turn** | turn | 4 | `As Kd 7c 4h` |
-| **New 5-way turn** | turn | 5 | `As Kd 7c 4h` |
-| **New 6-way turn** | turn | 6 | `As Kd 7c 4h` |
-| **New 7-way turn** | turn | 7 | `As Kd 7c 4h` |
+| **New 3-way river** | river | 3 | `As Kd 7c 4h 2s` |
+| **New 4-way river** | river | 4 | `As Kd 7c 4h 2s` |
+| **New 5-way river** | river | 5 | `As Kd 7c 4h 2s` |
+| **New 6-way river** | river | 6 | `As Kd 7c 4h 2s` |
+| **New 7-way river** | river | 7 | `As Kd 7c 4h 2s` |
+
+Flop and turn spots solve heads-up only. Validation reports a **street** issue for
+a multiway flop or turn spot.
 
 **Duplicate current spot** creates a new document tab with the active spot copied into it. This is useful for comparing board, sizing, or range changes without overwriting the original.
 
@@ -126,7 +129,6 @@ The **Spot Builder** provides templates for common starting points:
 | **Bet size** | Single-size pot-fraction shorthand. Mirrors the first configured betting fraction. |
 | **Max history** | Betting-history cap used when building the game tree. |
 | **Public state** | User-defined public-state identifier stored with the spot. |
-| **Samples/combo** | Sampling budget for multiplayer/pre-river terminal estimation. Higher values reduce variance and increase runtime. |
 | **Seats table** | Per-seat label, stack, and committed amount. Labels cannot be empty; stack and committed values cannot be negative. |
 
 > [!WARNING]
@@ -244,7 +246,7 @@ Click **Validate** before solving. Validation checks:
 6. Root actor and hero refer to existing seats.
 7. Gross pot is positive.
 8. Rake is not negative and does not exceed the gross pot.
-9. Bet fraction and samples/combo are positive.
+9. Bet fraction is positive.
 10. Seat labels are non-empty.
 11. Stacks and commitments are non-negative.
 12. Every seat range parses and has at least one live combo after blockers.
@@ -269,7 +271,7 @@ Open **Configuration** from the command bar.
 |---|---|
 | **Iterations** | CFR+ iterations for the next solve. |
 | **Progress batch iterations** | Number of CFR iterations between progress updates. |
-| **Worker threads** | CFR worker thread count, capped by available hardware threads and the UI maximum. |
+| **Worker threads** | Threads that evaluate terminal leaves in parallel, capped by available hardware threads and the UI maximum. Results are identical for any thread count. |
 | **Card isomorphism** | Collapse suit-isomorphic turn/river runouts to shrink the game. Lossless only for suit-symmetric ranges. |
 | **Allow lossy isomorphism** | Permit isomorphism even when ranges are not suit-symmetric (approximate). Enabled only when **Card isomorphism** is on. |
 | **Dynamic action pruning** | Opt-in approximate solve: freeze low-regret actions and skip their subtrees. When off, the solve is exact. |
@@ -386,12 +388,13 @@ Use this when you want a fast, simple river solve.
 9. Set **Iterations** in **Configuration**.
 10. Click **Solve** and inspect aggregate action cards, the AA/AK/AQ matrix cells, and exact-combo EVs.
 
-### Example 2: Three-way flop probe
+### Example 2: Three-way river probe
 
-Use this for a quick multiway pre-river sanity check.
+Use this for a quick multiway sanity check. Multiway spots solve on the river
+only; flop and turn solving is heads-up.
 
-1. Click **New 3-way flop**.
-2. Choose a three-card flop, for example `Ah Kd Qc`.
+1. Click **New 3-way river**.
+2. Choose a five-card board, for example `Ah Kd Qc 7s 2h`.
 3. Set players to BTN, SB, and BB or rename seats in the seats table.
 4. Set commitments so they sum to the pot model you want to study.
 5. Use broad but valid ranges, such as:
@@ -402,19 +405,20 @@ SB:  AA,KK,QQ,AKo
 BB:  QQ,JJ,TT,AKs
 ```
 
-6. Leave **Samples/combo** low for a first pass, then increase it for a more stable run.
-7. Validate and solve.
-8. In **Strategy Explorer**, compare aggregate action frequencies and filter for bet/raise-heavy hands.
+6. Validate and solve.
+7. In **Strategy Explorer**, compare aggregate action frequencies and filter for bet/raise-heavy hands.
 
 > [!TIP]
-> For flop and turn spots, sampling variance matters more than on exact river spots. Increase **Samples/combo** when small EV or frequency changes drive your conclusion.
+> Multiway terminals are evaluated exactly, by enumerating every compatible
+> combination of opponent hands. Keep ranges narrow at first; cost grows quickly
+> with the number and width of the ranges.
 
-### Example 3: Four-way turn with exact combo weights
+### Example 3: Four-way river with exact combo weights
 
 Use exact weighted combos when reproducing a narrow node or a hand-picked study.
 
-1. Click **New 4-way turn**.
-2. Set the board to `Ah Kd Qc Jh`.
+1. Click **New 4-way river**.
+2. Set the board to `Ah Kd Qc Jh 2s`.
 3. Set **Root actor** to the seat facing the decision.
 4. Enter weighted exact ranges:
 

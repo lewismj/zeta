@@ -82,15 +82,14 @@ namespace zeta::holdem::ui::viewmodels {
             out.public_state_id = 0;
             out.root_actor = 0;
             out.hero_seat = 0;
-            out.samples_per_combo = 64;
         }
 
-        void apply_turn_template(spot& out, const std::size_t player_count)
+        void apply_multiway_river_template(spot& out, const std::size_t player_count)
         {
             out.players = default_player_labels(player_count);
             add_template_defaults(out);
-            out.street = "turn";
-            out.board = {"As", "Kd", "7c", "4h"};
+            out.street = "river";
+            out.board = {"As", "Kd", "7c", "4h", "2s"};
             out.contributions.assign(out.players.size(), 100.0 / static_cast<double>(out.players.size()));
             out.root_actor = 2;
             out.hero_seat = 0;
@@ -169,26 +168,26 @@ namespace zeta::holdem::ui::viewmodels {
                 out.root_actor = 0;
                 out.hero_seat = 0;
                 break;
-            case spot_template_kind::three_way_flop:
+            case spot_template_kind::three_way_river:
                 out.players = {"BTN", "SB", "BB"};
                 add_template_defaults(out);
-                out.street = "flop";
-                out.board = {"As", "Kd", "7c"};
+                out.street = "river";
+                out.board = {"As", "Kd", "7c", "4h", "2s"};
                 out.contributions = {30.0, 35.0, 35.0};
                 out.root_actor = 1;
                 out.hero_seat = 0;
                 break;
-            case spot_template_kind::four_way_turn:
-                apply_turn_template(out, 4);
+            case spot_template_kind::four_way_river:
+                apply_multiway_river_template(out, 4);
                 break;
-            case spot_template_kind::five_way_turn:
-                apply_turn_template(out, 5);
+            case spot_template_kind::five_way_river:
+                apply_multiway_river_template(out, 5);
                 break;
-            case spot_template_kind::six_way_turn:
-                apply_turn_template(out, 6);
+            case spot_template_kind::six_way_river:
+                apply_multiway_river_template(out, 6);
                 break;
-            case spot_template_kind::seven_way_turn:
-                apply_turn_template(out, 7);
+            case spot_template_kind::seven_way_river:
+                apply_multiway_river_template(out, 7);
                 break;
         }
 
@@ -220,6 +219,9 @@ namespace zeta::holdem::ui::viewmodels {
         if (source.players.size() < cli::cli_min_players || source.players.size() > cli::cli_max_players) {
             issues.push_back({"players", "Player count must be between 2 and 7."});
         }
+        if (source.players.size() > 2u && expected_board_size != 0u && source.street != "river") {
+            issues.push_back({"street", "Flop and turn spots solve heads-up only; multiway spots must be on the river."});
+        }
         if (source.ranges.size() != source.players.size()) {
             issues.push_back({"ranges", "Ranges array must match player count."});
         }
@@ -243,9 +245,6 @@ namespace zeta::holdem::ui::viewmodels {
         }
         if (source.bet_fraction <= 0.0) {
             issues.push_back({"bet_fraction", "Bet fraction must be positive."});
-        }
-        if (source.samples_per_combo == 0u) {
-            issues.push_back({"samples_per_combo", "Samples per combo must be positive."});
         }
         if (auto policy_validation = cfr::validate_betting_abstraction_policy(source.betting_policy); !policy_validation) {
             issues.push_back({"betting_policy", "Betting policy is invalid: " + std::string{cfr::to_string(policy_validation.error().kind)}});

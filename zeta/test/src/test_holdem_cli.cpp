@@ -2,6 +2,8 @@
 
 #include "cli/solve_cli.h"
 
+#include "check_helpers.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -64,8 +66,7 @@ namespace {
   "max_history": 8,
   "public_state_id": 11,
   "root_actor": 0,
-  "hero_seat": 0,
-  "samples_per_combo": 8
+  "hero_seat": 0
 })";
 
     constexpr const char* sample_spot_turn = R"({
@@ -79,8 +80,7 @@ namespace {
   "stacks": [100.0, 100.0],
   "bet_fraction": 0.5,
   "max_history": 6,
-  "public_state_id": 5,
-  "samples_per_combo": 8
+  "public_state_id": 5
 })";
 
     constexpr const char* sample_spot_flop = R"({
@@ -94,8 +94,7 @@ namespace {
   "stacks": [100.0, 100.0],
   "bet_fraction": 0.5,
   "max_history": 4,
-  "public_state_id": 3,
-  "samples_per_combo": 4
+  "public_state_id": 3
 })";
 
     // Hero (seat 0, "Th9s") already holds a royal flush on the Ah Kh Qh Jh turn
@@ -338,8 +337,7 @@ namespace {
   "max_history": 8,
   "public_state_id": 9,
   "root_actor": 0,
-  "hero_seat": 0,
-  "samples_per_combo": 8
+  "hero_seat": 0
 })";
 
 }
@@ -359,7 +357,6 @@ BOOST_AUTO_TEST_CASE(holdem_cli_parses_spot_json) {
 
 BOOST_AUTO_TEST_CASE(holdem_cli_json_accepts_escaped_strings_and_reordered_fields) {
     constexpr const char* json = R"({
-  "samples_per_combo": 8,
   "public_state_id": 3,
   "max_history": 5,
   "bet_fraction": 0.5,
@@ -511,7 +508,6 @@ BOOST_AUTO_TEST_CASE(holdem_cli_spot_json_roundtrips_serialized_spot) {
     spot.public_state_id = 44;
     spot.root_actor = 1;
     spot.hero_seat = 1;
-    spot.samples_per_combo = 12;
 
     const auto json = zeta::holdem::cli::serialize_spot_json(spot);
     auto parsed = zeta::holdem::cli::parse_spot_json(json);
@@ -657,80 +653,91 @@ BOOST_AUTO_TEST_CASE(holdem_cli_phase3_roundtrips_node_surfaces) {
     BOOST_REQUIRE(parsed.has_value());
 
     BOOST_REQUIRE_EQUAL(parsed->solved_nodes.size(), output->artifact.solved_nodes.size());
+    // One report for the whole tree: per-field BOOST_CHECKs here log over 100k lines
+    // when passing assertions are logged.
+    zeta::test::mismatch_report report{"solved node round trip"};
+    constexpr double tolerance = 1e-7;
     for (std::size_t i = 0; i < output->artifact.solved_nodes.size(); ++i) {
         const auto& lhs = output->artifact.solved_nodes[i];
         const auto& rhs = parsed->solved_nodes[i];
-        BOOST_CHECK_EQUAL(rhs.node_id, lhs.node_id);
-        BOOST_CHECK_EQUAL(rhs.kind, lhs.kind);
-        BOOST_CHECK_EQUAL(rhs.public_state_id, lhs.public_state_id);
-        BOOST_CHECK_EQUAL(rhs.parent_node_id, lhs.parent_node_id);
-        BOOST_CHECK_EQUAL(rhs.acting_seat, lhs.acting_seat);
-        BOOST_CHECK_EQUAL(rhs.terminal, lhs.terminal);
-        BOOST_CHECK(rhs.board == lhs.board);
-        BOOST_CHECK_EQUAL(rhs.actions.size(), lhs.actions.size());
-        BOOST_CHECK_EQUAL(rhs.range_action_frequencies.size(), lhs.range_action_frequencies.size());
-        BOOST_CHECK_EQUAL(rhs.seat_values.size(), lhs.seat_values.size());
-        BOOST_CHECK_EQUAL(rhs.category_summary_derivation_version, 1u);
-        BOOST_CHECK_EQUAL(rhs.category_summary_derivation_version, lhs.category_summary_derivation_version);
-        BOOST_CHECK_EQUAL(rhs.category_summaries.size(), lhs.category_summaries.size());
-        BOOST_CHECK_EQUAL(rhs.strategy_rows.size(), lhs.strategy_rows.size());
+        report.expect_equal(rhs.node_id, lhs.node_id, "node_id", i);
+        report.expect_equal(rhs.kind, lhs.kind, "kind", i);
+        report.expect_equal(rhs.public_state_id, lhs.public_state_id, "public_state_id", i);
+        report.expect_equal(rhs.parent_node_id, lhs.parent_node_id, "parent_node_id", i);
+        report.expect_equal(+rhs.acting_seat, +lhs.acting_seat, "acting_seat", i);
+        report.expect_equal(rhs.terminal, lhs.terminal, "terminal", i);
+        report.expect(rhs.board == lhs.board, [&] { return "board differs at node " + std::to_string(i); });
+        report.expect_equal(rhs.category_summary_derivation_version, 1u, "category_summary_derivation_version", i);
+        const bool same_shape =
+            report.expect_equal(rhs.actions.size(), lhs.actions.size(), "actions.size", i)
+            & report.expect_equal(rhs.range_action_frequencies.size(), lhs.range_action_frequencies.size(), "range_action_frequencies.size", i)
+            & report.expect_equal(rhs.seat_values.size(), lhs.seat_values.size(), "seat_values.size", i)
+            & report.expect_equal(rhs.category_summaries.size(), lhs.category_summaries.size(), "category_summaries.size", i)
+            & report.expect_equal(rhs.strategy_rows.size(), lhs.strategy_rows.size(), "strategy_rows.size", i);
+        if (!same_shape) {
+            continue;
+        }
         for (std::size_t seat = 0; seat < lhs.seat_values.size(); ++seat) {
-            BOOST_CHECK_EQUAL(rhs.seat_values[seat].seat, lhs.seat_values[seat].seat);
-            BOOST_CHECK_CLOSE(rhs.seat_values[seat].range_reach_mass, lhs.seat_values[seat].range_reach_mass, 1e-7);
-            BOOST_CHECK_CLOSE(rhs.seat_values[seat].reach_weighted_value, lhs.seat_values[seat].reach_weighted_value, 1e-7);
-            BOOST_CHECK_CLOSE(rhs.seat_values[seat].conditional_range_ev, lhs.seat_values[seat].conditional_range_ev, 1e-7);
-            BOOST_CHECK_CLOSE(rhs.seat_values[seat].counterfactual_value, lhs.seat_values[seat].counterfactual_value, 1e-7);
+            const auto& a = lhs.seat_values[seat];
+            const auto& b = rhs.seat_values[seat];
+            report.expect_equal(+b.seat, +a.seat, "seat_values.seat", i);
+            report.expect_close(b.range_reach_mass, a.range_reach_mass, tolerance, "seat_values.range_reach_mass", i);
+            report.expect_close(b.matchup_reach_mass, a.matchup_reach_mass, tolerance, "seat_values.matchup_reach_mass", i);
+            report.expect_close(b.reach_weighted_value, a.reach_weighted_value, tolerance, "seat_values.reach_weighted_value", i);
+            report.expect_close(b.conditional_range_ev, a.conditional_range_ev, tolerance, "seat_values.conditional_range_ev", i);
+            report.expect_close(b.counterfactual_value, a.counterfactual_value, tolerance, "seat_values.counterfactual_value", i);
         }
         for (std::size_t action = 0; action < lhs.actions.size(); ++action) {
-            BOOST_CHECK_EQUAL(rhs.actions[action].action, lhs.actions[action].action);
-            BOOST_CHECK_EQUAL(rhs.actions[action].child_node_id, lhs.actions[action].child_node_id);
-            BOOST_CHECK_EQUAL(rhs.actions[action].action_index, lhs.actions[action].action_index);
-            BOOST_CHECK_CLOSE(rhs.actions[action].probability, lhs.actions[action].probability, 1e-7);
-            BOOST_CHECK_EQUAL(rhs.actions[action].chance_event_id, lhs.actions[action].chance_event_id);
-            BOOST_CHECK_EQUAL(rhs.actions[action].board_partition_id, lhs.actions[action].board_partition_id);
-            BOOST_CHECK_EQUAL(rhs.actions[action].chance_outcome_id, lhs.actions[action].chance_outcome_id);
-            BOOST_CHECK(rhs.actions[action].dealt_cards == lhs.actions[action].dealt_cards);
+            const auto& a = lhs.actions[action];
+            const auto& b = rhs.actions[action];
+            report.expect(
+                b.action == a.action && b.child_node_id == a.child_node_id && b.action_index == a.action_index
+                    && b.chance_event_id == a.chance_event_id && b.board_partition_id == a.board_partition_id
+                    && b.chance_outcome_id == a.chance_outcome_id && b.dealt_cards == a.dealt_cards,
+                [&] { return "action " + std::to_string(action) + " differs at node " + std::to_string(i); });
+            report.expect_close(b.probability, a.probability, tolerance, "actions.probability", i);
         }
         for (std::size_t action = 0; action < lhs.range_action_frequencies.size(); ++action) {
-            BOOST_CHECK_EQUAL(rhs.range_action_frequencies[action].action, lhs.range_action_frequencies[action].action);
-            BOOST_CHECK_CLOSE(rhs.range_action_frequencies[action].frequency, lhs.range_action_frequencies[action].frequency, 1e-7);
+            const auto& a = lhs.range_action_frequencies[action];
+            const auto& b = rhs.range_action_frequencies[action];
+            report.expect_equal(b.action, a.action, "range_action_frequencies.action", i);
+            report.expect_close(b.frequency, a.frequency, tolerance, "range_action_frequencies.frequency", i);
         }
         for (std::size_t category = 0; category < lhs.category_summaries.size(); ++category) {
-            BOOST_CHECK_EQUAL(rhs.category_summaries[category].category_name, lhs.category_summaries[category].category_name);
-            BOOST_CHECK_CLOSE(rhs.category_summaries[category].frequency, lhs.category_summaries[category].frequency, 1e-7);
-            BOOST_CHECK_CLOSE(rhs.category_summaries[category].range_weight, lhs.category_summaries[category].range_weight, 1e-7);
-            BOOST_CHECK_CLOSE(rhs.category_summaries[category].average_ev, lhs.category_summaries[category].average_ev, 1e-7);
-            BOOST_CHECK_EQUAL(
-                rhs.category_summaries[category].action_frequencies.size(),
-                lhs.category_summaries[category].action_frequencies.size());
-            for (std::size_t freq = 0; freq < lhs.category_summaries[category].action_frequencies.size(); ++freq) {
-                BOOST_CHECK_EQUAL(
-                    rhs.category_summaries[category].action_frequencies[freq].action_index,
-                    lhs.category_summaries[category].action_frequencies[freq].action_index);
-                BOOST_CHECK_CLOSE(
-                    rhs.category_summaries[category].action_frequencies[freq].frequency,
-                    lhs.category_summaries[category].action_frequencies[freq].frequency,
-                    1e-7);
+            const auto& a = lhs.category_summaries[category];
+            const auto& b = rhs.category_summaries[category];
+            report.expect_equal(b.category_name, a.category_name, "category_summaries.category_name", i);
+            report.expect_close(b.frequency, a.frequency, tolerance, "category_summaries.frequency", i);
+            report.expect_close(b.range_weight, a.range_weight, tolerance, "category_summaries.range_weight", i);
+            report.expect_close(b.average_ev, a.average_ev, tolerance, "category_summaries.average_ev", i);
+            if (!report.expect_equal(b.action_frequencies.size(), a.action_frequencies.size(), "category_summaries.action_frequencies.size", i)) {
+                continue;
+            }
+            for (std::size_t freq = 0; freq < a.action_frequencies.size(); ++freq) {
+                report.expect_equal(b.action_frequencies[freq].action_index, a.action_frequencies[freq].action_index, "category action_index", i);
+                report.expect_close(b.action_frequencies[freq].frequency, a.action_frequencies[freq].frequency, tolerance, "category action frequency", i);
             }
         }
         for (std::size_t row = 0; row < lhs.strategy_rows.size(); ++row) {
-            BOOST_CHECK_EQUAL(rhs.strategy_rows[row].combination_index, lhs.strategy_rows[row].combination_index);
-            BOOST_CHECK_EQUAL(rhs.strategy_rows[row].hand, lhs.strategy_rows[row].hand);
-            BOOST_CHECK_CLOSE(rhs.strategy_rows[row].range_weight, lhs.strategy_rows[row].range_weight, 1e-7);
-            BOOST_CHECK_CLOSE(rhs.strategy_rows[row].reach_probability, lhs.strategy_rows[row].reach_probability, 1e-7);
-            BOOST_CHECK_CLOSE(rhs.strategy_rows[row].ev, lhs.strategy_rows[row].ev, 1e-7);
-            BOOST_CHECK_EQUAL(rhs.strategy_rows[row].strategy.size(), lhs.strategy_rows[row].strategy.size());
-            for (std::size_t action = 0; action < lhs.strategy_rows[row].strategy.size(); ++action) {
-                BOOST_CHECK_EQUAL(
-                    rhs.strategy_rows[row].strategy[action].action,
-                    lhs.strategy_rows[row].strategy[action].action);
-                BOOST_CHECK_CLOSE(
-                    rhs.strategy_rows[row].strategy[action].frequency,
-                    lhs.strategy_rows[row].strategy[action].frequency,
-                    1e-7);
+            const auto& a = lhs.strategy_rows[row];
+            const auto& b = rhs.strategy_rows[row];
+            report.expect_equal(b.combination_index, a.combination_index, "strategy_rows.combination_index", i);
+            report.expect_equal(b.hand, a.hand, "strategy_rows.hand", i);
+            report.expect_close(b.range_weight, a.range_weight, tolerance, "strategy_rows.range_weight", i);
+            report.expect_close(b.reach_probability, a.reach_probability, tolerance, "strategy_rows.reach_probability", i);
+            report.expect_close(b.ev, a.ev, tolerance, "strategy_rows.ev", i);
+            report.expect_close(b.counterfactual_value, a.counterfactual_value, tolerance, "strategy_rows.counterfactual_value", i);
+            report.expect_close(b.opponent_reach_mass, a.opponent_reach_mass, tolerance, "strategy_rows.opponent_reach_mass", i);
+            if (!report.expect_equal(b.strategy.size(), a.strategy.size(), "strategy_rows.strategy.size", i)) {
+                continue;
+            }
+            for (std::size_t action = 0; action < a.strategy.size(); ++action) {
+                report.expect_equal(b.strategy[action].action, a.strategy[action].action, "strategy_rows.strategy.action", i);
+                report.expect_close(b.strategy[action].frequency, a.strategy[action].frequency, tolerance, "strategy_rows.strategy.frequency", i);
             }
         }
     }
+    ZETA_CHECK_REPORT(report);
 
     BOOST_CHECK_EQUAL(parsed->root_node_id, output->artifact.root_node_id);
     BOOST_CHECK(output->artifact.root_node_id != zeta::holdem::cfr::game_graph::INVALID_NODE);
@@ -1552,4 +1559,202 @@ BOOST_AUTO_TEST_CASE(holdem_cli_rejects_old_artifact_schema_versions) {
     auto parsed = zeta::holdem::cli::parse_artifact_json(json);
     BOOST_REQUIRE(!parsed);
     BOOST_CHECK(parsed.error().kind == zeta::holdem::cli::cli_error_kind::invalid_artifact);
+}
+
+namespace {
+
+    constexpr const char* sample_spot_river_wide = R"({
+  "street": "river",
+  "players": ["BTN", "BB"],
+  "board": ["Ah", "Kd", "7c", "4s", "2h"],
+  "ranges": ["AA,KK,77,QJs,65s", "AK,AQ,KQ,JTs"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [100.0, 100.0],
+  "betting_policy": {"fixed_pot_fractions": [0.75], "max_raises": 1},
+  "max_history": 6,
+  "root_actor": "BTN",
+  "hero_seat": "BTN"
+})";
+
+    constexpr const char* sample_spot_three_way_river = R"({
+  "street": "river",
+  "players": ["BTN", "SB", "BB"],
+  "board": ["Ah", "Kd", "7c", "4s", "2h"],
+  "ranges": ["AA,KK,QJs,65s", "AK,QQ,T9s", "JJ,AQ,87s"],
+  "gross_pot": 150.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0, 50.0],
+  "stacks": [100.0, 100.0, 100.0],
+  "betting_policy": {"fixed_pot_fractions": [0.75], "max_raises": 1},
+  "max_history": 6,
+  "root_actor": "BTN",
+  "hero_seat": "BTN"
+})";
+
+    constexpr const char* sample_spot_three_way_river_checkdown = R"({
+  "street": "river",
+  "players": ["BTN", "SB", "BB"],
+  "board": ["Ah", "Kd", "7c", "4s", "2h"],
+  "ranges": ["AA,KK,QJs,65s", "AK,QQ,T9s", "JJ,AQ,87s"],
+  "gross_pot": 150.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0, 50.0],
+  "stacks": [0.0, 0.0, 0.0],
+  "max_history": 6,
+  "hero_seat": "BTN"
+})";
+
+    // The largest difference between any two hands' root frequencies. Zero means every
+    // hand plays the same mix, which is what a hand-blind solver produces.
+    double max_strategy_spread(const zeta::holdem::cli::solve_artifact& artifact)
+    {
+        double spread = 0.0;
+        for (const auto& lhs : artifact.strategy) {
+            for (const auto& rhs : artifact.strategy) {
+                for (std::size_t action = 0; action < std::min(lhs.strategy.size(), rhs.strategy.size()); ++action) {
+                    spread = std::max(spread, std::fabs(lhs.strategy[action].frequency - rhs.strategy[action].frequency));
+                }
+            }
+        }
+        return spread;
+    }
+
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_river_solve_learns_hand_dependent_strategies) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_river_wide);
+    BOOST_REQUIRE(spot.has_value());
+    auto output = zeta::holdem::cli::solve_spot(*spot, 100);
+    BOOST_REQUIRE(output.has_value());
+
+    // Sets and air should not play the same mix at the root.
+    BOOST_CHECK_GT(max_strategy_spread(output->artifact), 0.2);
+    BOOST_CHECK_GT(output->artifact.solver.convergence.normalized_regret, 0.0);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_river_solve_is_deterministic_across_worker_counts) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_river_wide);
+    BOOST_REQUIRE(spot.has_value());
+    auto single = zeta::holdem::cli::solve_spot(*spot, 24, {.worker_threads = 1});
+    auto parallel = zeta::holdem::cli::solve_spot(*spot, 24, {.worker_threads = 8});
+    BOOST_REQUIRE(single.has_value());
+    BOOST_REQUIRE(parallel.has_value());
+
+    // Terminal leaves are evaluated in parallel but each writes only its own values,
+    // so the solve is bit-identical for any worker count.
+    zeta::test::mismatch_report report{"river solve across worker counts"};
+    BOOST_REQUIRE_EQUAL(single->artifact.strategy.size(), parallel->artifact.strategy.size());
+    for (std::size_t i = 0; i < single->artifact.strategy.size(); ++i) {
+        const auto& lhs = single->artifact.strategy[i];
+        const auto& rhs = parallel->artifact.strategy[i];
+        report.expect_equal(rhs.counterfactual_value, lhs.counterfactual_value, "counterfactual_value", i);
+        report.expect_equal(rhs.strategy.size(), lhs.strategy.size(), "strategy.size", i);
+        for (std::size_t action = 0; action < std::min(lhs.strategy.size(), rhs.strategy.size()); ++action) {
+            report.expect_equal(rhs.strategy[action].frequency, lhs.strategy[action].frequency, "frequency", i);
+        }
+    }
+    ZETA_CHECK_REPORT(report);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_river_solve_supports_a_hero_other_than_the_root_actor) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_river_wide);
+    BOOST_REQUIRE(spot.has_value());
+    auto as_root = zeta::holdem::cli::solve_spot(*spot, 40);
+    spot->hero_seat = 1;
+    auto as_other = zeta::holdem::cli::solve_spot(*spot, 40);
+    BOOST_REQUIRE(as_root.has_value());
+    BOOST_REQUIRE(as_other.has_value());
+    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(as_other->artifact).has_value());
+
+    // The game and its solution do not depend on whose rows are reported: the root
+    // strategy is the root actor's in both runs.
+    BOOST_REQUIRE_EQUAL(as_root->artifact.root_strategy.size(), as_other->artifact.root_strategy.size());
+    for (std::size_t action = 0; action < as_root->artifact.root_strategy.size(); ++action) {
+        BOOST_CHECK_EQUAL(as_root->artifact.root_strategy[action].action, as_other->artifact.root_strategy[action].action);
+        BOOST_CHECK_EQUAL(as_root->artifact.root_strategy[action].frequency, as_other->artifact.root_strategy[action].frequency);
+    }
+
+    // The hero (BB) has no decision at the root, so its rows carry EVs but no actions,
+    // and the EVs are BB's: zero-sum against BTN's range EV at the root.
+    BOOST_REQUIRE(!as_other->artifact.strategy.empty());
+    BOOST_CHECK(std::ranges::all_of(as_other->artifact.strategy, [](const auto& row) { return row.strategy.empty(); }));
+    const auto& nodes = as_other->artifact.solved_nodes;
+    const auto root = std::ranges::find(nodes, as_other->artifact.root_node_id, &zeta::holdem::cli::solved_node::node_id);
+    BOOST_REQUIRE(root != nodes.end());
+    BOOST_REQUIRE_EQUAL(root->seat_values.size(), 2u);
+    double weighted_cfv = 0.0;
+    double matchup_mass = 0.0;
+    for (const auto& row : as_other->artifact.strategy) {
+        weighted_cfv += row.range_weight * row.counterfactual_value;
+        matchup_mass += row.range_weight * row.opponent_reach_mass;
+    }
+    BOOST_REQUIRE_GT(matchup_mass, 0.0);
+    BOOST_CHECK_CLOSE(weighted_cfv / matchup_mass, root->seat_values[1].conditional_range_ev, 1e-6);
+    BOOST_CHECK_SMALL(root->seat_values[0].conditional_range_ev + root->seat_values[1].conditional_range_ev, 1e-3);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_learns_hand_dependent_strategies) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_three_way_river);
+    BOOST_REQUIRE(spot.has_value());
+    auto output = zeta::holdem::cli::solve_spot(*spot, 60, {.worker_threads = 4});
+    BOOST_REQUIRE(output.has_value());
+    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(output->artifact).has_value());
+
+    // Multiway solves used to copy one strategy to every hand and never learn.
+    BOOST_CHECK_GT(max_strategy_spread(output->artifact), 0.2);
+    BOOST_CHECK_GT(output->artifact.solver.convergence.normalized_regret, 0.0);
+    BOOST_CHECK(!output->artifact.solver.convergence.exploitability_available);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_checkdown_matches_brute_force_reference) {
+    using namespace zeta::holdem;
+    auto spot = cli::parse_spot_json(sample_spot_three_way_river_checkdown);
+    BOOST_REQUIRE(spot.has_value());
+    auto output = cli::solve_spot(*spot, 2);
+    BOOST_REQUIRE(output.has_value());
+
+    zeta::card_mask board_mask = 0;
+    for (const auto& text : spot->board) {
+        const auto parsed = cli::detail::parse_card_text(text);
+        BOOST_REQUIRE(parsed.has_value());
+        board_mask |= zeta::card_mask{1} << *parsed;
+    }
+    std::array<hand_range, 3> ranges{};
+    for (std::size_t seat = 0; seat < 3; ++seat) {
+        const auto parsed = parse_range(spot->ranges[seat]);
+        BOOST_REQUIRE(parsed.ok());
+        ranges[seat] = parsed.range;
+    }
+
+    // Brute force over every pair of opponent hands that fits with the hero hand and
+    // the board: winners split the 150 pot, everyone has 50 in.
+    zeta::test::mismatch_report report{"three-way check-down counterfactual values"};
+    for (const auto& row : output->artifact.strategy) {
+        const auto hero_mask = combination_mask(row.combination_index);
+        const auto hero_rank = evaluate(board_mask | hero_mask);
+        double expected = 0.0;
+        for (combination_index o1 = 0; o1 < combination_count; ++o1) {
+            const auto m1 = combination_mask(o1);
+            if (ranges[1][o1] <= 0.0f || (m1 & (board_mask | hero_mask)) != 0) {
+                continue;
+            }
+            const auto r1 = evaluate(board_mask | m1);
+            for (combination_index o2 = 0; o2 < combination_count; ++o2) {
+                const auto m2 = combination_mask(o2);
+                if (ranges[2][o2] <= 0.0f || (m2 & (board_mask | hero_mask | m1)) != 0) {
+                    continue;
+                }
+                const auto r2 = evaluate(board_mask | m2);
+                const auto best = std::max({hero_rank, r1, r2});
+                const int winners = (hero_rank == best) + (r1 == best) + (r2 == best);
+                const double payoff = hero_rank == best ? 150.0 / winners - 50.0 : -50.0;
+                expected += static_cast<double>(ranges[1][o1]) * ranges[2][o2] * payoff;
+            }
+        }
+        report.expect_small(row.counterfactual_value - expected, 1e-3 * std::max(1.0, std::fabs(expected)),
+            row.hand, row.combination_index);
+    }
+    ZETA_CHECK_REPORT(report);
 }

@@ -345,11 +345,11 @@ namespace zeta::holdem::ui::widgets {
         template_layout->addWidget(make_panel_title(tr("Templates")));
 
         auto* heads_up = new QPushButton{tr("New heads-up river"), template_panel};
-        auto* three_way = new QPushButton{tr("New 3-way flop"), template_panel};
-        auto* four_way = new QPushButton{tr("New 4-way turn"), template_panel};
-        auto* five_way = new QPushButton{tr("New 5-way turn"), template_panel};
-        auto* six_way = new QPushButton{tr("New 6-way turn"), template_panel};
-        auto* seven_way = new QPushButton{tr("New 7-way turn"), template_panel};
+        auto* three_way = new QPushButton{tr("New 3-way river"), template_panel};
+        auto* four_way = new QPushButton{tr("New 4-way river"), template_panel};
+        auto* five_way = new QPushButton{tr("New 5-way river"), template_panel};
+        auto* six_way = new QPushButton{tr("New 6-way river"), template_panel};
+        auto* seven_way = new QPushButton{tr("New 7-way river"), template_panel};
         auto* duplicate = new QPushButton{tr("Duplicate current spot"), template_panel};
         template_layout->addWidget(heads_up);
         template_layout->addWidget(three_way);
@@ -360,11 +360,11 @@ namespace zeta::holdem::ui::widgets {
         template_layout->addWidget(duplicate);
         template_layout->addStretch(1);
         connect(heads_up, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::heads_up_river); });
-        connect(three_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::three_way_flop); });
-        connect(four_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::four_way_turn); });
-        connect(five_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::five_way_turn); });
-        connect(six_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::six_way_turn); });
-        connect(seven_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::seven_way_turn); });
+        connect(three_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::three_way_river); });
+        connect(four_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::four_way_river); });
+        connect(five_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::five_way_river); });
+        connect(six_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::six_way_river); });
+        connect(seven_way, &QPushButton::clicked, this, [this] { apply_template(viewmodels::spot_template_kind::seven_way_river); });
         connect(duplicate, &QPushButton::clicked, this, [this] {
             if (on_duplicate_) {
                 on_duplicate_(spot_from_controls());
@@ -427,9 +427,6 @@ namespace zeta::holdem::ui::widgets {
         public_state_id_ = new QSpinBox{spot_panel};
         public_state_id_->setObjectName("publicStateIdField");
         public_state_id_->setRange(0, 1'000'000);
-        samples_per_combo_ = new QSpinBox{spot_panel};
-        samples_per_combo_->setObjectName("samplesPerComboField");
-        samples_per_combo_->setRange(1, 10'000);
 
         grid->addWidget(new QLabel{tr("Root actor"), spot_panel}, 4, 0);
         grid->addWidget(root_actor_, 4, 1);
@@ -450,8 +447,6 @@ namespace zeta::holdem::ui::widgets {
         grid->addWidget(max_history_, 7, 3);
         grid->addWidget(new QLabel{tr("Public state"), spot_panel}, 8, 0);
         grid->addWidget(public_state_id_, 8, 1);
-        grid->addWidget(new QLabel{tr("Samples/combo"), spot_panel}, 8, 2);
-        grid->addWidget(samples_per_combo_, 8, 3);
         root->addWidget(spot_panel);
 
         auto* betting_panel = make_panel();
@@ -601,7 +596,6 @@ namespace zeta::holdem::ui::widgets {
         });
         connect(max_history_, &QSpinBox::valueChanged, this, numeric_changed);
         connect(public_state_id_, &QSpinBox::valueChanged, this, numeric_changed);
-        connect(samples_per_combo_, &QSpinBox::valueChanged, this, numeric_changed);
         connect(seat_table_, &QTableWidget::itemChanged, this, [this] {
             if (!updating_) {
                 spot_ = spot_from_controls();
@@ -623,7 +617,6 @@ namespace zeta::holdem::ui::widgets {
         bet_fraction_->setValue(spot_.bet_fraction);
         max_history_->setValue(spot_.max_history);
         public_state_id_->setValue(static_cast<int>(spot_.public_state_id));
-        samples_per_combo_->setValue(spot_.samples_per_combo);
 
         seat_table_->setRowCount(static_cast<int>(spot_.players.size()));
         for (int row = 0; row < seat_table_->rowCount(); ++row) {
@@ -691,7 +684,7 @@ namespace zeta::holdem::ui::widgets {
         const auto issues = viewmodels::validate_structured_spot(spot_from_controls());
         set_first_issue(board_error_, issues, {"street", "board"});
         set_first_issue(players_error_, issues, {"players", "ranges", "stacks", "contributions"});
-        set_first_issue(actor_error_, issues, {"root_actor", "hero_seat", "gross_pot", "rake", "bet_fraction", "samples_per_combo", "betting_policy"});
+        set_first_issue(actor_error_, issues, {"root_actor", "hero_seat", "gross_pot", "rake", "bet_fraction", "betting_policy"});
         for (const auto& issue : issues) {
             if (issue.field == "betting_policy") {
                 betting_policy_error_->setText(QString::fromStdString(issue.message));
@@ -756,7 +749,6 @@ namespace zeta::holdem::ui::widgets {
         }
         out.max_history = static_cast<uint16_t>(max_history_->value());
         out.public_state_id = static_cast<uint32_t>(public_state_id_->value());
-        out.samples_per_combo = static_cast<uint16_t>(samples_per_combo_->value());
         return out;
     }
 

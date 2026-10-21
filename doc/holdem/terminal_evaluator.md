@@ -2,8 +2,8 @@
 
 This document describes the terminal evaluator that is implemented in the
 Hold'em module. It covers river showdown and fold values for ranges, the
-board-specialized cache used by the kernels, and the terminal-state path used
-by CFR traversal.
+board-specialized cache used by the kernels, and the terminal-state path the
+CFR solver evaluates at every terminal leaf.
 
 ## Scope
 
@@ -18,9 +18,7 @@ Implemented surfaces:
 - dedicated heads-up evaluator with exact showdown values and summary statistics
 - dedicated heads-up fold values
 - exact N-way terminal-state showdown and fold values
-- sampled N-way showdown value estimation
 - side-pot and rake-aware payoff distribution through `terminal_state<N>`
-- reusable `terminal_workspace<N>` storage for repeated solver calls
 
 ## Main Types
 
@@ -114,40 +112,19 @@ kind:
 - heads-up states use the specialized heads-up kernels
 
 The exact N-way terminal-state showdown path recursively enumerates compatible
-opponent combos for each hero combo, ranks each sampled seat, and distributes
-each pot layer to the best eligible hand or tied best hands.
-
-## Sampled N-Way Showdown Values
-
-`evaluate_showdown_values_multiplayer_sampled` provides a scalable N-way
-showdown value estimator. It samples compatible opponent combos from rank-order
-strata and applies importance weighting. The caller controls sampling with
-`samples_per_combo`.
-
-This path returns `terminal_values<N>` rather than a heads-up summary. It is used
-when a caller wants approximate multi-player showdown values without exhaustive
-N-way enumeration.
-
-## Workspace API
-
-`terminal_workspace<N>` owns the materialized reach indices for repeated
-evaluations. Solver code can keep one workspace per worker, materialize incoming
-ranges into it, and evaluate terminals without per-call heap allocation for the
-large reach-index arrays.
+opponent combos for each hero combo, ranks every seat's hand, and distributes
+each pot layer to the best eligible hand or tied best hands. Values are
+counterfactual: each opponent tuple contributes its reach product times the
+payoff, matching the heads-up kernels. Cost grows with the product of the
+opponents' active range sizes.
 
 ## CFR Integration
 
-CFR traversal consumes terminal values through `cfr_terminal_provider<N>`.
-Terminal leaves reference entries in a terminal-state table, and the provider
-binds those leaves to:
-
-- the river cache
-- per-seat reach indices
-- terminal states
-- selected combo indices for the current traversal
-
-At terminal leaves, the solver evaluates the referenced terminal state and reads
-the current updating player's combo value from `terminal_values<N>`.
+At each terminal leaf the solver builds one `river_reach_index` per seat: the
+updating player's root range and every other seat's reach at that leaf. It then
+calls `terminal_engine<N>::evaluate_terminal_values` with the leaf's terminal
+state and keeps the updating player's values. Leaves are evaluated in parallel,
+each task building its own reach indices.
 
 ## Limits
 

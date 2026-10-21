@@ -69,7 +69,6 @@ namespace zeta::holdem::ui::widgets {
         QDoubleSpinBox* betting_all_in_threshold_ = nullptr;
         QSpinBox* max_history_ = nullptr;
         QSpinBox* public_state_id_ = nullptr;
-        QSpinBox* samples_per_combo_ = nullptr;
         QTableWidget* seat_table_ = nullptr;
         QLabel* board_error_ = nullptr;
         QLabel* players_error_ = nullptr;

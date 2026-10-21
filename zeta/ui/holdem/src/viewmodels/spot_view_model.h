@@ -11,11 +11,11 @@ namespace zeta::holdem::ui::viewmodels {
 
     enum class spot_template_kind {
         heads_up_river,
-        three_way_flop,
-        four_way_turn,
-        five_way_turn,
-        six_way_turn,
-        seven_way_turn
+        three_way_river,
+        four_way_river,
+        five_way_river,
+        six_way_river,
+        seven_way_river
     };
 
     struct spot_validation_issue {

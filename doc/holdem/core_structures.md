@@ -95,7 +95,7 @@ The terminal layer is player-count templated (`N`) and uses the same structures 
 - `terminal_context<N>`: pot/rake/contribution accounting
 - `player_mask<N>` and `folded_mask<N>`: seat-state masks
 - `pot_layer<N>`: side-pot accounting with eligibility/contributor masks
-- `terminal_state<N>`: one auditable terminal record (showdown/fold/etc.)
+- `terminal_state<N>`: one auditable terminal record (showdown or fold)
 - `terminal_state_table<N>`: owning contiguous terminal-state storage
 
 For heads-up, `folded_mask<2>` is specialized to two booleans (`oop_folded`, `ip_folded`) to avoid generic bitset overhead.
@@ -117,7 +117,7 @@ For heads-up, `folded_mask<2>` is specialized to two booleans (`oop_folded`, `ip
 - `mass_by_card[52]`
 - rank-bucket arrays for rank-sweep/blocker-correction logic
 
-These structures are reused by terminal showdown/fold algorithms and CFR terminal leaf evaluation.
+These structures are reused by the terminal showdown and fold kernels for every terminal leaf.
 
 ## CFR graph topology
 
@@ -129,9 +129,9 @@ The solver graph uses immutable CSR storage (`game_graph`):
 - `infoset_id[]`
 - `node_depth[]`, `subtree_size[]`
 
-Graph ordering is DFS post-order, which supports bottom-up style processing and deterministic traversal properties.
+Graph ordering is DFS post-order, so one ascending pass visits children before parents; the value backup relies on this.
 
-## Graph side metadata and infoset lowering
+## Graph side metadata
 
 `solver_graph_annotations` stores side arrays indexed by node id:
 
@@ -140,26 +140,18 @@ Graph ordering is DFS post-order, which supports bottom-up style processing and 
 - `terminal_leaf_id_by_node`
 - `state_by_node` (`street`, public-state id, betting-state id)
 
-Hold'em infoset identity starts as `holdem_infoset_key` (actor/street/player count and abstraction ids), then lowers to dense IDs through `holdem_infoset_lowering`:
+The betting-tree lowering assigns dense infoset ids directly; nodes that share an
+infoset share its action count.
 
-- `dense_id_by_node`
-- `key_by_infoset`
-- `owner_by_infoset`
-- compact legal-action arrays via offsets
+## Action-table layout and combo tables
 
-## Action-table layout and value tables
-
-Regret and strategy tables share one contiguous layout:
+The solver's tables share one contiguous layout:
 
 - `action_table_layout::action_offsets[infoset_count + 1]`
-- flat values indexed by `offset(infoset_id, action_index)`
+- one row of action slots per infoset, repeated for each of the 1326 hands
 
-This infoset-major contiguous addressing is used by:
-
-- `regret_table`
-- `strategy_sum_table`
-- worker-local delta buffers
-- checkpoint chunking and owner-range reduction
+`combo_action_table` (in `cli/solve_cli.h`) stores regrets, strategy sums, and the
+current and average strategies in this `hand x action-slot` shape.
 
 ## Chance-event storage
 
@@ -177,43 +169,11 @@ Each `chance_outcome` includes:
 - `dead_cards`
 - board partition id and legality flags
 
-## Worker and solver context surfaces
+## Parallel terminal evaluation
 
-`cfr_solver_context<N>` is a non-owning bundle of shared state:
-
-- graph + annotations
-- action layout
-- regrets + strategy sums
-- chance events
-- terminal provider
-- numeric/reduction policy
-- infoset owner map
-
-`traversal::worker_context` is per-worker mutable state:
-
-- iterative traversal frame arrays
-- reach/value scratch buffers
-- edge-probability and child-value buffers
-- local `table_delta_buffer`
-- per-worker diagnostics
-
-The split is intentional: shared immutable/read-mostly surfaces in solver context, private scratch and local deltas in worker context.
-
-## Scheduler and partition structures
-
-Parallel iteration uses board-partition tasks:
-
-- `graph_partition`: node span + estimated work
-- `board_partition_plan`: Cartesian product of boards and partitions
-- `board_partition_task`: immutable `(board_index, partition_index, task_index)`
-
-This plan is consumed by a dynamic atomic-queue scheduler and supports deterministic accounting counters (`tasks_executed`, `estimated_work`).
-
-## Checkpoint structures
-
-Checkpointing uses a compatibility-checked binary header:
-
-- `cfr_checkpoint_header`: versioning, solver config, hashes, counts
-- per-owner `cfr_checkpoint_table_chunk_header`: value spans for regrets/strategy sums
-
-Compatibility keys hash graph metadata, action layout, numeric/reduction policy, and chance mode to prevent unsafe resume across incompatible solver states.
+`scheduler::worker_pool` owns `worker_threads - 1` threads; the calling thread is
+the remaining worker. `run(task_count, body, chunk_size)` hands task indices out in
+chunks from an atomic counter and returns once every task has run, rethrowing the
+first exception a task threw. The solver uses one pool per solve and runs each
+evaluation pass's terminal leaves as one batch; each task allocates its own reach
+indices, so tasks share no mutable state.

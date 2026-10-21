@@ -578,36 +578,6 @@ namespace zeta::holdem::cfr {
        return {};
     }
 
-    [[nodiscard]] inline public_state_registry make_public_state_registry(
-       std::span<const public_board_state> states,
-       const public_state_id root_public_state_id = INVALID_PUBLIC_STATE_ID)
-    {
-       public_state_registry registry;
-       registry.states.assign(states.begin(), states.end());
-       registry.root_public_state_id = root_public_state_id;
-       registry.state_id_by_node.resize(registry.states.size());
-       for (std::size_t index = 0; index < registry.states.size(); ++index) {
-           registry.states[index].id = static_cast<public_state_id>(index);
-           registry.state_id_by_node[index] = static_cast<public_state_id>(index);
-       }
-       if (root_public_state_id != INVALID_PUBLIC_STATE_ID && root_public_state_id < registry.states.size()) {
-           registry.root_public_state_id = root_public_state_id;
-       }
-       return registry;
-    }
-
-    [[nodiscard]] inline runout_registry make_runout_registry(std::span<const complete_runout> runouts)
-    {
-       runout_registry registry;
-       registry.runouts.assign(runouts.begin(), runouts.end());
-       registry.river_public_state_by_runout.resize(registry.runouts.size(), INVALID_PUBLIC_STATE_ID);
-       for (std::size_t index = 0; index < registry.runouts.size(); ++index) {
-           registry.runouts[index].id = static_cast<runout_id>(index);
-           registry.river_public_state_by_runout[index] = registry.runouts[index].river_public_state_id;
-       }
-       return registry;
-    }
-
     [[nodiscard]] inline runout_terminal_table make_runout_terminal_table(std::span<const public_board_state> states)
     {
        runout_terminal_table table;
@@ -1200,20 +1170,6 @@ namespace zeta::holdem::cfr {
             return std::unexpected(result.error());
         }
         return table;
-    }
-
-    /**
-     * Number of board partitions referenced by enumerated chance outcomes.
-     */
-    [[nodiscard]] inline uint32_t chance_board_partition_count(const chance_event_table& table) noexcept
-    {
-        uint32_t partition_count = 0;
-        for (const auto& outcome : table.outcomes) {
-            if (outcome.board_partition_id != INVALID_BOARD_PARTITION) {
-                partition_count = std::max(partition_count, outcome.board_partition_id + 1u);
-            }
-        }
-        return partition_count;
     }
 
 }

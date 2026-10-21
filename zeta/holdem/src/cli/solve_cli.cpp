@@ -384,9 +384,6 @@ namespace zeta::holdem::cli {
             if (spot.hero_seat >= spot.players.size()) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_spot, "hero_seat is out of range."});
             }
-            if (spot.samples_per_combo == 0) {
-                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "samples_per_combo must be positive."});
-            }
             if (spot.gross_pot <= 0.0) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_spot, "gross_pot must be positive."});
             }
@@ -1025,7 +1022,6 @@ namespace zeta::holdem::cli {
         auto public_state_id = optional_uint<uint32_t>(*root, "public_state_id", spot.public_state_id);
         auto root_actor = optional_player_seat(*root, "root_actor", spot.players, spot.root_actor);
         auto hero_seat = optional_player_seat(*root, "hero_seat", spot.players, spot.hero_seat);
-        auto samples_per_combo = optional_uint<uint16_t>(*root, "samples_per_combo", spot.samples_per_combo);
         if (!max_history) {
             return std::unexpected(max_history.error());
         }
@@ -1038,14 +1034,10 @@ namespace zeta::holdem::cli {
         if (!hero_seat) {
             return std::unexpected(hero_seat.error());
         }
-        if (!samples_per_combo) {
-            return std::unexpected(samples_per_combo.error());
-        }
         spot.max_history = *max_history;
         spot.public_state_id = *public_state_id;
         spot.root_actor = *root_actor;
         spot.hero_seat = *hero_seat;
-        spot.samples_per_combo = *samples_per_combo;
 
         if (auto validation = validate_spot_fields(spot); !validation) {
             return std::unexpected(validation.error());
@@ -1196,7 +1188,6 @@ namespace zeta::holdem::cli {
             ? spot.players[spot.root_actor] : std::to_string(spot.root_actor);
         out["hero_seat"] = spot.hero_seat < spot.players.size()
             ? spot.players[spot.hero_seat] : std::to_string(spot.hero_seat);
-        out["samples_per_combo"] = static_cast<uint64_t>(spot.samples_per_combo);
         return json::serialize(out);
     }
 

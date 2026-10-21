@@ -39,7 +39,7 @@ Prints a fixed-width strategy table.
 
 `board` is always required. Use the unified array-based format for all player counts.
 
-### Multiway-capable format (2 to 6 players)
+### Multiway-capable format (2 to 7 players)
 
 ```json
 {
@@ -66,8 +66,7 @@ Prints a fixed-width strategy table.
   "max_history": 8,
   "public_state_id": 0,
   "root_actor": "BB",
-  "hero_seat": "BTN",
-  "samples_per_combo": 64
+  "hero_seat": "BTN"
 }
 ```
 
@@ -77,7 +76,7 @@ The solver accepts either the `bet_fraction` single-bet field or the richer `bet
 
 | Field               | Type     | Default         | Notes                                                                   |
 | ------------------- | -------- | --------------- | ----------------------------------------------------------------------- |
-| `players`           | string[] | `["BTN","BB"]`  | 2..6 player labels                                                      |
+| `players`           | string[] | `["BTN","BB"]`  | 2..7 player labels                                                      |
 | `street`            | string   | `"river"`       | One of `flop`, `turn`, `river`                                          |
 | `board`             | string[] | required        | Exactly 3 cards on flop, 4 on turn, 5 on river                          |
 | `ranges`            | string[] | `["AA","AA"]`   | Must match player count                                                 |
@@ -91,19 +90,20 @@ The solver accepts either the `bet_fraction` single-bet field or the richer `bet
 | `public_state_id`   | integer  | `0`             | User-defined public-state discriminator (advanced; leave at `0` for single-board spots) |
 | `root_actor`        | string or integer | first player | Player label (e.g. `"BB"`) or index of acting seat at root; the listed player acts first at the root node |
 | `hero_seat`         | string or integer | first player | Player label (e.g. `"BTN"`) or index of the seat whose strategy rows appear in the artifact |
-| `samples_per_combo` | integer  | `64`            | Multiplayer/pre-river sampling budget (higher = lower variance, slower) |
 
-Recommended `samples_per_combo` ranges:
+River spots solve for any player count; flop and turn spots are heads-up only.
+Multiway terminals are evaluated exactly, by enumerating every compatible tuple of
+opponent hands, so cost grows quickly with the number and width of the ranges.
 
-- Sanity checks: `1000` to `4000`
-- Regular analysis: `8000` to `32000`
-- Higher-confidence runs: `64000+` (sometimes `128000+`)
+When `hero_seat` is not the root actor, the hero's rows carry its EVs at the root
+but an empty `strategy`, because the hero has no decision there; the per-node rows
+in `solved_nodes` show every seat's decisions.
 
 ### Solver runtime knobs (`runtime` object)
 
-Multi-street solves accept an optional `runtime` object that tunes the solver
-without changing the game being solved. The block is optional; when omitted the
-solver runs the exact multi-street CFR+ solve with an auto-derived memory budget.
+Solves accept an optional `runtime` object that tunes the solver without changing
+the game being solved. When it is omitted the solver runs single-threaded with an
+auto-derived memory budget.
 
 ```json
 {
@@ -138,7 +138,7 @@ solver runs the exact multi-street CFR+ solve with an auto-derived memory budget
 
 | Field                                    | Type    | Default        | Notes                                                                                     |
 | ---------------------------------------- | ------- | -------------- | ----------------------------------------------------------------------------------------- |
-| `worker_threads`                         | integer | `1`            | CFR worker threads (clamped to `1..64`)                                                    |
+| `worker_threads`                         | integer | `1`            | Threads that evaluate terminal leaves in parallel (clamped to `1..64`); results are bit-identical for any value |
 | `memory_budget_bytes`                    | integer | `0`            | Pre-build footprint cap; `0` derives `0.8 x` detected available memory (fallback 4 GiB)   |
 | `card_isomorphism`                       | boolean | `false`        | Collapse suit-isomorphic turn/river boards (lossless only for suit-symmetric ranges)      |
 | `allow_lossy_card_isomorphism`           | boolean | `false`        | Permit isomorphism even when ranges are not suit-symmetric (approximate)                  |
@@ -165,8 +165,8 @@ approximation warnings (`solver.warnings`) regardless of the `convergence` block
 The reporting knobs above are **opt-in** and default off, so leaving the block out
 does not change solve timing.
 
-When `measure_exploitability` is enabled, supported heads-up abstractions
-(vectorized river root-actor and multi-street flop/turn solves) compute an exact
+When `measure_exploitability` is enabled, heads-up solves (river, turn and flop)
+compute an exact
 best-response exploitability -- half of NashConv, in EV (chip) units -- against the
 average strategy. Multiway solves instead report a normalized average-regret metric
 and mark `exploitability_available: false`. A positive `measurement_interval`
@@ -191,7 +191,7 @@ shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
   "extraction_version": 1,
   "game": "holdem",
   "street": "turn",
-  "players": ["BTN", "BB", "CO"],
+  "players": ["BTN", "BB"],
   "board": ["Ah", "Kd", "Qc", "Jh"],
   "hero_seat": 0,
   "solver": {
@@ -263,7 +263,7 @@ Validation checks include:
 
 1. Schema/game/street fields
 2. Street-consistent unique board (3/4/5 cards)
-3. 2..6 players and valid `hero_seat`
+3. 2..7 players and valid `hero_seat`
 4. Unique hand rows with exactly one combo per row
 5. Action frequencies in `[0,1]` summing to `1` (tolerance `1e-3`)
 6. Finite EV values, with `ev * opponent_reach_mass` equal to `counterfactual_value`
@@ -291,19 +291,19 @@ validated to reference an existing solved node whose `parent_node_id` is absent
 zeta-solve solve --spot hu_spot.json --iterations 2000 --output hu_solution.json
 ```
 
-### Solve 4-way turn
+### Solve 4-way river
 
 ```sh
-zeta-solve solve --spot spot_4way_turn.json --iterations 50000 --output solution_4way_turn.json
+zeta-solve solve --spot spot_4way_river.json --iterations 2000 --output solution_4way_river.json
 ```
 
-`spot_4way_turn.json`:
+`spot_4way_river.json`:
 
 ```json
 {
-  "street": "turn",
+  "street": "river",
   "players": ["BTN", "BB", "CO", "HJ"],
-  "board": ["Ah", "Kd", "Qc", "Jh"],
+  "board": ["Ah", "Kd", "Qc", "Jh", "2s"],
   "ranges": ["AA,AKs,AQo", "AA,KK,QQ,AKo", "QQ,JJ,TT,AKs", "JJ,TT,99,AQs"],
   "gross_pot": 220.0,
   "rake": 0.0,
@@ -313,24 +313,23 @@ zeta-solve solve --spot spot_4way_turn.json --iterations 50000 --output solution
   "max_history": 8,
   "public_state_id": 12,
   "root_actor": "BTN",
-  "hero_seat": "BTN",
-  "samples_per_combo": 64
+  "hero_seat": "BTN"
 }
 ```
 
-### Solve 3-way flop
+### Solve 3-way river
 
 ```sh
-zeta-solve solve --spot spot_3way_flop.json --iterations 30000 --output solution_3way_flop.json
+zeta-solve solve --spot spot_3way_river.json --iterations 2000 --output solution_3way_river.json
 ```
 
-`spot_3way_flop.json`:
+`spot_3way_river.json`:
 
 ```json
 {
-  "street": "flop",
+  "street": "river",
   "players": ["BTN", "BB", "CO"],
-  "board": ["Ah", "Kd", "Qc"],
+  "board": ["Ah", "Kd", "Qc", "7s", "2h"],
   "ranges": ["AA,AKs,AQo", "AA,KK,QQ,AKo", "QQ,JJ,TT,AKs"],
   "gross_pot": 180.0,
   "rake": 0.0,
@@ -340,8 +339,7 @@ zeta-solve solve --spot spot_3way_flop.json --iterations 30000 --output solution
   "max_history": 8,
   "public_state_id": 9,
   "root_actor": "BTN",
-  "hero_seat": "BTN",
-  "samples_per_combo": 64
+  "hero_seat": "BTN"
 }
 ```
 
@@ -354,16 +352,16 @@ zeta-solve solve --spot spot_5way.json --iterations 5000 --output solution_5way.
 ### Solve 4-way with exact combo ranges
 
 ```sh
-zeta-solve solve --spot spot_4way_exact_combos.json --iterations 20000 --output solution_4way_exact_combos.json
+zeta-solve solve --spot spot_4way_exact_combos.json --iterations 2000 --output solution_4way_exact_combos.json
 ```
 
 `spot_4way_exact_combos.json`:
 
 ```json
 {
-  "street": "turn",
+  "street": "river",
   "players": ["BTN", "BB", "CO", "HJ"],
-  "board": ["Ah", "Kd", "Qc", "Jh"],
+  "board": ["Ah", "Kd", "Qc", "Jh", "2s"],
   "ranges": ["AsKh", "QdJd", "Tc9c", "8s8h"],
   "gross_pot": 160.0,
   "rake": 0.0,
@@ -373,8 +371,7 @@ zeta-solve solve --spot spot_4way_exact_combos.json --iterations 20000 --output 
   "max_history": 8,
   "public_state_id": 21,
   "root_actor": "BTN",
-  "hero_seat": "BTN",
-  "samples_per_combo": 64
+  "hero_seat": "BTN"
 }
 ```
 

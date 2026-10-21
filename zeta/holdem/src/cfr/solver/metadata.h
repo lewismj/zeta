@@ -1,7 +1,6 @@
 #pragma once
 
 #include "cfr/graph/graph.h"
-#include "cfr/tables/table_layout.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -24,39 +23,15 @@ namespace zeta::holdem::cfr::solver {
         river = 4
     };
 
-    enum class chance_mode : uint8_t {
-        enumerate = 0,
-        sample = 1
-    };
-
-    enum class table_storage_precision : uint8_t {
-        float32 = 0,
-        float64 = 1
-    };
-
-    enum class accumulation_precision : uint8_t {
-        float32 = 0,
-        float64 = 1
-    };
-
-    enum class reduction_order : uint8_t {
-        deterministic_worker_order = 0,
-        owner_range_then_worker = 1
-    };
-
-    struct numeric_policy {
-        table_storage_precision table_storage = table_storage_precision::float32;
-        accumulation_precision accumulation = accumulation_precision::float64;
-    };
-
-    struct reduction_policy {
-        reduction_order order = reduction_order::deterministic_worker_order;
-    };
-
     struct solver_node_state_metadata {
         holdem_street street = holdem_street::invalid;
         uint32_t public_state_id = INVALID_METADATA_ID;
         uint32_t betting_state_id = INVALID_METADATA_ID;
+    };
+
+    /** Terminal state a terminal leaf node evaluates. */
+    struct cfr_terminal_leaf {
+        uint32_t terminal_state_id = INVALID_METADATA_ID;
     };
 
     struct solver_graph_annotations {
@@ -64,8 +39,6 @@ namespace zeta::holdem::cfr::solver {
         std::vector<uint32_t> chance_event_id_by_node;
         std::vector<uint32_t> terminal_leaf_id_by_node;
         std::vector<solver_node_state_metadata> state_by_node;
-        uint64_t betting_tree_config_hash = 0;
-        uint64_t betting_history_abstraction_id = 0;
     };
 
     template <std::size_t N>
@@ -87,8 +60,7 @@ namespace zeta::holdem::cfr::solver {
         invalid_chance_event_id,
         invalid_terminal_leaf_id,
         invalid_state_metadata,
-        incompatible_infoset_actor,
-        unsupported_chance_mode
+        incompatible_infoset_actor
     };
 
     struct solver_graph_metadata_error {
@@ -110,7 +82,6 @@ namespace zeta::holdem::cfr::solver {
             case invalid_terminal_leaf_id:      return "solver_graph_metadata_error_kind::invalid_terminal_leaf_id";
             case invalid_state_metadata:        return "solver_graph_metadata_error_kind::invalid_state_metadata";
             case incompatible_infoset_actor:    return "solver_graph_metadata_error_kind::incompatible_infoset_actor";
-            case unsupported_chance_mode:       return "solver_graph_metadata_error_kind::unsupported_chance_mode";
         }
         return "solver_graph_metadata_error_kind::unknown";
     }
@@ -142,8 +113,7 @@ namespace zeta::holdem::cfr::solver {
      */
     template <std::size_t N>
     [[nodiscard]] std::expected<void, solver_graph_metadata_error> validate_solver_graph_view(
-        const solver_graph_view<N>& view,
-        const chance_mode mode = chance_mode::enumerate)
+        const solver_graph_view<N>& view)
     {
         if (view.graph == nullptr) {
             return std::unexpected(solver_graph_metadata_error{solver_graph_metadata_error_kind::missing_graph});
@@ -151,11 +121,6 @@ namespace zeta::holdem::cfr::solver {
         if constexpr (N == 0 || N > static_cast<std::size_t>(INVALID_PLAYER)) {
             return std::unexpected(solver_graph_metadata_error{
                 solver_graph_metadata_error_kind::player_count_out_of_range
-            });
-        }
-        if (mode != chance_mode::enumerate) {
-            return std::unexpected(solver_graph_metadata_error{
-                solver_graph_metadata_error_kind::unsupported_chance_mode
             });
         }
 
@@ -288,39 +253,6 @@ namespace zeta::holdem::cfr::solver {
         }
     };
 
-    [[nodiscard]] inline uint64_t hash_numeric_policy(const numeric_policy policy) noexcept
-    {
-        compatibility_hasher hash;
-        hash.add_enum(policy.table_storage);
-        hash.add_enum(policy.accumulation);
-        return hash.value;
-    }
-
-    [[nodiscard]] inline uint64_t hash_reduction_policy(const reduction_policy policy) noexcept
-    {
-        compatibility_hasher hash;
-        hash.add_enum(policy.order);
-        return hash.value;
-    }
-
-    [[nodiscard]] inline uint64_t hash_chance_mode(const chance_mode mode) noexcept
-    {
-        compatibility_hasher hash;
-        hash.add_enum(mode);
-        return hash.value;
-    }
-
-    [[nodiscard]] inline uint64_t hash_action_layout(const action_table_layout& layout) noexcept
-    {
-        compatibility_hasher hash;
-        hash.add_u64(layout.infoset_count());
-        hash.add_u64(layout.value_count());
-        for (const auto offset : layout.action_offsets) {
-            hash.add_u64(offset);
-        }
-        return hash.value;
-    }
-
     template <std::size_t N>
     [[nodiscard]] uint64_t hash_solver_graph_metadata(const solver_graph_view<N>& view) noexcept
     {
@@ -362,33 +294,6 @@ namespace zeta::holdem::cfr::solver {
         }
 
         return hash.value;
-    }
-
-    struct solver_compatibility_key {
-        uint64_t graph_metadata_hash = 0;
-        uint64_t action_layout_hash = 0;
-        uint64_t numeric_policy_hash = 0;
-        uint64_t reduction_policy_hash = 0;
-        uint64_t chance_mode_hash = 0;
-        uint32_t player_count = 0;
-    };
-
-    template <std::size_t N>
-    [[nodiscard]] solver_compatibility_key make_solver_compatibility_key(
-        const solver_graph_view<N>& view,
-        const action_table_layout& layout,
-        const numeric_policy numeric = {},
-        const reduction_policy reduction = {},
-        const chance_mode mode = chance_mode::enumerate) noexcept
-    {
-        return solver_compatibility_key{
-            .graph_metadata_hash = hash_solver_graph_metadata(view),
-            .action_layout_hash = hash_action_layout(layout),
-            .numeric_policy_hash = hash_numeric_policy(numeric),
-            .reduction_policy_hash = hash_reduction_policy(reduction),
-            .chance_mode_hash = hash_chance_mode(mode),
-            .player_count = static_cast<uint32_t>(N)
-        };
     }
 
 }

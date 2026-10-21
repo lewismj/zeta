@@ -5,10 +5,7 @@ This document is the implementation-level companion to
 used by the Hold'em engine with explicit formulas, data layouts, and why each
 path is structured the way it is.
 
-The content here aligns with:
-
-- the architectural boundaries in [`strategy_ev_plan.md`](strategy_ev_plan.md)
-- the runtime sources under `zeta\holdem\src\...`
+The content here aligns with the runtime sources under `zeta\holdem\src\...`.
 
 ## 1. 7-card evaluator internals
 
@@ -233,16 +230,6 @@ awards by best rank among eligible, non-folded seats.
 This is exact and state-faithful, but combinatorially expensive for large
 active domains.
 
-### 4.3 N-way sampled path
-
-`evaluate_showdown_values_multiplayer_sampled(...)` is the scalable estimator
-used when configured. It trades variance for runtime and is controlled via
-`samples_per_combo`.
-
-> [!IMPORTANT]
-> Exact and sampled paths share the same cache and reach-index surfaces, so
-> switching evaluation mode does not alter surrounding solver wiring.
-
 ## 5. Fold terminal evaluation
 
 Fold utilities are computed from layered pots and seat eligibility:
@@ -263,11 +250,14 @@ Chance nodes are represented by `chance_event_table`:
 - flat `chance_outcome` array
 - `event_id_by_node` side lookup
 
-Traversal asks:
+The value backup asks:
 
 ```text
-p = probability_for_edge(node_id, edge)
+p = probability_for_edge(node_id, edge) * private_hand_chance_scale(event, N)
 ```
+
+The public probability is uniform over unseen cards; the scale turns it into the
+probability conditioned on the hole cards of a compatible hand profile.
 
 Validation (`validate_chance_event_table`) enforces:
 
@@ -278,35 +268,23 @@ Validation (`validate_chance_event_table`) enforces:
 5. no outcome collides with board/dead cards
 6. canonical (isomorphism-collapsed) events never exceed full enumeration count
 
-This guarantees traversal sees a coherent stochastic process.
+This guarantees the solver sees a coherent stochastic process.
 
-## 7. Infoset lowering and legal-action layout
+## 7. Action-table layout
 
-`holdem_infoset_key` captures pre-lowering semantic identity:
-
-- actor / street / player count
-- private/public/runout abstractions
-- betting-history and stack-pot abstractions
-- legal-action set abstraction
-- subgame-root context
-
-`lower_holdem_infoset_keys(...)` validates per-node descriptions and lowers
-shared keys to dense infoset ids, while preserving legal-action vectors.
-The action set represents legal actions after betting/action abstraction; all nodes
-sharing the same lowered infoset share the same lowered action layout.
-
-Separately, `make_action_table_layout(graph)` builds a contiguous infoset-major
-offset array:
+`make_action_table_layout(graph)` builds a contiguous infoset-major offset array:
 
 ```text
 action_offsets[infoset] .. action_offsets[infoset + 1)
 ```
 
-Both regret and strategy-sum tables index through this same flat layout.
+All nodes that share an infoset share its action count. The solver's
+`combo x action` tables (regrets, strategy sums, current and average strategy)
+index through this flat layout, one row of action slots per hand.
 
 ## 8. Regret matching and strategy accumulation
 
-`compute_regret_matching_strategy(...)` computes policy from regrets:
+`normalize_combo_action_table(...)` computes each hand's policy from its regrets:
 
 ```text
 r+(a) = max(regret(a), 0)
@@ -314,166 +292,110 @@ p(a)  = r+(a) / sum_b r+(b), if sum_b r+(b) > 0
 p(a)  = 1 / |A|              otherwise
 ```
 
-Only legal actions for the current node participate (`edges` span).
+Only active actions participate when dynamic pruning is on.
 
-Average strategy accumulation uses the solver's configured realization-weighted
-convention. For combo `h` at actor `i`, the per-action strategy-sum increment in traversal is:
+Average strategy accumulation is realization-weighted. For hand `h` of the
+acting seat `i`, the per-action strategy-sum increment is:
 
 ```text
-strategy_delta(a) += strategy_weight
-                   * chance_reach
-                   * own_reach(actor)
-                   * p(a)
+strategy_sum(a) += pi_i(n | h) * p(a)
 ```
 
-Where:
-
-- `strategy_weight` is the configured iteration/range weighting
-- `chance_reach` is product of chance probabilities on path
-- `own_reach(actor)` is current actor's path reach $\pi_i(n \mid h)$
-
-Note that while CFR regret updates scale by counterfactual reach of opponents ($\Pi_{-i} \cdot \pi_c$),
-average-strategy accumulation weights by realization reach ($\pi_i \cdot \pi_c$) and `strategy_weight`.
+where `pi_i(n | h)` is the seat's own reach to the node, including its root range
+weight. CFR regret updates instead use counterfactual values, which carry the
+opponents' and chance's reach (section 9).
 
 ## 9. CFR value backup and regret updates
 
-The production traversal in `iteration.h` is iterative (explicit frame arrays),
-not recursive.
+Every solve uses the same combo-vectorised CFR+ loop (`solve_cli.h`). Graph
+nodes are in post-order, so a single ascending pass visits children before their
+parent.
 
 ### 9.1 Node value equations
 
-Chance node:
+Values are per hand of the updating player `i`. Terminal leaves are evaluated
+against the other seats' reach at the leaf (section 10). Then:
 
 ```text
-V(n) = sum_a p_chance(a) * V(child_a)
+chance node:              V(n, h) = sum_a p_chance(a) * V(child_a, h)
+seat i's own node:        V(n, h) = sum_a pi_i(a | n, h) * V(child_a, h)
+another seat's node:      V(n, h) = sum_a V(child_a, h)
 ```
 
-Player node:
-
-```text
-V(n) = sum_a pi(a) * V(child_a)
-```
+The last case sums because that seat's action probabilities are already in the
+reach the leaves were evaluated with.
 
 ### 9.2 Reach propagation
 
-Heads-up:
+Each seat carries a per-hand reach vector, starting from its range weights:
 
 ```text
-reach_oop *= pi(a)  (if actor == oop)
-reach_ip  *= pi(a)  (if actor == ip)
-chance    *= p_chance(a) at chance nodes
+reach_actor[h] *= pi_actor(a | n, h)   at the actor's nodes
 ```
 
-N-way:
+Chance probabilities are not folded into reach; the backup applies them at chance
+nodes.
+
+### 9.3 Regret update
+
+Because terminal values already carry the opponents' reach, `V` is a
+counterfactual value and the CFR+ update needs no extra weight:
 
 ```text
-reach_player[actor] *= pi(a)
-chance              *= p_chance(a)
+regret(a) = max(0, regret(a) + V(child_a, h) - V(n, h))
 ```
 
-### 9.3 Counterfactual reach and regret delta
+Players update in turn (alternating updates); each update recomputes the current
+strategy, reach and values first.
 
-Heads-up counterfactual reach for actor `i`:
+## 10. Parallel terminal evaluation
 
-```text
-cf_reach(i) = chance * opponent_reach(i)
-```
+Terminal evaluation dominates each pass, and every leaf reads only shared,
+immutable inputs and writes only its own node's values. The evaluators run all
+leaves as one batch on a `scheduler::worker_pool` with `worker_threads` threads
+(the calling thread included); the pool hands out leaves in chunks from an atomic
+counter so uneven leaves balance. The post-order backup and the table updates run
+on one thread afterwards.
 
-N-way counterfactual reach:
+No two tasks write the same memory and every floating-point operation keeps its
+order, so a solve is bit-identical for any worker count.
 
-```text
-cf_reach(i) = chance * product_{j != i} reach_j
-```
-
-Alternating-update regret delta:
-
-```text
-regret_delta(a) += cf_reach(actor) * (V(child_a) - V(node))
-```
-
-Only the configured `updating_player` receives regret updates in alternating
-mode; all players still accumulate average strategy.
-
-## 10. Parallel work partitioning and deterministic reduction
-
-Iteration work is partitioned as board/graph tasks and scheduled via dynamic
-atomic chunk claiming (`task_chunk_size`).
-
-Each worker accumulates sparse local deltas (`table_delta_buffer`), then global
-tables are merged under a deterministic owner/range plan:
-
-1. infosets are assigned contiguous owner ranges
-2. reductions apply in a fixed owner/worker order, giving a deterministic floating-point accumulation order for a fixed worker partition and configuration
-3. diagnostics capture remote-routing and per-owner touched values/time
-
-This keeps runtime scaling while preserving deterministic merge semantics.
-
-## 11. Checkpointing invariants
-
-Checkpoint save/load (`iteration.h`) is chunked by table owner range.
-Compatibility is guarded by fixed metadata and hashed surfaces (layout/policy
-and related solver metadata).
-
-Load is rejected if chunk headers or compatibility surfaces mismatch, preventing
-unsafe resume into a different graph/layout/configuration.
-
-## 12. Terminal engine dispatch contracts
+## 11. Terminal engine dispatch contracts
 
 `terminal_engine<N>` is compile-time dispatch:
 
 - `N == 2`: heads-up exact kernels
-- `N > 2`: multiplayer kernels (exact or sampled by call site)
+- `N > 2`: exact multiplayer kernels
 
 `evaluate_terminal_values(...)` dispatches by `terminal_state_kind`:
 
 - showdown -> showdown evaluator
 - fold -> fold evaluator
 
-Unsupported terminal kinds are treated as an internal invariant violation and currently fail via assertion; user-facing validation rejects unsupported terminal configurations before traversal.
+Unsupported terminal kinds are treated as an internal invariant violation and currently fail via assertion; user-facing validation rejects unsupported terminal configurations before solving.
 
 > [!NOTE]
-> The dispatch boundary means solver traversal can remain generic over `N` while
-> still using optimized heads-up kernels where available.
+> The dispatch boundary means the solver can stay generic over `N` while still
+> using optimized heads-up kernels where available.
 
-## 13. Complexity and performance notes
+## 12. Complexity and performance notes
 
 | Surface | Dominant runtime behavior |
 |---|---|
 | 7-card evaluator | O(1) table lookups with small fixed arithmetic/bitwise work |
 | HU showdown | Near-linear in active rank buckets and active combos with blocker-corrected mass arithmetic |
 | N-way exact showdown | Exponential in active opponent branching (exact combinatorial enumeration) |
-| N-way sampled showdown | O(samples per combo) estimator with lower runtime and non-zero variance |
-| CFR traversal | O(edges visited) per traversal over explicit frame stack |
-| Reduction | O(touched sparse delta entries), deterministic owner-ordered merge |
+| CFR iteration | Terminal evaluation (parallel) plus O(edges x active hands) backup and updates per player |
 
-## 14. Cross-check with strategy/EV extraction surfaces
+## 13. Formal strategy/EV mathematics
 
-The runtime algorithms above feed directly into the extraction invariants in
-[`strategy_ev_plan.md`](strategy_ev_plan.md):
-
-- strategy ownership at infoset/range-context level
-- node-local value surfaces (`Q`, `V`, `A`) over fixed policy
-- strict conditioning boundaries between reach-weighted and counterfactual
-  quantities
-
-In practice, correctness comes from keeping these boundaries explicit in both
-math and data layout:
-
-1. canonical indexing (combos, actions, infosets)
-2. deterministic reduction and serialization
-3. terminal/chance semantics validated before traversal
-
-## 15. Formal strategy/EV mathematics (from the extraction contract)
-
-This section mirrors the mathematical contract in
-[`strategy_ev_plan.md`](strategy_ev_plan.md) and states the core quantities in
-solver-ready form.
+This section states the quantities the solver reports, in solver-ready form.
 
 > [!IMPORTANT]
 > `Q`, `V`, and `A` below are **profile-evaluation** quantities under the
 > frozen exported average strategy. They are not cumulative CFR regrets.
 
-### 15.1 Domains and random variables
+### 13.1 Domains and random variables
 
 Let:
 
@@ -497,7 +419,7 @@ h in H_i(n)  <=>  (h ∩ B(n) = ∅)
 
 where `B(n)` is the public board mask at node `n`.
 
-### 15.2 Reach decomposition and mass quantities
+### 13.2 Reach decomposition and mass quantities
 
 Use the decomposition from the contract:
 
@@ -527,7 +449,18 @@ J_i(n) = Σ_{h in H_i(n)} joint_reach_mass_i(n, h)
 
 `W_i(n)` is hero-range mass at the node (not joint node probability).
 
-### 15.3 Local intervention operator and profile action values
+Opponent and matchup masses, which turn counterfactual values into EVs:
+
+```text
+M_-i(n, h) = Σ_{h_-i compatible with h and B(n)} Π_{j != i} w0_j(h_j) * pi_j(n | h_j)
+MM_i(n)    = Σ_{h in H_i(n)} range_reach_weight_i(n, h) * M_-i(n, h)
+```
+
+Heads-up, `M_-i` is exact (blocker inclusion-exclusion). Multiway, the solver
+uses the product of each opponent's compatible mass, which ignores card
+collisions between opponents.
+
+### 13.3 Local intervention operator and profile action values
 
 Let `σ̄` be the exported average strategy profile. Define a local intervention
 policy `σ̄^{n,h→a}` that is identical to `σ̄` everywhere except at the current
@@ -544,7 +477,7 @@ This is a one-step deviation value under the expectation over chance transitions
 opponent strategy $\bar{\sigma}_{-i}$, future own strategy $\bar{\sigma}_i$, and terminal payoff/rake
 conventions, while only the current decision at `(n, h)` is intervened to action `a`.
 
-### 15.4 Profile combo value and advantage
+### 13.4 Profile combo value and advantage
 
 Define:
 
@@ -566,7 +499,7 @@ So the action decomposition is:
 Q_profile_i(n,h,a) = V_profile_i(n,h) + A_profile_i(n,h,a)
 ```
 
-### 15.5 Strategy-weighted advantage identity (proof sketch)
+### 13.5 Strategy-weighted advantage identity (proof sketch)
 
 From the definition of `V_profile`:
 
@@ -584,17 +517,20 @@ Hence, for every legal `(n, h)`:
 Σ_a σ̄(a|n,h) A_profile_i(n,h,a) = 0
 ```
 
-### 15.6 Node-level seat values and conditioning
+### 13.6 Node-level seat values and conditioning
 
 The extracted seat-value surfaces are:
 
 ```text
-reach_weighted_ev_i(n)
-= Σ_{h in H_i(n)} range_reach_weight_i(n,h) * V_profile_i(n,h)
+reach_weighted_value_i(n)
+= Σ_{h in H_i(n)} range_reach_weight_i(n,h) * CFV_i(n,h)
 
 conditional_range_ev_i(n)
-= reach_weighted_ev_i(n) / W_i(n),  when W_i(n) > 0
+= reach_weighted_value_i(n) / MM_i(n),  when MM_i(n) > 0
 ```
+
+where `CFV_i(n,h)` is the hand's counterfactual value (its `V_profile` weighted by
+the opponents' reach). Per hand, `EV_i(n,h) = CFV_i(n,h) / M_-i(n,h)` is in chips.
 
 Counterfactual value:
 
@@ -605,12 +541,12 @@ CFV_i(n)
 
 `Pi_-i(n|h)` includes the card-removal-conditioned opponent reach distribution induced by fixing hero combo `h`.
 
-The only difference versus `reach_weighted_ev` is conditioning:
+The difference versus `reach_weighted_value` is the hero weighting:
 
-- `reach_weighted_ev` uses own path factor `pi_i`
-- `CFV` excludes own path factor and includes opponents/chance path mass
+- `reach_weighted_value` weights by the path reach `w0_i * pi_i`
+- `CFV` weights by the root range `w0_i` only
 
-### 15.7 Heads-up and N-way counterfactual form
+### 13.7 Heads-up and N-way counterfactual form
 
 Heads-up (`i` vs `j`):
 
@@ -624,7 +560,7 @@ N-way:
 CFV_i(n) = Σ_h w0_i(h) * ( Π_{k != i} pi_k(n|h) ) * pi_c(n) * V_profile_i(n,h)
 ```
 
-### 15.8 Showdown equity vs strategic EV
+### 13.8 Showdown equity vs strategic EV
 
 For seat `i`, combo `h`, node `n`, pot-share showdown equity is evaluated over all
 mutually compatible joint opponent combo assignments $h_{-i} = (h_j)_{j \neq i}$:
@@ -654,7 +590,7 @@ is the exact fractional pot share partitioned across eligible winners.
 This is not betting EV; it is no-further-betting pot share under the reaching
 distribution.
 
-### 15.9 Conservation identities
+### 13.9 Conservation identities
 
 For a fixed public node $n$ and compatible joint private-hand distribution, zero-sum conservation
 holds at the joint-state / jointly weighted level:
@@ -686,9 +622,9 @@ HU:    Equity_0 + Equity_1 = 1
 N-way: Σ_i Equity_i = 1
 ```
 
-### 15.10 Regret-matching and extracted profile relationship
+### 13.10 Regret-matching and extracted profile relationship
 
-Traversal computes strategy probabilities from regrets:
+Each iteration computes strategy probabilities from regrets:
 
 ```text
 r⁺(a) = max(R(a), 0)
@@ -706,13 +642,13 @@ weighted average over iterations:
 where $w_t(n, h)$ is the realization-weight assigned to the strategy context:
 
 ```text
-w_t(n, h) = strategy_weight * w0_i(h) * pi_i^t(n | h) * pi_c^t(n)
+w_t(n, h) = w0_i(h) * pi_i^t(n | h)
 ```
 
-The extraction math (`Q_profile`, `V_profile`, `A_profile`) is evaluated on that
-frozen average profile `σ̄`.
+The reported values (`V_profile`, `CFV`, EVs) are evaluated on that frozen
+average profile `σ̄`.
 
-### 15.11 Exploitability and NashConv linkage
+### 13.11 Exploitability and NashConv linkage
 
 For two-player zero-sum reporting:
 
@@ -725,24 +661,22 @@ where `BR_i` is best-response value for seat `i` and `u_i(σ̄)` is profile valu
 This definition assumes the same utility normalization and player-perspective convention
 are used for both `BR_i` and `u_i`.
 
-In multiway or unsupported exact BR paths, normalized regret is reported instead
-of exact exploitability, consistent with the solver metadata contract.
+Multiway solves report normalized regret instead of exact exploitability.
 
-### 15.12 Storage-to-equation mapping
+### 13.12 Artifact-to-equation mapping
 
-The extraction/store surfaces correspond directly to the math:
-
-| Stored field | Mathematical quantity |
+| Artifact field | Mathematical quantity |
 |---|---|
-| `combo_reach_entry.range_weight` | `w0_i(h)` |
-| `combo_reach_entry.reach_probability` | `pi_i(n\|h)` |
-| `combo_value_entry.combo_profile_value` | `V_profile_i(n,h)` |
-| `action_value_entry.q_profile` | `Q_profile_i(n,h,a)` |
-| `action_value_entry.profile_advantage` | `A_profile_i(n,h,a)` |
-| `seat_value.range_reach_mass` | `W_i(n)` |
-| `seat_value.reach_weighted_value` | `reach_weighted_ev_i(n)` |
-| `seat_value.conditional_range_ev` | `conditional_range_ev_i(n)` |
-| `seat_value.counterfactual_value` | `CFV_i(n)` |
+| `strategy_rows[].range_weight` | `w0_i(h)` |
+| `strategy_rows[].reach_probability` | `pi_i(n\|h)` |
+| `strategy_rows[].counterfactual_value` | `CFV_i(n,h)` |
+| `strategy_rows[].opponent_reach_mass` | `M_-i(n,h)` |
+| `strategy_rows[].ev` | `EV_i(n,h)` |
+| `seat_values[].range_reach_mass` | `W_i(n)` |
+| `seat_values[].matchup_reach_mass` | `MM_i(n)` |
+| `seat_values[].reach_weighted_value` | `reach_weighted_value_i(n)` |
+| `seat_values[].conditional_range_ev` | `conditional_range_ev_i(n)` |
+| `seat_values[].counterfactual_value` | `Σ_h w0_i(h) * CFV_i(n,h)` |
 
-This mapping is the contract boundary between extraction math and artifact/UI
-representation.
+`Q_profile` and `A_profile` are not stored; they are defined here because action
+EVs in the UI are the acting seat's `conditional_range_ev` at each child node.

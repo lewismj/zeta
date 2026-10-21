@@ -53,12 +53,12 @@ foundation for aggregated reports by turn/river class.
 ## 2. Robust convergence and exploitability reporting (delivered)
 
 **Status: Delivered.** Every solve now carries user-facing confidence signals
-alongside the strategy. For supported heads-up abstractions (vectorized river
-root-actor and multi-street flop/turn solves) the solver computes an exact
+alongside the strategy. For heads-up solves (river, turn and flop) the solver
+computes an exact
 best-response exploitability -- half of NashConv, expressed in EV (chip) units --
 by backing up a per-combo best response against each seat's average strategy and
 reporting the per-seat best-response gaps, the aggregate exploitability, and its
-fraction of the gross pot. Multiway spots, where an exact best response is
+fraction of the gross pot. Multiway river spots, where an exact best response is
 expensive, instead report a normalized average-regret metric (mean max positive
 regret per infoset divided by iterations) and flag that exact exploitability is
 unavailable.
@@ -74,8 +74,8 @@ Every solve -- regardless of the measurement toggle -- records reproducible inpu
 hashes (tree, range, board, betting-policy, solver-config, and a combined solve
 hash; stable FNV-1a digests serialized as hex) so two solves can be compared for
 equivalence without replaying them, plus warnings whenever a solve is
-abstraction-limited, multiway/normalized-regret-only, Monte-Carlo sampled, or
-approximate due to lossy card isomorphism or dynamic pruning. All fields
+abstraction-limited, multiway/normalized-regret-only, or approximate due to lossy
+card isomorphism or dynamic pruning. All fields
 round-trip through the schema-3 artifact JSON.
 
 Delivered tests:

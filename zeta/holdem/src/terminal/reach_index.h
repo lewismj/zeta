@@ -217,19 +217,4 @@ namespace zeta::holdem {
         assert(index.bucket_card_mass_count <= index.active_count * 2u);
         return index;
     }
-
-    /**
-     * Terminal evaluation workspace: owns the materialized reach indices for all active players.
-     * This is a reusable scratch object for thread-local use in CFR traversal.
-     *
-     * Architecture:
-     * - workspace owns the reach_index array (large: ~129 KB per player)
-     * - caller provides ranges (immutable input)
-     * - cache remains immutable (shared read-only)
-     * - workspace materializes ranges -> reach_index on evaluation
-     * - kernel evaluates using workspace's reach indices
-     * - workspace is reused across many node evaluations (thread-local)
-     *
-     * This avoids per-node allocations and makes lifetime/ownership explicit.
-     */
 }

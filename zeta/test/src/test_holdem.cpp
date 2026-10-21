@@ -1,5 +1,7 @@
 #include <boost/test/unit_test.hpp>
 
+#include "check_helpers.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -14,7 +16,6 @@
 #include <vector>
 
 #include "board.h"
-#include "cfr/extraction/contract.h"
 #include "eval/evaluator.h"
 #include "range.h"
 #include "range_parser.h"
@@ -116,7 +117,6 @@ namespace {
 
         return mask;
     }
-
 
     uint64_t key_from_rank_counts(const std::array<uint8_t, 13>& counts) {
         uint16_t ones = 0;
@@ -428,7 +428,6 @@ BOOST_AUTO_TEST_CASE(holdem_ranking_ordering_is_monotonic) {
     BOOST_TEST(quads > full_house);
 }
 
-
 BOOST_AUTO_TEST_CASE(holdem_board_tracks_streets_and_mutations) {
     zeta::holdem::board b{};
     BOOST_CHECK(b.empty());
@@ -533,53 +532,6 @@ BOOST_AUTO_TEST_CASE(holdem_full_range_initializes_all_combo_weights) {
     BOOST_CHECK_CLOSE(r.total_weight(), 663.0f, 0.001);
 }
 
-BOOST_AUTO_TEST_CASE(phase0_contract_enforces_q_v_a_and_precision) {
-    const std::array<float, 3> strategy{0.2f, 0.3f, 0.5f};
-    const std::array<double, 3> q_profile{12.0, 18.0, 30.0};
-    const double v_profile = zeta::holdem::cfr::extraction::compute_combo_profile_value(strategy, q_profile);
-    const double expected_v_profile =
-        static_cast<double>(strategy[0]) * q_profile[0]
-        + static_cast<double>(strategy[1]) * q_profile[1]
-        + static_cast<double>(strategy[2]) * q_profile[2];
-    BOOST_CHECK_CLOSE(v_profile, expected_v_profile, 1e-9);
-
-    const std::array<double, 3> advantages{
-        zeta::holdem::cfr::extraction::compute_profile_advantage(q_profile[0], v_profile),
-        zeta::holdem::cfr::extraction::compute_profile_advantage(q_profile[1], v_profile),
-        zeta::holdem::cfr::extraction::compute_profile_advantage(q_profile[2], v_profile)
-    };
-    BOOST_CHECK_CLOSE(advantages[0], q_profile[0] - expected_v_profile, 1e-9);
-    BOOST_CHECK_CLOSE(advantages[1], q_profile[1] - expected_v_profile, 1e-9);
-    BOOST_CHECK_CLOSE(advantages[2], q_profile[2] - expected_v_profile, 1e-9);
-    BOOST_CHECK(zeta::holdem::cfr::extraction::verify_strategy_weighted_advantage_identity(strategy, advantages));
-
-    const float range_weight = 0.33333334f;
-    const float reach_probability = 0.25f;
-    const std::vector<float> range_weights{range_weight, 1.0f, 0.0f};
-    const std::vector<float> hero_reach{reach_probability, 0.0f, 0.0f};
-    const std::vector<double> combo_evs{100.0, -20.0, 55.0};
-
-    const double derived_weight = zeta::holdem::cfr::extraction::compute_range_reach_weight(range_weight, reach_probability);
-    BOOST_CHECK_CLOSE(derived_weight, static_cast<double>(range_weight) * static_cast<double>(reach_probability), 1e-6);
-
-    const double range_mass = zeta::holdem::cfr::extraction::compute_range_reach_mass(range_weights, hero_reach);
-    BOOST_CHECK_CLOSE(range_mass, derived_weight, 1e-6);
-
-    const double reach_weighted_ev = zeta::holdem::cfr::extraction::compute_reach_weighted_ev(range_weights, hero_reach, combo_evs);
-    BOOST_CHECK_CLOSE(reach_weighted_ev, derived_weight * 100.0, 1e-6);
-
-    const double conditional_ev = zeta::holdem::cfr::extraction::compute_conditional_range_ev(reach_weighted_ev, range_mass);
-    BOOST_CHECK_CLOSE(conditional_ev, 100.0, 1e-6);
-
-    const double cfv = zeta::holdem::cfr::extraction::compute_counterfactual_value(
-        range_weights,
-        std::vector<float>{0.4f, 0.0f, 0.0f},
-        0.5,
-        combo_evs
-    );
-    BOOST_CHECK_CLOSE(cfv, static_cast<double>(range_weight) * static_cast<double>(0.4f) * 0.5 * 100.0, 1e-6);
-}
-
 BOOST_AUTO_TEST_CASE(holdem_range_fill_and_accessors_cover_storage) {
     auto r = zeta::holdem::hand_range{};
     r.fill(0.25f);
@@ -638,7 +590,7 @@ BOOST_AUTO_TEST_CASE(holdem_range_remove_dead_filters_blocked_combos) {
 
     std::size_t live_count = 0;
     for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
-        const bool live = zeta::holdem::is_live_combo(i, flop);
+        const bool live = (zeta::holdem::combination_mask(i) & flop) == 0;
         if (live) {
             ++live_count;
             BOOST_CHECK_EQUAL(r[i], 1.0f);
@@ -734,35 +686,48 @@ BOOST_AUTO_TEST_CASE(holdem_river_terminal_cache_builds_live_rank_order) {
 
     std::size_t live_count = 0;
     std::array<bool, zeta::holdem::combination_count> seen{};
+    zeta::test::mismatch_report combos{"river cache combos"};
     for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
         const auto combo = zeta::holdem::combination_mask(i);
         const bool live = (combo & river.mask) == 0;
-        BOOST_CHECK_EQUAL(cache.masks[i], combo);
-        BOOST_CHECK_EQUAL(zeta::holdem::combo_live(cache.live, i), live);
-        BOOST_CHECK_EQUAL(
+        combos.expect_equal(cache.masks[i], combo, "mask", i);
+        combos.expect_equal(zeta::holdem::combo_live(cache.live, i), live, "live", i);
+        combos.expect_equal(
             (zeta::card_mask{1} << cache.cards[i].first) | (zeta::card_mask{1} << cache.cards[i].second),
-            combo
-        );
+            combo,
+            "cards",
+            i);
 
         if (!live) {
-            BOOST_CHECK_EQUAL(cache.rank_keys[i], 0u);
+            combos.expect_equal(cache.rank_keys[i], 0u, "dead rank key", i);
             continue;
         }
 
         ++live_count;
-        BOOST_REQUIRE(cache.rank_keys[i] > 0);
-        BOOST_REQUIRE(cache.rank_keys[i] <= cache.unique_rank_count);
-        BOOST_CHECK_EQUAL(cache.unique_ranks[cache.rank_keys[i]].value, zeta::holdem::evaluate(river.mask | combo).value);
+        if (!combos.expect(cache.rank_keys[i] > 0 && cache.rank_keys[i] <= cache.unique_rank_count, [&] {
+                return "rank key out of range for combo " + std::to_string(i);
+            })) {
+            continue;
+        }
+        combos.expect_equal(cache.unique_ranks[cache.rank_keys[i]].value, zeta::holdem::evaluate(river.mask | combo).value, "rank", i);
     }
+    ZETA_CHECK_REPORT(combos);
 
     BOOST_CHECK_EQUAL(live_count, 1081u);
 
+    zeta::test::mismatch_report order_report{"river cache rank order"};
     for (std::size_t order = 0; order < cache.rank_order_count; ++order) {
         const auto combo_index = cache.rank_order[order];
-        BOOST_REQUIRE(combo_index < zeta::holdem::combination_count);
-        BOOST_CHECK(!seen[combo_index]);
+        if (!order_report.expect(combo_index < zeta::holdem::combination_count, [&] {
+                return "rank_order[" + std::to_string(order) + "] out of range";
+            })) {
+            continue;
+        }
+        order_report.expect(!seen[combo_index], [&] { return "combo " + std::to_string(combo_index) + " listed twice"; });
         seen[combo_index] = true;
-        BOOST_CHECK(zeta::holdem::combo_live(cache.live, combo_index));
+        order_report.expect(zeta::holdem::combo_live(cache.live, combo_index), [&] {
+            return "dead combo " + std::to_string(combo_index) + " in rank order";
+        });
 
         if (order == 0) {
             continue;
@@ -771,11 +736,11 @@ BOOST_AUTO_TEST_CASE(holdem_river_terminal_cache_builds_live_rank_order) {
         const auto previous = cache.rank_order[order - 1];
         const auto previous_rank = cache.unique_ranks[cache.rank_keys[previous]];
         const auto current_rank = cache.unique_ranks[cache.rank_keys[combo_index]];
-        BOOST_CHECK(previous_rank <= current_rank);
-        if (previous_rank == current_rank) {
-            BOOST_CHECK(previous < combo_index);
-        }
+        order_report.expect(
+            previous_rank < current_rank || (previous_rank == current_rank && previous < combo_index),
+            [&] { return "rank order not ascending at position " + std::to_string(order); });
     }
+    ZETA_CHECK_REPORT(order_report);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_river_reach_index_builds_sparse_rank_buckets) {
@@ -822,47 +787,53 @@ BOOST_AUTO_TEST_CASE(holdem_river_reach_index_builds_sparse_rank_buckets) {
 
     BOOST_CHECK_EQUAL(index.active_count, expected_active.size());
     BOOST_CHECK_CLOSE(index.total_live_mass, static_cast<float>(expected_total), 0.001);
+    zeta::test::mismatch_report report{"river reach index"};
     for (std::size_t offset = 0; offset < expected_active.size(); ++offset) {
         const auto combo_index = expected_active[offset];
-        BOOST_CHECK_EQUAL(index.active_indices[offset], combo_index);
-        BOOST_CHECK_EQUAL(index.weights[combo_index], reach[combo_index]);
+        report.expect_equal(index.active_indices[offset], combo_index, "active index", offset);
+        report.expect_equal(index.weights[combo_index], reach[combo_index], "weight", combo_index);
     }
 
     for (std::size_t card_index = 0; card_index < expected_mass_by_card.size(); ++card_index) {
-        BOOST_CHECK_CLOSE(index.mass_by_card[card_index], static_cast<float>(expected_mass_by_card[card_index]), 0.001);
+        report.expect_close(
+            index.mass_by_card[card_index], static_cast<float>(expected_mass_by_card[card_index]), 0.001, "mass by card", card_index);
     }
 
     std::size_t covered = 0;
     for (std::uint16_t bucket_index = 0; bucket_index < index.unique_rank_count; ++bucket_index) {
         const auto& bucket = index.rank_buckets[bucket_index];
-        BOOST_REQUIRE(bucket.begin < bucket.end);
-        BOOST_CHECK_EQUAL(bucket.begin, covered);
+        if (!report.expect(bucket.begin < bucket.end, [&] { return "empty bucket " + std::to_string(bucket_index); })) {
+            continue;
+        }
+        report.expect_equal(bucket.begin, covered, "bucket begin", bucket_index);
         covered = bucket.end;
 
         zeta::holdem::accumulator bucket_total = 0.0;
         std::array<zeta::holdem::accumulator, 52> bucket_cards{};
         for (std::uint16_t offset = bucket.begin; offset < bucket.end; ++offset) {
             const auto combo_index = index.active_indices[offset];
-            BOOST_CHECK_EQUAL(cache.rank_keys[combo_index], bucket.rank);
+            report.expect_equal(cache.rank_keys[combo_index], bucket.rank, "bucket rank", combo_index);
             bucket_total += index.weights[combo_index];
             const auto [first, second] = cache.cards[combo_index];
             bucket_cards[first] += index.weights[combo_index];
             bucket_cards[second] += index.weights[combo_index];
         }
 
-        BOOST_CHECK_CLOSE(bucket.total_mass, static_cast<float>(bucket_total), 0.001);
+        report.expect_close(bucket.total_mass, static_cast<float>(bucket_total), 0.001, "bucket total mass", bucket_index);
         std::array<zeta::holdem::accumulator, 52> sparse_cards{};
         for (std::uint16_t offset = bucket.card_mass_begin; offset < bucket.card_mass_end; ++offset) {
             const auto entry = index.bucket_card_masses[offset];
             sparse_cards[entry.card] += entry.mass;
         }
         for (std::size_t card_index = 0; card_index < bucket_cards.size(); ++card_index) {
-            BOOST_CHECK_CLOSE(static_cast<float>(sparse_cards[card_index]), static_cast<float>(bucket_cards[card_index]), 0.001);
-            BOOST_CHECK_CLOSE(
+            report.expect_close(
+                static_cast<float>(sparse_cards[card_index]), static_cast<float>(bucket_cards[card_index]), 0.001, "sparse card mass", card_index);
+            report.expect_close(
                 static_cast<float>(zeta::holdem::bucket_card_mass(index, bucket, static_cast<uint8_t>(card_index))),
                 static_cast<float>(bucket_cards[card_index]),
-                0.001
-            );
+                0.001,
+                "bucket card mass",
+                card_index);
         }
     }
     BOOST_CHECK_EQUAL(covered, index.active_count);
@@ -871,12 +842,14 @@ BOOST_AUTO_TEST_CASE(holdem_river_reach_index_builds_sparse_rank_buckets) {
         if (!zeta::holdem::combo_live(cache.live, i)) {
             continue;
         }
-        BOOST_CHECK_CLOSE(
+        report.expect_close(
             zeta::holdem::compatible_reach_mass(cache, index, i),
             slow_compatible_mass(cache, index, i),
-            0.001
-        );
+            0.001,
+            "compatible reach mass",
+            i);
     }
+    ZETA_CHECK_REPORT(report);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_river_reach_index_preserves_cache_rank_order) {
@@ -1281,19 +1254,23 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_showdown_array_api_matches_index_api) {
     const std::array<zeta::holdem::river_reach_index, 2> reach{oop_index, ip_index};
     const auto actual = zeta::holdem::evaluate_showdown<2>(cache, reach, context);
 
-    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
-        BOOST_CHECK_EQUAL(actual.values[zeta::holdem::player::oop][i], expected.values[zeta::holdem::player::oop][i]);
-        BOOST_CHECK_EQUAL(actual.values[zeta::holdem::player::ip][i], expected.values[zeta::holdem::player::ip][i]);
-    }
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        actual.values[zeta::holdem::player::oop].begin(), actual.values[zeta::holdem::player::oop].end(),
+        expected.values[zeta::holdem::player::oop].begin(), expected.values[zeta::holdem::player::oop].end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        actual.values[zeta::holdem::player::ip].begin(), actual.values[zeta::holdem::player::ip].end(),
+        expected.values[zeta::holdem::player::ip].begin(), expected.values[zeta::holdem::player::ip].end());
     BOOST_CHECK_EQUAL(actual.summary.oop_ev, expected.summary.oop_ev);
     BOOST_CHECK_EQUAL(actual.summary.ip_ev, expected.summary.ip_ev);
     BOOST_CHECK_EQUAL(actual.summary.matchup_weight, expected.summary.matchup_weight);
 
     /** Seat-indexed access on terminal_values<N> must agree with player-enum access. */
-    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
-        BOOST_CHECK_EQUAL(actual.values[std::size_t{0}][i], actual.values[zeta::holdem::player::oop][i]);
-        BOOST_CHECK_EQUAL(actual.values[std::size_t{1}][i], actual.values[zeta::holdem::player::ip][i]);
-    }
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        actual.values[std::size_t{0}].begin(), actual.values[std::size_t{0}].end(),
+        actual.values[zeta::holdem::player::oop].begin(), actual.values[zeta::holdem::player::oop].end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        actual.values[std::size_t{1}].begin(), actual.values[std::size_t{1}].end(),
+        actual.values[zeta::holdem::player::ip].begin(), actual.values[zeta::holdem::player::ip].end());
 }
 
 BOOST_AUTO_TEST_CASE(holdem_terminal_fold_array_api_matches_index_api) {
@@ -1317,10 +1294,12 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_array_api_matches_index_api) {
     for (const auto folded : {zeta::holdem::player::oop, zeta::holdem::player::ip}) {
         const auto expected = zeta::holdem::evaluate_fold_values(cache, oop_index, ip_index, context, folded);
         const auto actual = zeta::holdem::evaluate_fold_values<2>(cache, reach, context, folded);
-        for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
-            BOOST_CHECK_EQUAL(actual[zeta::holdem::player::oop][i], expected[zeta::holdem::player::oop][i]);
-            BOOST_CHECK_EQUAL(actual[zeta::holdem::player::ip][i], expected[zeta::holdem::player::ip][i]);
-        }
+        BOOST_CHECK_EQUAL_COLLECTIONS(
+            actual[zeta::holdem::player::oop].begin(), actual[zeta::holdem::player::oop].end(),
+            expected[zeta::holdem::player::oop].begin(), expected[zeta::holdem::player::oop].end());
+        BOOST_CHECK_EQUAL_COLLECTIONS(
+            actual[zeta::holdem::player::ip].begin(), actual[zeta::holdem::player::ip].end(),
+            expected[zeta::holdem::player::ip].begin(), expected[zeta::holdem::player::ip].end());
     }
 }
 
@@ -1356,10 +1335,12 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_fold_generic_kernel_matches_heads_up) {
         const auto heads_up_result = zeta::holdem::evaluate_fold_values(cache, oop_index, ip_index, context, heads_up_player);
 
         /** Verify bit-identical results. */
-        for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
-            BOOST_CHECK_EQUAL(generic_result[0][i], heads_up_result[zeta::holdem::heads_up_player::oop][i]);
-            BOOST_CHECK_EQUAL(generic_result[1][i], heads_up_result[zeta::holdem::heads_up_player::ip][i]);
-        }
+        BOOST_CHECK_EQUAL_COLLECTIONS(
+            generic_result[0].begin(), generic_result[0].end(),
+            heads_up_result[zeta::holdem::heads_up_player::oop].begin(), heads_up_result[zeta::holdem::heads_up_player::oop].end());
+        BOOST_CHECK_EQUAL_COLLECTIONS(
+            generic_result[1].begin(), generic_result[1].end(),
+            heads_up_result[zeta::holdem::heads_up_player::ip].begin(), heads_up_result[zeta::holdem::heads_up_player::ip].end());
     }
 }
 
@@ -1398,10 +1379,12 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_heads_up_showdown_matches_direct_api
     zeta::holdem::terminal_engine<2> engine{};
     const auto actual = engine.evaluate_showdown(cache, *reach, context);
 
-    for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
-        BOOST_CHECK_EQUAL(actual.values[zeta::holdem::player::oop][i], expected.values[zeta::holdem::player::oop][i]);
-        BOOST_CHECK_EQUAL(actual.values[zeta::holdem::player::ip][i], expected.values[zeta::holdem::player::ip][i]);
-    }
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        actual.values[zeta::holdem::player::oop].begin(), actual.values[zeta::holdem::player::oop].end(),
+        expected.values[zeta::holdem::player::oop].begin(), expected.values[zeta::holdem::player::oop].end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        actual.values[zeta::holdem::player::ip].begin(), actual.values[zeta::holdem::player::ip].end(),
+        expected.values[zeta::holdem::player::ip].begin(), expected.values[zeta::holdem::player::ip].end());
     BOOST_CHECK_EQUAL(actual.summary.oop_ev, expected.summary.oop_ev);
     BOOST_CHECK_EQUAL(actual.summary.ip_ev, expected.summary.ip_ev);
     BOOST_CHECK_EQUAL(actual.summary.matchup_weight, expected.summary.matchup_weight);
@@ -1568,11 +1551,11 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_showdown_uses_side_pots)
     layers[1].eligible_mask.set(0);
     layers[1].eligible_mask.set(1);
 
-    auto state = zeta::holdem::make_terminal_state(
-        zeta::holdem::terminal_state_kind::showdown,
-        context,
-        layers
-    );
+    zeta::holdem::terminal_state<3> state{
+        .kind = zeta::holdem::terminal_state_kind::showdown,
+        .context = context,
+        .pot_layers = layers
+    };
     state.active_eligible_mask.set(0);
     state.active_eligible_mask.set(1);
     state.active_eligible_mask.set(2);
@@ -1625,14 +1608,13 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_fold_uses_side_pots_and_
     folded.set_folded(2, true);
     zeta::holdem::player_mask<3> active{};
     active.set(0);
-    auto state = zeta::holdem::make_terminal_state(
-        zeta::holdem::terminal_state_kind::fold,
-        context,
-        layers,
-        folded,
-        {},
-        active
-    );
+    const zeta::holdem::terminal_state<3> state{
+        .kind = zeta::holdem::terminal_state_kind::fold,
+        .context = context,
+        .pot_layers = layers,
+        .folded = folded,
+        .active_eligible_mask = active
+    };
 
     zeta::holdem::terminal_engine<3> engine{};
     const auto values = engine.evaluate_terminal_values(cache, reach, state);
@@ -1643,7 +1625,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_fold_uses_side_pots_and_
     BOOST_CHECK_EQUAL(values[0][combos[0]] + values[1][combos[1]] + values[2][combos[2]], 0.0f);
 }
 
-BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_stratified_importance_matches_exact_small_case) {
+BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_showdown_matches_brute_force_small_case) {
     const auto cache = zeta::holdem::make_river_terminal_cache(deterministic_river_board());
 
     zeta::holdem::combination_index hero_combo = 0;
@@ -1747,7 +1729,7 @@ BOOST_AUTO_TEST_CASE(holdem_terminal_engine_multiplayer_stratified_importance_ma
     }
 
     zeta::holdem::terminal_engine<3> engine{};
-    const auto actual = engine.evaluate_showdown_values(cache, reach, context, 1024);
+    const auto actual = engine.evaluate_showdown_values(cache, reach, context);
 
     BOOST_CHECK_CLOSE(actual[0][hero_combo], exact[0][hero_combo], 1e-5);
     BOOST_CHECK_CLOSE(actual[1][opp_a], exact[1][opp_a], 1e-5);
@@ -1765,6 +1747,7 @@ BOOST_AUTO_TEST_CASE(holdem_combination_mask_helper_matches_table) {
 }
 
 BOOST_AUTO_TEST_CASE(holdem_range_parser_direct_combo_index_matches_combination_table) {
+    zeta::test::mismatch_report report{"combo_index_from_cards"};
     for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
         const auto mask = zeta::holdem::combination_mask(i);
         std::array<uint8_t, 2> ranks{};
@@ -1780,10 +1763,13 @@ BOOST_AUTO_TEST_CASE(holdem_range_parser_direct_combo_index_matches_combination_
             }
         }
 
-        BOOST_REQUIRE_EQUAL(card_count, 2u);
-        BOOST_CHECK_EQUAL(zeta::holdem::detail::combo_index_from_cards(ranks[0], suits[0], ranks[1], suits[1]), i);
-        BOOST_CHECK_EQUAL(zeta::holdem::detail::combo_index_from_cards(ranks[1], suits[1], ranks[0], suits[0]), i);
+        if (!report.expect(card_count == 2u, [&] { return "combo " + std::to_string(i) + " does not have two cards"; })) {
+            continue;
+        }
+        report.expect_equal(zeta::holdem::detail::combo_index_from_cards(ranks[0], suits[0], ranks[1], suits[1]), i, "forward", i);
+        report.expect_equal(zeta::holdem::detail::combo_index_from_cards(ranks[1], suits[1], ranks[0], suits[0]), i, "reverse", i);
     }
+    ZETA_CHECK_REPORT(report);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_basic_hand_classes) {
@@ -1837,6 +1823,7 @@ BOOST_AUTO_TEST_CASE(holdem_range_parser_all_hand_class_forms_have_expected_coun
 }
 
 BOOST_AUTO_TEST_CASE(holdem_range_parser_all_exact_combos_map_to_one_combo) {
+    zeta::test::mismatch_report report{"exact combo parsing"};
     for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
         const auto mask = zeta::holdem::combination_mask(i);
         std::array<uint8_t, 2> ranks{};
@@ -1852,18 +1839,24 @@ BOOST_AUTO_TEST_CASE(holdem_range_parser_all_exact_combos_map_to_one_combo) {
             }
         }
 
-        BOOST_REQUIRE_EQUAL(card_count, 2u);
+        if (!report.expect(card_count == 2u, [&] { return "combo " + std::to_string(i) + " does not have two cards"; })) {
+            continue;
+        }
 
-        const auto forward = zeta::holdem::parse_range(exact_combo_text(ranks[0], suits[0], ranks[1], suits[1]));
-        BOOST_REQUIRE(forward.ok());
-        BOOST_CHECK_EQUAL(non_zero_combo_count(forward.range), 1u);
-        BOOST_CHECK_EQUAL(forward.range[i], 1.0f);
-
-        const auto reverse = zeta::holdem::parse_range(exact_combo_text(ranks[1], suits[1], ranks[0], suits[0]));
-        BOOST_REQUIRE(reverse.ok());
-        BOOST_CHECK_EQUAL(non_zero_combo_count(reverse.range), 1u);
-        BOOST_CHECK_EQUAL(reverse.range[i], 1.0f);
+        for (const bool reversed : {false, true}) {
+            const auto text = reversed
+                ? exact_combo_text(ranks[1], suits[1], ranks[0], suits[0])
+                : exact_combo_text(ranks[0], suits[0], ranks[1], suits[1]);
+            const auto parsed = zeta::holdem::parse_range(text);
+            if (!report.expect(parsed.ok(), [&] { return "failed to parse " + text; })) {
+                continue;
+            }
+            report.expect(non_zero_combo_count(parsed.range) == 1u && parsed.range[i] == 1.0f, [&] {
+                return text + " did not map to exactly combo " + std::to_string(i);
+            });
+        }
     }
+    ZETA_CHECK_REPORT(report);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_range_parser_parses_plus_notation) {
@@ -2036,33 +2029,40 @@ BOOST_AUTO_TEST_CASE(non_flush_rank_classes_exhaustively_match_dense_table_and_e
     std::vector<uint8_t> seen(dense.size(), 0);
     std::array<uint8_t, 13> counts{};
     std::size_t classes = 0;
+    zeta::test::mismatch_report report{"non-flush rank classes"};
 
     for_each_rank_count_class(0, 7, counts, [&](const std::array<uint8_t, 13>& rank_counts) {
+        const auto class_index = classes++;
         const auto key = key_from_rank_counts(rank_counts);
         const auto reference_index = zeta::holdem::lookup::quinary_index_from_counts(rank_counts);
         const auto shared_index = zeta::holdem::lookup::quinary_index_from_key(key);
-        BOOST_REQUIRE_LT(shared_index, dense.size());
-        BOOST_CHECK_EQUAL(shared_index, reference_index);
+        if (!report.expect(shared_index < dense.size(), [&] {
+                return "class " + std::to_string(class_index) + ": index " + std::to_string(shared_index) + " out of range";
+            })) {
+            return;
+        }
+        report.expect_equal(shared_index, reference_index, "quinary index from key vs counts", class_index);
         seen[shared_index] = 1;
 
         const auto mask = non_flush_mask_from_key(key);
         const auto masks = zeta::holdem::suit_rank_masks(mask);
-        BOOST_REQUIRE_EQUAL(zeta::ops::popcount(mask), 7);
-        BOOST_REQUIRE_LT(zeta::ops::popcount(masks.spades), 5);
-        BOOST_REQUIRE_LT(zeta::ops::popcount(masks.hearts), 5);
-        BOOST_REQUIRE_LT(zeta::ops::popcount(masks.diamonds), 5);
-        BOOST_REQUIRE_LT(zeta::ops::popcount(masks.clubs), 5);
-        BOOST_CHECK_EQUAL(zeta::holdem::non_flush_quinary_index(masks), shared_index);
-        BOOST_CHECK_EQUAL(zeta::holdem::evaluate(mask).value, dense[shared_index].value);
-        ++classes;
+        report.expect_equal(zeta::ops::popcount(mask), 7, "card count", class_index);
+        report.expect(
+            zeta::ops::popcount(masks.spades) < 5 && zeta::ops::popcount(masks.hearts) < 5
+                && zeta::ops::popcount(masks.diamonds) < 5 && zeta::ops::popcount(masks.clubs) < 5,
+            [&] { return "class " + std::to_string(class_index) + ": contains a flush"; });
+        report.expect_equal(zeta::holdem::non_flush_quinary_index(masks), shared_index, "quinary index from masks", class_index);
+        report.expect_equal(zeta::holdem::evaluate(mask).value, dense[shared_index].value, "evaluator vs dense table", class_index);
     });
 
+    ZETA_CHECK_REPORT(report);
     BOOST_CHECK_EQUAL(classes, zeta::holdem::lookup::non_flush_quinary_table_size);
     BOOST_CHECK(std::all_of(seen.begin(), seen.end(), [](const uint8_t value) { return value != 0; }));
 }
 
 BOOST_AUTO_TEST_CASE(flush_rank_patterns_match_flush_table_and_evaluator) {
     std::size_t flush_patterns = 0;
+    zeta::test::mismatch_report report{"flush rank patterns"};
     for (uint16_t ranks = 0; ranks < zeta::holdem::lookup::flush_table.size(); ++ranks) {
         const auto suited_count = zeta::ops::popcount(ranks);
         if (suited_count < 5 || suited_count > 7) {
@@ -2071,12 +2071,15 @@ BOOST_AUTO_TEST_CASE(flush_rank_patterns_match_flush_table_and_evaluator) {
 
         const auto mask = flush_mask_from_ranks(ranks);
         const auto masks = zeta::holdem::suit_rank_masks(mask);
-        BOOST_REQUIRE_EQUAL(zeta::ops::popcount(mask), 7);
-        BOOST_REQUIRE_GE(zeta::ops::popcount(masks.spades), 5);
-        BOOST_CHECK_EQUAL(zeta::holdem::evaluate(mask).value, zeta::holdem::lookup::flush_table[ranks].value);
+        report.expect_equal(zeta::ops::popcount(mask), 7, "card count", ranks);
+        report.expect(zeta::ops::popcount(masks.spades) >= 5, [&] {
+            return "ranks " + std::to_string(ranks) + ": fewer than five spades";
+        });
+        report.expect_equal(zeta::holdem::evaluate(mask).value, zeta::holdem::lookup::flush_table[ranks].value, "evaluator vs flush table", ranks);
         ++flush_patterns;
     }
 
+    ZETA_CHECK_REPORT(report);
     BOOST_CHECK_EQUAL(flush_patterns, 4719u);
 }
 

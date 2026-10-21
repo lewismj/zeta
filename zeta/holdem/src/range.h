@@ -111,8 +111,4 @@ namespace zeta::holdem {
         return combination_masks[idx];
     }
 
-    [[nodiscard]] inline_always bool is_live_combo(const combination_index idx, const card_mask dead) noexcept {
-        return (combination_mask(idx) & dead) == 0;
-    }
-
 }

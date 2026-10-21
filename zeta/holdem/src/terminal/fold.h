@@ -123,61 +123,6 @@ namespace zeta::holdem {
         return values;
     }
 
-    /**
-     * Generic N-way fold kernel: for each active player, accumulate compatible
-     * mass from all other active opponents * constant payoff per opponent.
-     *
-     * Pseudocode:
-     * for active_player in players:
-     *     if folded[active_player]:
-     *         values[active_player][:] = 0
-     *     else:
-     *         for combo in active_player_combos:
-     *             for opponent in active_opponents excluding active_player:
-     *                 total_compatible += compatible_mass(opponent, combo)
-     *             value[combo] = total_compatible * payoff_per_compatible_unit
-     *
-     * For heads-up: this reduces exactly to the current two-stream kernel.
-     */
-    template <std::size_t N>
-    [[nodiscard]] inline_always terminal_values<N> evaluate_fold_values_generic(
-        const river_terminal_cache& cache,
-        const std::array<river_reach_index, N>& reach,
-        const terminal_context<N>& context,
-        const folded_mask<N>& folded
-    ) noexcept {
-        terminal_values<N> values{};
-        
-        /** For each active non-folded player. */
-        for (std::size_t active_seat = 0; active_seat < N; ++active_seat) {
-            if (folded[active_seat]) {
-                /** Folded players get zero values; skip initialization because it is already zero. */
-                continue;
-            }
-            
-            /** Active player receives payoff from all remaining active opponents. */
-            for (uint16_t combo_offset = 0; combo_offset < reach[active_seat].active_count; ++combo_offset) {
-                const auto combo = reach[active_seat].active_indices[combo_offset];
-                accumulator total_compatible = 0.0;
-                
-                /** Accumulate compatible mass from each active opponent. */
-                for (std::size_t opponent_seat = 0; opponent_seat < N; ++opponent_seat) {
-                    if (opponent_seat != active_seat && !folded[opponent_seat]) {
-                        total_compatible += compatible_mass(cache, reach[opponent_seat], combo);
-                    }
-                }
-                
-                /**
-                 * Store total compatible mass; payoff multiplication is handled
-                 * by specialized paths where full pot accounting is available.
-                 */
-                values[active_seat][combo] = static_cast<terminal_value>(total_compatible);
-            }
-        }
-        
-        return values;
-    }
-
     /** Heads-up (2-player) fold kernel: compatible opponent mass * constant payoff. */
     [[nodiscard]] inline_always terminal_values<2> evaluate_fold_values_heads_up(
         const river_terminal_cache& cache,
@@ -267,34 +212,6 @@ namespace zeta::holdem {
         const auto oop_index = make_river_reach_index(cache, oop_reach);
         const auto ip_index = make_river_reach_index(cache, ip_reach);
         return evaluate_fold_values(cache, oop_index, ip_index, context, folded);
-    }
-
-    /** Workspace-based fold API: caller provides ranges, workspace owns reach indices. */
-    template <std::size_t N>
-    [[nodiscard]] terminal_values<N> evaluate_fold_values(
-        terminal_workspace<N>& workspace,
-        const river_terminal_cache& cache,
-        const std::array<reach_vector, N>& ranges,
-        const terminal_context<N>& context,
-        const folded_mask<N>& folded
-    ) noexcept {
-        /** Materialize ranges into workspace reach indices. */
-        workspace.materialize(cache, ranges);
-        
-        /** Evaluate using the materialized indices. */
-        return evaluate_fold_values(cache, workspace.reach, context, folded);
-    }
-
-    /** Heads-up workspace specialization. */
-    [[nodiscard]] inline_always terminal_values<2> evaluate_fold_values(
-        terminal_workspace<2>& workspace,
-        const river_terminal_cache& cache,
-        const reach_vector& oop_reach,
-        const reach_vector& ip_reach,
-        const terminal_context<2>& context,
-        const heads_up_player folded
-    ) noexcept {
-        return evaluate_fold_values(workspace, cache, std::array<reach_vector, 2>{oop_reach, ip_reach}, context, folded_mask<2>::from_folded_player(folded));
     }
 
 }

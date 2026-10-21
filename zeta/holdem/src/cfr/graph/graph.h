@@ -143,15 +143,6 @@ namespace zeta::holdem::cfr {
             return k == cfr::node_kind::player || k == cfr::node_kind::player_chance;
         }
 
-        /**
-         * Check if node is a chance node.
-         */
-        [[nodiscard]] bool is_chance_node(const uint32_t node_id) const noexcept
-        {
-            assert(node_id < node_count);
-            return cfr::node_kind::chance == node_types[node_id];
-        }
-
     };
 
 }

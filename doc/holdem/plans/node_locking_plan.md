@@ -1,5 +1,15 @@
 # Node Locking and Strategy Constraints Plan
 
+> [!NOTE]
+> **Status update (engine consolidation).** The scalar shared-strategy fallback
+> this plan refers to (`cfr/solver/iteration.h`, `cfr/traversal/traversal.h`,
+> `regret_table`/`strategy_table`, delta buffers, checkpoints) and the
+> `cfr/extraction/*` surfaces have been removed. Every solve, multiway river
+> included, now runs the per-combo vectorised CFR+ in `cli/solve_cli.h`. Read
+> every "scalar regime" and "per-combo refinement" section below as obsolete:
+> locks apply to `combo_action_table` rows only, and the vectorised-regime hooks
+> are the whole design.
+
 This plan defines a complete, implementation-level delivery for node locking in
 the Zeta hold'em solver. Node locking lets a user constrain the strategy (action
 probabilities) of a seat at selected decision points -- across a whole range or

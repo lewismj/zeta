@@ -76,8 +76,7 @@ namespace {
   "stacks": [100.0, 100.0],
   "bet_fraction": 0.5,
   "max_history": 8,
-  "public_state_id": 7,
-  "samples_per_combo": 8
+  "public_state_id": 7
 })");
         BOOST_REQUIRE(spot.has_value());
         return *spot;
@@ -99,7 +98,6 @@ namespace {
         spot.public_state_id = 11;
         spot.root_actor = 0;
         spot.hero_seat = 0;
-        spot.samples_per_combo = 8;
         return spot;
     }
 
@@ -260,7 +258,6 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_json_roundtrip_preserves_phase1_fields) {
     spot.public_state_id = 12;
     spot.root_actor = 2;
     spot.hero_seat = 1;
-    spot.samples_per_combo = 16;
 
     const auto json = zeta::holdem::cli::serialize_spot_json(spot);
     const auto parsed = zeta::holdem::cli::parse_spot_json(json);
@@ -276,7 +273,6 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_json_roundtrip_preserves_phase1_fields) {
     BOOST_CHECK_EQUAL(parsed->stacks[2], 140.0);
     BOOST_CHECK_EQUAL(parsed->root_actor, 2u);
     BOOST_CHECK_EQUAL(parsed->hero_seat, 1u);
-    BOOST_CHECK_EQUAL(parsed->samples_per_combo, 16u);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_document_roundtrip_preserves_betting_policy) {
@@ -342,7 +338,6 @@ BOOST_AUTO_TEST_CASE(holdem_ui_document_json_accepts_reordered_envelope_escaped_
     "created_utc": "2026-08-03T19:00:00Z"
   },
   "spot": {
-    "samples_per_combo": 8,
     "public_state_id": 3,
     "max_history": 5,
     "bet_fraction": 0.5,
@@ -518,8 +513,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_surfaces_real_multi_street_solve_m
   "stacks": [100.0, 100.0],
   "bet_fraction": 0.5,
   "max_history": 6,
-  "public_state_id": 5,
-  "samples_per_combo": 8
+  "public_state_id": 5
 })");
     BOOST_REQUIRE(turn_spot.has_value());
 
@@ -644,10 +638,10 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_builder_resizes_player_arrays_saf
 
 BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_validation_reports_board_actor_and_array_errors) {
     auto spot = zeta::holdem::ui::viewmodels::make_template_spot(
-        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_flop);
+        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_river);
     BOOST_CHECK(zeta::holdem::ui::viewmodels::validate_structured_spot(spot).empty());
 
-    spot.board = {"As", "As", "7c"};
+    spot.board = {"As", "As", "7c", "4h", "2s"};
     auto issues = zeta::holdem::ui::viewmodels::validate_structured_spot(spot);
     BOOST_CHECK(has_issue(issues, "board"));
 
@@ -655,11 +649,17 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_validation_reports_board_actor_an
     issues = zeta::holdem::ui::viewmodels::validate_structured_spot(spot);
     BOOST_CHECK(has_issue(issues, "board"));
 
-    spot.board = {"As", "Kd", "1x"};
+    spot.board = {"As", "Kd", "1x", "4h", "2s"};
     issues = zeta::holdem::ui::viewmodels::validate_structured_spot(spot);
     BOOST_CHECK(has_issue(issues, "board"));
 
+    spot.street = "flop";
     spot.board = {"As", "Kd", "7c"};
+    issues = zeta::holdem::ui::viewmodels::validate_structured_spot(spot);
+    BOOST_CHECK(has_issue(issues, "street"));
+
+    spot.street = "river";
+    spot.board = {"As", "Kd", "7c", "4h", "2s"};
     spot.root_actor = 7;
     spot.hero_seat = 8;
     spot.ranges.pop_back();
@@ -676,12 +676,13 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_validation_reports_board_actor_an
 BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_templates_roundtrip_to_valid_json_for_two_to_seven_players) {
     for (const auto kind : {
              zeta::holdem::ui::viewmodels::spot_template_kind::heads_up_river,
-             zeta::holdem::ui::viewmodels::spot_template_kind::three_way_flop,
-             zeta::holdem::ui::viewmodels::spot_template_kind::four_way_turn,
-             zeta::holdem::ui::viewmodels::spot_template_kind::five_way_turn,
-             zeta::holdem::ui::viewmodels::spot_template_kind::six_way_turn,
-             zeta::holdem::ui::viewmodels::spot_template_kind::seven_way_turn}) {
+             zeta::holdem::ui::viewmodels::spot_template_kind::three_way_river,
+             zeta::holdem::ui::viewmodels::spot_template_kind::four_way_river,
+             zeta::holdem::ui::viewmodels::spot_template_kind::five_way_river,
+             zeta::holdem::ui::viewmodels::spot_template_kind::six_way_river,
+             zeta::holdem::ui::viewmodels::spot_template_kind::seven_way_river}) {
         const auto templated = zeta::holdem::ui::viewmodels::make_template_spot(kind);
+        BOOST_CHECK_EQUAL(templated.street, "river");
         BOOST_CHECK(zeta::holdem::ui::viewmodels::validate_structured_spot(templated).empty());
         const auto parsed = zeta::holdem::cli::parse_spot_json(zeta::holdem::cli::serialize_spot_json(templated));
         BOOST_REQUIRE(parsed.has_value());
@@ -705,7 +706,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_templates_roundtrip_to_valid_json
     }
 
     const auto seven_way = zeta::holdem::ui::viewmodels::make_template_spot(
-        zeta::holdem::ui::viewmodels::spot_template_kind::seven_way_turn);
+        zeta::holdem::ui::viewmodels::spot_template_kind::seven_way_river);
     BOOST_REQUIRE_EQUAL(seven_way.players.size(), 7u);
     BOOST_CHECK_EQUAL(seven_way.players[3], "UTG");
     BOOST_CHECK_EQUAL(seven_way.players[4], "LJ");
@@ -728,7 +729,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_reflects_validated_json_edits_in_str
         nullptr};
 
     auto edited = zeta::holdem::ui::viewmodels::make_template_spot(
-        zeta::holdem::ui::viewmodels::spot_template_kind::four_way_turn);
+        zeta::holdem::ui::viewmodels::spot_template_kind::four_way_river);
     edited.players = {"A", "B", "C", "D"};
     const auto parsed = zeta::holdem::cli::parse_spot_json(zeta::holdem::cli::serialize_spot_json(edited));
     BOOST_REQUIRE(parsed.has_value());
@@ -749,7 +750,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_reflects_validated_json_edits_in_str
     BOOST_REQUIRE(hero_seat != nullptr);
     BOOST_REQUIRE(first_board_card != nullptr);
     BOOST_REQUIRE(second_board_card != nullptr);
-    BOOST_CHECK_EQUAL(street->currentText().toStdString(), "turn");
+    BOOST_CHECK_EQUAL(street->currentText().toStdString(), "river");
     BOOST_CHECK_EQUAL(player_count->value(), 4);
     BOOST_CHECK_EQUAL(root_actor->currentIndex(), static_cast<int>(edited.root_actor));
     BOOST_CHECK_EQUAL(hero_seat->currentIndex(), static_cast<int>(edited.hero_seat));
@@ -764,7 +765,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_reflects_validated_json_edits_in_str
 BOOST_AUTO_TEST_CASE(holdem_ui_spot_builder_keeps_seats_table_with_header) {
     auto& app = qt_app();
     auto initial = zeta::holdem::ui::viewmodels::make_template_spot(
-        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_flop);
+        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_river);
     const auto metrics = zeta::holdem::ui::theme::metrics_for_density(zeta::holdem::ui::theme::density_mode::comfortable);
     zeta::holdem::ui::widgets::spot_builder builder{
         initial,
@@ -880,7 +881,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_range_view_model_reports_board_blockers_live_metr
 
 BOOST_AUTO_TEST_CASE(holdem_ui_range_text_roundtrips_weighted_ranges_through_spot_json_per_seat) {
     auto spot = zeta::holdem::ui::viewmodels::make_template_spot(
-        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_flop);
+        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_river);
     spot.ranges = {"AA:0.5, AKs:0.25", "QQ+, AJs:0.75", "AhKh:0.2"};
 
     const auto json = zeta::holdem::cli::serialize_spot_json(spot);

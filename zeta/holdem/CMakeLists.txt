@@ -8,21 +8,12 @@ add_library(zeta-holdem STATIC
     src/tables.generated.cpp
     src/eval/eval.h
     src/eval/evaluator.h
-    src/eval/categorizer.h
     src/terminal/terminal.h
     src/terminal/terminal_types.h
     src/terminal/engine.h
     src/terminal/fold.h
     src/terminal/reach_index.h
     src/terminal/showdown.h
-    src/terminal/workspace.h
-    src/cfr/extraction/contract.h
-    src/cfr/extraction/category_surface.h
-    src/cfr/extraction/category_surface.cpp
-    src/cfr/extraction/equity_surface.h
-    src/cfr/extraction/ev_surface.h
-    src/cfr/extraction/result_store.h
-    src/cfr/extraction/strategy_surface.h
     src/cfr/chance/chance.h
     src/cfr/betting/betting.h
     src/cfr/graph/graph.h
@@ -32,17 +23,7 @@ add_library(zeta-holdem STATIC
     src/cfr/graph/validation.h
     src/cfr/graph/validation.cpp
     src/cfr/tables/table_layout.h
-    src/cfr/tables/regret_table.h
-    src/cfr/tables/strategy_table.h
-    src/cfr/tables/delta_buffer.h
-    src/cfr/traversal/traversal.h
-    src/cfr/solver/context.h
-    src/cfr/solver/infoset_planning.h
-    src/cfr/solver/iteration.h
     src/cfr/solver/metadata.h
-    src/cfr/solver/river_context.h
-    src/cfr/scheduler/dfs_partitioner.h
-    src/cfr/scheduler/dfs_partitioner.cpp
     src/cfr/scheduler/scheduler.h
     src/cfr/scheduler/scheduler.cpp
     src/cli/solve_cli.h
@@ -54,8 +35,10 @@ target_include_directories(zeta-holdem
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+find_package(Threads REQUIRED)
+
 target_link_libraries(zeta-holdem
-    PUBLIC zeta-core Boost::json
+    PUBLIC zeta-core Boost::json Threads::Threads
 )
 
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

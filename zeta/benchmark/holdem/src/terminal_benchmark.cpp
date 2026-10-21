@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <memory>
@@ -384,11 +385,26 @@ namespace {
         );
     }
 
+    // Each case's heads-up reach indices as the array the engine takes, built once.
+    template <typename Cases>
+    [[nodiscard]] std::vector<std::unique_ptr<std::array<zeta::holdem::river_reach_index, 2>>> index_pairs(const Cases& cases)
+    {
+        std::vector<std::unique_ptr<std::array<zeta::holdem::river_reach_index, 2>>> out;
+        out.reserve(cases.size());
+        for (const auto& c : cases) {
+            auto pair = std::make_unique<std::array<zeta::holdem::river_reach_index, 2>>();
+            (*pair)[0] = *c.oop_index;
+            (*pair)[1] = *c.ip_index;
+            out.push_back(std::move(pair));
+        }
+        return out;
+    }
+
     void BM_TerminalEngineShowdownDense(benchmark::State& state) {
         const auto& d = data();
         const auto& cases = d.dense_cases;
         zeta::holdem::terminal_engine<2> engine{};
-        zeta::holdem::terminal_workspace<2> workspace{};
+        auto reach = std::make_unique<std::array<zeta::holdem::river_reach_index, 2>>();
         std::uint64_t sink = 0;
         std::uint64_t hero_combo_total = 0;
         std::uint64_t matchup_total = 0;
@@ -398,13 +414,9 @@ namespace {
         }
         for (auto _ : state) {
             for (const auto& c : cases) {
-                auto values = engine.evaluate_showdown_values(
-                    workspace,
-                    c.cache,
-                    c.oop_reach,
-                    c.ip_reach,
-                    d.context
-                );
+                (*reach)[0] = zeta::holdem::make_river_reach_index(c.cache, c.oop_reach);
+                (*reach)[1] = zeta::holdem::make_river_reach_index(c.cache, c.ip_reach);
+                auto values = engine.evaluate_showdown_values(c.cache, *reach, d.context);
                 benchmark::DoNotOptimize(values);
                 sink += c.oop_buckets;
             }
@@ -429,6 +441,7 @@ namespace {
         const auto& d = data();
         const auto& cases = d.dense_cases;
         zeta::holdem::terminal_engine<2> engine{};
+        const auto indexed = index_pairs(cases);
         std::uint64_t sink = 0;
         std::uint64_t hero_combo_total = 0;
         std::uint64_t matchup_total = 0;
@@ -437,13 +450,9 @@ namespace {
             matchup_total += c.compatible_matchups;
         }
         for (auto _ : state) {
-            for (const auto& c : cases) {
-                auto values = engine.evaluate_showdown_values(
-                    c.cache,
-                    *c.oop_index,
-                    *c.ip_index,
-                    d.context
-                );
+            for (std::size_t i = 0; i < cases.size(); ++i) {
+                const auto& c = cases[i];
+                auto values = engine.evaluate_showdown_values(c.cache, *indexed[i], d.context);
                 benchmark::DoNotOptimize(values);
                 sink += c.ip_buckets;
             }
@@ -478,14 +487,11 @@ namespace {
             matchup_total += c->compatible_matchups;
         }
 
+        const auto indexed = index_pairs(cases);
         for (auto _ : state) {
-            for (const auto* c : cached_cases) {
-                benchmark::DoNotOptimize(engine.evaluate_showdown_values(
-                    c->cache,
-                    *c->oop_index,
-                    *c->ip_index,
-                    d.context
-                ));
+            for (std::size_t i = 0; i < cached_cases.size(); ++i) {
+                const auto* c = cached_cases[i];
+                benchmark::DoNotOptimize(engine.evaluate_showdown_values(c->cache, *indexed[i], d.context));
                 sink += c->oop_buckets;
             }
         }
@@ -524,15 +530,15 @@ namespace {
                 layers[1].contributors_mask.set(1);
                 layers[1].eligible_mask.set(0);
                 layers[1].eligible_mask.set(1);
-                auto terminal = zeta::holdem::make_terminal_state(
-                    zeta::holdem::terminal_state_kind::showdown,
-                    zeta::holdem::terminal_context<3>{
+                const zeta::holdem::terminal_state<3> terminal{
+                    .kind = zeta::holdem::terminal_state_kind::showdown,
+                    .context = zeta::holdem::terminal_context<3>{
                         .gross_pot = 400.0,
                         .rake = 15.0,
                         .contribution = {150.0, 150.0, 100.0}
                     },
-                    layers
-                );
+                    .pot_layers = layers
+                };
                 auto values = engine.evaluate_terminal_values(c.cache, reach, terminal);
                 benchmark::DoNotOptimize(values);
                 sink += c.oop_active + c.ip_active + c.p2_active;
@@ -565,14 +571,11 @@ namespace {
             regret_updates += c->oop_active + c->ip_active;
         }
 
+        const auto indexed = index_pairs(cases);
         for (auto _ : state) {
-            for (const auto* c : cached_cases) {
-                auto values = engine.evaluate_showdown_values(
-                    c->cache,
-                    *c->oop_index,
-                    *c->ip_index,
-                    d.context
-                );
+            for (std::size_t i = 0; i < cached_cases.size(); ++i) {
+                const auto* c = cached_cases[i];
+                auto values = engine.evaluate_showdown_values(c->cache, *indexed[i], d.context);
                 benchmark::DoNotOptimize(values);
 
                 for (std::uint16_t oi = 0; oi < c->oop_index->active_count; ++oi) {
@@ -633,14 +636,11 @@ namespace {
             regret_updates += c->oop_active + c->ip_active;
         }
 
+        const auto indexed = index_pairs(cases);
         for (auto _ : state) {
-            for (const auto* c : cached_cases) {
-                auto values = engine.evaluate_showdown_values(
-                    c->cache,
-                    *c->oop_index,
-                    *c->ip_index,
-                    d.context
-                );
+            for (std::size_t i = 0; i < cached_cases.size(); ++i) {
+                const auto* c = cached_cases[i];
+                auto values = engine.evaluate_showdown_values(c->cache, *indexed[i], d.context);
                 benchmark::DoNotOptimize(values);
 
                 for (std::uint16_t oi = 0; oi < c->oop_index->active_count; ++oi) {
@@ -686,7 +686,7 @@ namespace {
         const auto& d = data();
         const auto& cases = d.dense_cases;
         zeta::holdem::terminal_engine<3> engine{};
-        zeta::holdem::terminal_workspace<3> workspace{};
+        auto reach = std::make_unique<std::array<zeta::holdem::river_reach_index, 3>>();
         std::uint64_t sink = 0;
         std::uint64_t hero_combo_total = 0;
         for (const auto& c : cases) {
@@ -694,12 +694,11 @@ namespace {
         }
         for (auto _ : state) {
             for (const auto& c : cases) {
-                auto values = engine.evaluate_showdown_values(
-                    workspace,
-                    c.cache,
-                    std::array<zeta::holdem::reach_vector, 3>{c.oop_reach, c.ip_reach, c.p2_reach},
-                    d.context3
-                );
+                const std::array<const zeta::holdem::reach_vector*, 3> ranges{&c.oop_reach, &c.ip_reach, &c.p2_reach};
+                for (std::size_t seat = 0; seat < 3; ++seat) {
+                    (*reach)[seat] = zeta::holdem::make_river_reach_index(c.cache, *ranges[seat]);
+                }
+                auto values = engine.evaluate_showdown_values(c.cache, *reach, d.context3);
                 benchmark::DoNotOptimize(values);
                 sink += c.p2_buckets;
             }
@@ -717,7 +716,7 @@ namespace {
         const auto& d = data();
         const auto& cases = d.dense_cases;
         zeta::holdem::terminal_engine<4> engine{};
-        zeta::holdem::terminal_workspace<4> workspace{};
+        auto reach = std::make_unique<std::array<zeta::holdem::river_reach_index, 4>>();
         std::uint64_t sink = 0;
         std::uint64_t hero_combo_total = 0;
         for (const auto& c : cases) {
@@ -725,12 +724,11 @@ namespace {
         }
         for (auto _ : state) {
             for (const auto& c : cases) {
-                auto values = engine.evaluate_showdown_values(
-                    workspace,
-                    c.cache,
-                    std::array<zeta::holdem::reach_vector, 4>{c.oop_reach, c.ip_reach, c.p2_reach, c.p3_reach},
-                    d.context4
-                );
+                const std::array<const zeta::holdem::reach_vector*, 4> ranges{&c.oop_reach, &c.ip_reach, &c.p2_reach, &c.p3_reach};
+                for (std::size_t seat = 0; seat < 4; ++seat) {
+                    (*reach)[seat] = zeta::holdem::make_river_reach_index(c.cache, *ranges[seat]);
+                }
+                auto values = engine.evaluate_showdown_values(c.cache, *reach, d.context4);
                 benchmark::DoNotOptimize(values);
                 sink += c.p3_buckets;
             }
@@ -748,7 +746,7 @@ namespace {
         const auto& d = data();
         const auto& cases = d.dense_cases;
         zeta::holdem::terminal_engine<6> engine{};
-        zeta::holdem::terminal_workspace<6> workspace{};
+        auto reach = std::make_unique<std::array<zeta::holdem::river_reach_index, 6>>();
         std::uint64_t sink = 0;
         std::uint64_t hero_combo_total = 0;
         for (const auto& c : cases) {
@@ -756,12 +754,11 @@ namespace {
         }
         for (auto _ : state) {
             for (const auto& c : cases) {
-                auto values = engine.evaluate_showdown_values(
-                    workspace,
-                    c.cache,
-                    std::array<zeta::holdem::reach_vector, 6>{c.oop_reach, c.ip_reach, c.p2_reach, c.p3_reach, c.p4_reach, c.p5_reach},
-                    d.context6
-                );
+                const std::array<const zeta::holdem::reach_vector*, 6> ranges{&c.oop_reach, &c.ip_reach, &c.p2_reach, &c.p3_reach, &c.p4_reach, &c.p5_reach};
+                for (std::size_t seat = 0; seat < 6; ++seat) {
+                    (*reach)[seat] = zeta::holdem::make_river_reach_index(c.cache, *ranges[seat]);
+                }
+                auto values = engine.evaluate_showdown_values(c.cache, *reach, d.context6);
                 benchmark::DoNotOptimize(values);
                 sink += c.p5_buckets;
             }

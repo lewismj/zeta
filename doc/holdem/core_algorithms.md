@@ -115,7 +115,7 @@ For a fixed river board, `make_river_terminal_cache` precomputes per-combo immut
 - live-combo bitset
 - unpacked card ids for blocker checks
 
-`terminal_workspace` then materializes `river_reach_index` for each player's range:
+`make_river_reach_index` then materializes a `river_reach_index` for each player's reach at a terminal leaf:
 
 - active combo list
 - mass by card
@@ -137,12 +137,13 @@ The kernel is allocation-free in runtime and reuses cached rank structures.
 
 ### Multi-player routes
 
-`evaluate_showdown_values` dispatches by player count and mode:
-
-- exact route for compatible contexts
-- sampled route (`evaluate_showdown_values_multiplayer_sampled`) for scalable N-way estimation using configured samples per combo
-
-Both routes consume the same cached terminal structures.
+For more than two players, showdown and fold values come from exact kernels
+(`evaluate_showdown_values_exact`, `evaluate_fold_values_exact`) that enumerate
+every compatible tuple of opponent hands and pay each one from the layered pots in
+`terminal_state<N>`. They return counterfactual values on the same scale as the
+heads-up kernels (the sum over opponent tuples of their reach product times the
+payoff), so heads-up and multiway terminals plug into the same value backup. Cost
+grows with the product of the opponents' active range sizes.
 
 ## 5. Fold terminal evaluation
 
@@ -164,118 +165,69 @@ For each chance node:
 2. probabilities are validated (finite, non-negative, sum to ~1)
 3. outcome cards are validated against board/dead-card constraints
 
-Traversal uses `probability_for_edge(node_id, edge)` and multiplies chance reach by that probability.
+The value backup weights each child by `probability_for_edge(node_id, edge)`,
+rescaled by `private_hand_chance_scale` so every outcome a set of hole cards
+allows carries its true conditional probability.
 
-## 7. Infoset lowering and action-layout construction
+## 7. Action-layout construction
 
-Player-node metadata is lowered from semantic keys (`holdem_infoset_key`) to dense infoset IDs:
-
-1. validate per-node metadata (actor/street/abstraction ids/legal actions)
-2. ensure shared infosets are internally consistent
-3. emit dense mapping + compact legal-action side arrays
-
-`make_action_table_layout(graph)` then builds contiguous action offsets so regret and strategy tables can share flat storage.
+Every player node's infoset id indexes a contiguous block of action slots.
+`make_action_table_layout(graph)` builds those action offsets so the solver's
+combo x action tables share flat storage.
 
 ## 8. Regret matching
 
-For a player node, action probabilities are computed from regret values:
+For a player node, each hand's action probabilities come from its regrets:
 
 ```text
 p(a) = max(r(a), 0) / sum_b max(r(b), 0), if positive sum > 0
 p(a) = 1 / |A| otherwise
 ```
 
-This is implemented by `compute_regret_matching_strategy` with policy-specialized positive-regret extraction.
+`normalize_combo_action_table` applies this per hand and per infoset, honouring
+the active action set when dynamic pruning is on.
 
-## 9. CFR traversal and update equations
+## 9. Combo-vectorised CFR+
 
-`run_cfr_iteration<N>` executes one full iteration over shared graph/tables with worker-local deltas.
+Every solve (heads-up or multiway river, heads-up flop and turn) runs the same
+CFR+ loop over a public game graph, with a separate strategy for every hand at
+every infoset. One iteration updates each player in turn:
 
-### Traversal
-
-The production kernel is iterative (explicit frame stacks), not recursive:
-
-1. enter node
-2. compute/lookup action probabilities
-3. propagate reach through edges
-4. accumulate child values back to parent
-5. exit node and emit local deltas
-
-Chance nodes:
-
-```text
-V(node) = sum_a p_chance(a) * V(child_a)
-```
-
-Player nodes:
+1. **Current strategy:** regret matching per hand (section 8).
+2. **Reach:** `build_node_reach_vectors` pushes each seat's per-hand reach down
+   the graph, multiplying by that seat's action probabilities at its own nodes.
+3. **Terminal values:** every terminal leaf is evaluated for the updating player
+   against the other seats' reach at that leaf (section 10).
+4. **Value backup:** non-terminal nodes are visited in post-order (children
+   first). Chance nodes weight children by their conditional probability; the
+   updating player's nodes take the strategy-weighted sum over actions; every
+   other seat's nodes sum their children, because that seat's strategy is already
+   in the reach the leaves used.
+5. **Updates:** at the updating player's nodes, for every hand,
 
 ```text
-V(node) = sum_a pi(a) * V(child_a)
+regret(a)       = max(0, regret(a) + V(child_a) - V(node))      (CFR+)
+strategy_sum(a) += reach(own hand at node) * p(a)
 ```
 
-### Strategy accumulation
+Values are counterfactual: they are weighted by the opponents' reach, so EVs in
+chips are the counterfactual value divided by the reach mass of opponent hands
+compatible with the hand.
 
-Per action:
+## 10. Parallel terminal evaluation
 
-```text
-strategy_delta(a) += strategy_weight
-                   * chance_reach
-                   * own_reach(actor)
-                   * pi(a)
-```
+Terminal evaluation dominates the cost of an iteration, and every leaf is
+independent: it reads shared, immutable inputs and writes only its own node's
+values. Each evaluation pass therefore runs the leaves as one batch on a
+`scheduler::worker_pool`, with `worker_threads` threads (the calling thread
+included). The pool hands out leaves in chunks from a shared counter, so leaves of
+uneven cost balance across threads. The backup and table updates that follow stay
+on one thread: they are cheap, and nodes can share an infoset.
 
-### Regret update (updating player only, alternating mode)
+Because no two tasks write the same memory and every floating-point operation
+happens in the same order, a solve is bit-identical for any worker count.
 
-Per action:
-
-```text
-regret_delta(a) += counterfactual_reach(actor)
-                 * (V(child_a) - V(node))
-```
-
-This is accumulated in each worker's local delta buffer.
-
-## 10. Parallel scheduling and deterministic reduction
-
-Iteration work is partitioned and scheduled as `(board, graph-partition)` tasks.
-
-- scheduler: dynamic atomic queue, configurable worker count/chunk size
-- each worker accumulates local table deltas
-- reductions merge deltas into global regret/strategy tables using an owner map and deterministic reduction plan
-
-Reduction diagnostics track:
-
-- remote delta routing
-- touched values
-- per-owner merge time
-
-## 11. Checkpoint save/load
-
-Checkpoint flow:
-
-1. validate context and compatibility surfaces
-2. write/read fixed header (version, policies, hashes, counts)
-3. stream owner-range chunks of regrets + strategy sums
-4. reject load if metadata/layout/policy hashes differ
-
-This preserves resumability while guarding against unsafe state mismatches.
-
-## 12. Reference and release-gate validation algorithms
-
-The solver includes a slower reference traversal over the same surfaces:
-
-- produces full node/action/probability/reach delta vectors
-- compares production vs reference within configured tolerances
-
-Convergence/quality gates are computed from:
-
-- exploitability estimate
-- regret norm
-- average strategy mass
-
-These diagnostics provide a deterministic release-facing acceptance surface for CFR behavior.
-
-## 13. Multi-street unified solve, memory budgeting, isomorphism, and dynamic pruning
+## 11. Multi-street unified solve, memory budgeting, isomorphism, and dynamic pruning
 
 Flop and turn spots lower to a single exact multi-street public game
 (`lower_multi_street_public_game`) that interleaves a per-street betting round
@@ -295,7 +247,8 @@ returns the exact node / edge / infoset / chance-outcome / terminal counts, and
 `estimate_multi_street_cfr_memory` turns that shape into a byte-accurate
 `multi_street_memory_estimate` broken down by component (graph, infoset, regret,
 strategy_sum, working, reach, value, terminal_cache, chance, worker, extraction)
-and records the `dominant` dimension. The regret / strategy_sum / working tables
+and records the `dominant` dimension. The worker component is the reach indices
+and terminal values each worker thread holds while it evaluates a leaf. The regret / strategy_sum / working tables
 are dimensioned `combos x actions` over the full 1326-combo width the solver
 actually allocates, so the estimate matches the real allocation. If the estimate
 exceeds the resolved memory budget the solve is refused before allocation with an
@@ -334,7 +287,7 @@ infoset maintains an active action set:
 The contract is bounded-to-tolerance: a pruned solve stays within a configured
 strategy-distance / EV tolerance of the unpruned solve, not identical to it.
 
-## 14. Convergence and exploitability reporting
+## 12. Convergence and exploitability reporting
 
 Every solve emits user-facing confidence signals attached to the artifact's
 `solver` metadata: reproducible input hashes, an optional convergence report, and
@@ -350,24 +303,24 @@ solves can be compared for equivalence without replaying them:
 - `board` -- the public board card mask.
 - `betting_policy` -- the betting abstraction plus stack / pot / contribution
   configuration.
-- `solver_config` -- algorithm identity, iteration budget, sampling, isomorphism,
-  and pruning knobs.
+- `solver_config` -- algorithm identity, iteration budget, isomorphism, and
+  pruning knobs.
 - `solve` -- a combined digest folding the five components together.
 
 Hashes are always computed and serialize as `0x`-prefixed hex strings.
 
 ### Best-response exploitability (heads-up)
 
-For supported heads-up abstractions (the vectorized river root-actor path and the
-multi-street flop/turn path), the solver measures exact best-response
+For heads-up solves (river, turn and flop), the solver measures exact best-response
 exploitability against the average strategy. It reuses the same vectorized
 node-value backup, but at the exploiter's own decision nodes it takes the
 per-combo maximum over that seat's actions instead of the strategy-weighted sum.
 Because each combo is its own infoset and the counterfactual node reach for the
 opponent is independent of the exploiter's strategy, the per-combo maximum is an
-exact best response. The per-seat gap is the range-weighted average, over the
-seat's reach, of `(best_response_value - profile_value)` at the root; both terms
-are non-negative by construction. The aggregate exploitability is the mean of the
+exact best response. The per-seat gap is `best_response_value - profile_value`,
+each the seat's root range EV: its counterfactual values weighted by its reach and
+divided by the reach mass of the hand matchups the ranges allow, so the gap is in
+chips. It is non-negative by construction. The aggregate exploitability is the mean of the
 two seats' gaps (`NashConv / 2`), reported in EV (chip) units together with its
 fraction of the gross pot. The measurement uses no dynamic pruning so the best
 response may exploit pruned-away actions.
@@ -378,8 +331,7 @@ and timing unchanged.
 
 ### Normalized regret (multiway)
 
-Where an exact best response is expensive (multiway, or the generic fallback
-path), the report instead carries a normalized average-regret metric: the mean,
+Multiway solves do not measure an exact best response; the report instead carries a normalized average-regret metric: the mean,
 over infosets and active combos, of the maximum positive accumulated regret,
 divided by the iteration count. It trends toward zero as the average strategy
 approaches equilibrium and leaves `exploitability_available` false.
@@ -396,5 +348,5 @@ count reflects the reduced work and `reached_target` is set.
 ### Warnings
 
 Each solve lists the ways it departs from an exact no-limit equilibrium:
-abstraction-only equilibrium, multiway normalized-regret-only reporting,
-Monte-Carlo sampled showdown equity, lossy card isomorphism, and dynamic pruning.
+abstraction-only equilibrium, multiway normalized-regret-only reporting, lossy
+card isomorphism, and dynamic pruning.

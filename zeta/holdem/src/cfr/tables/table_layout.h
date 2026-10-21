@@ -1,7 +1,6 @@
 #pragma once
 
 #include "cfr/graph/graph.h"
-#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <expected>
@@ -13,7 +12,6 @@
 namespace zeta::holdem::cfr {
 
     enum class table_layout_error_kind : uint8_t {
-        invalid_action_offsets,
         offset_overflow,
         invalid_infoset,
         inconsistent_infoset_action_count
@@ -29,7 +27,6 @@ namespace zeta::holdem::cfr {
     {
         using enum table_layout_error_kind;
         switch (kind) {
-            case invalid_action_offsets:           return "table_layout_error_kind::invalid_action_offsets";
             case offset_overflow:                  return "table_layout_error_kind::offset_overflow";
             case invalid_infoset:                  return "table_layout_error_kind::invalid_infoset";
             case inconsistent_infoset_action_count: return "table_layout_error_kind::inconsistent_infoset_action_count";
@@ -43,7 +40,7 @@ namespace zeta::holdem::cfr {
     }
 
     /**
-     * Contiguous action-addressing layout shared by regret and strategy tables.
+     * Contiguous action-addressing layout for the solver's combo x action tables.
      *
      * Offsets are infoset-major:
      *   - action_offsets[infoset] is the first action value for an infoset.
@@ -76,15 +73,6 @@ namespace zeta::holdem::cfr {
             assert(infoset_id < infoset_count());
             return action_offsets[infoset_id + 1u] - action_offsets[infoset_id];
         }
-
-        /**
-         * Flat value offset for an infoset/action pair.
-         */
-        [[nodiscard]] uint32_t offset(const uint32_t infoset_id, const uint32_t action_index) const noexcept
-        {
-            assert(action_index < action_count(infoset_id));
-            return action_offsets[infoset_id] + action_index;
-        }
     };
 
     /**
@@ -93,14 +81,6 @@ namespace zeta::holdem::cfr {
     [[nodiscard]] inline uint32_t table_infoset_count(std::span<const uint32_t> action_offsets) noexcept
     {
         return action_offsets.empty() ? 0u : static_cast<uint32_t>(action_offsets.size() - 1u);
-    }
-
-    /**
-     * Total number of table values represented by raw action offsets.
-     */
-    [[nodiscard]] inline uint32_t table_value_count(std::span<const uint32_t> action_offsets) noexcept
-    {
-        return action_offsets.empty() ? 0u : action_offsets.back();
     }
 
     /**
@@ -124,35 +104,6 @@ namespace zeta::holdem::cfr {
     {
         assert(action_index < table_action_count(action_offsets, infoset_id));
         return action_offsets[infoset_id] + action_index;
-    }
-
-    /**
-     * Compare two table layouts by raw offsets.
-     */
-    [[nodiscard]] inline bool same_action_offsets(
-        std::span<const uint32_t> lhs,
-        std::span<const uint32_t> rhs) noexcept
-    {
-        return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin());
-    }
-
-    /**
-     * Validate monotonic action offsets.
-     */
-    [[nodiscard]] inline std::expected<void, table_layout_error> validate_action_offsets(
-        std::span<const uint32_t> action_offsets) noexcept
-    {
-        if (action_offsets.empty() || action_offsets.front() != 0u) {
-            return std::unexpected(table_layout_error{table_layout_error_kind::invalid_action_offsets});
-        }
-
-        for (uint32_t i = 1; i < static_cast<uint32_t>(action_offsets.size()); ++i) {
-            if (action_offsets[i] < action_offsets[i - 1u]) {
-                return std::unexpected(table_layout_error{table_layout_error_kind::invalid_action_offsets, i});
-            }
-        }
-
-        return {};
     }
 
     /**
