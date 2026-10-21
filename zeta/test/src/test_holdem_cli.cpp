@@ -2,10 +2,12 @@
 
 #include "cli/solve_cli.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <ranges>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -119,6 +121,156 @@ namespace {
     // for both seats is invariant under every permutation of those free suits. This is
     // the canonical suit-symmetric spot: collapsing suit-isomorphic river runouts is
     // lossless, so an isomorphism-reduced solve must reproduce the exact solve.
+    // The golden turn spot with zero stacks: no betting is possible, so the hand is
+    // checked down and the value of every runout passes through the river chance node.
+    constexpr const char* sample_spot_golden_turn_checkdown = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["Ah", "Kh", "Qh", "Jh"],
+  "ranges": ["Th9s", "2c3d"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [0.0, 0.0],
+  "max_history": 4,
+  "hero_seat": 0
+})";
+
+    // Hero ("JhTh") flops a royal flush on Ah Kh Qh and wins on every turn and river;
+    // zero stacks force a check-down through both chance nodes.
+    constexpr const char* sample_spot_golden_flop_checkdown = R"({
+  "street": "flop",
+  "players": ["BTN", "BB"],
+  "board": ["Ah", "Kh", "Qh"],
+  "ranges": ["JhTh", "2c3d"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [0.0, 0.0],
+  "max_history": 4,
+  "hero_seat": 0
+})";
+
+    // Multi-combo check-down spots for the brute-force reference: wins, losses, ties
+    // (with rake), blockers between the ranges and runouts that change the winner.
+    constexpr const char* sample_spot_brute_force_turn = R"({
+  "street": "turn",
+  "players": ["BTN", "BB"],
+  "board": ["Ah", "Kd", "7c", "2s"],
+  "ranges": ["AQ,KK,98s,A7", "AK,77,JTs,A7"],
+  "gross_pot": 100.0,
+  "rake": 4.0,
+  "contributions": [48.0, 48.0],
+  "stacks": [0.0, 0.0],
+  "max_history": 4,
+  "hero_seat": 0
+})";
+
+    constexpr const char* sample_spot_brute_force_flop = R"({
+  "street": "flop",
+  "players": ["BTN", "BB"],
+  "board": ["Ah", "Kd", "7c"],
+  "ranges": ["AQs,KK,98s", "AK,77,JTs"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [0.0, 0.0],
+  "max_history": 4,
+  "hero_seat": 0
+})";
+
+    /**
+     * Brute-force counterfactual value of every hero (seat 0) combo in a heads-up spot
+     * with no betting: for each opponent combo compatible with the hero hand and the
+     * board, average the showdown payoff over every runout the two hands leave possible,
+     * weighted by the opponent's range weight. Independent of the chance tables, the
+     * terminal kernels and the CFR machinery.
+     */
+    std::vector<std::pair<std::string, double>> brute_force_checkdown_values(const struct zeta::holdem::cli::solve_spot& spot)
+    {
+        using namespace zeta::holdem;
+        using zeta::card;
+        using zeta::card_mask;
+        card_mask board_mask = 0;
+        for (const auto& text : spot.board) {
+            const auto parsed = cli::detail::parse_card_text(text);
+            BOOST_REQUIRE(parsed.has_value());
+            board_mask |= card_mask{1} << *parsed;
+        }
+        const auto hero = parse_range(spot.ranges[0]);
+        const auto villain = parse_range(spot.ranges[1]);
+        BOOST_REQUIRE(hero.ok());
+        BOOST_REQUIRE(villain.ok());
+
+        const int runout_cards = 5 - zeta::ops::popcount(board_mask);
+        const double awarded = spot.gross_pot - spot.rake;
+        const double contribution = spot.contributions[0];
+
+        std::vector<std::pair<std::string, double>> values;
+        for (combination_index h = 0; h < combination_count; ++h) {
+            const auto hero_mask = combination_mask(h);
+            if (hero.range[h] <= 0.0f || (hero_mask & board_mask) != 0) {
+                continue;
+            }
+            double value = 0.0;
+            for (combination_index o = 0; o < combination_count; ++o) {
+                const auto villain_mask = combination_mask(o);
+                if (villain.range[o] <= 0.0f || (villain_mask & (board_mask | hero_mask)) != 0) {
+                    continue;
+                }
+                const auto dead = board_mask | hero_mask | villain_mask;
+                double payoff_sum = 0.0;
+                uint32_t runouts = 0;
+                auto showdown = [&](const card_mask runout) {
+                    const auto final_board = board_mask | runout;
+                    const auto hero_rank = evaluate(final_board | hero_mask);
+                    const auto villain_rank = evaluate(final_board | villain_mask);
+                    payoff_sum += hero_rank > villain_rank ? awarded - contribution
+                        : hero_rank < villain_rank ? -contribution
+                        : awarded * 0.5 - contribution;
+                    ++runouts;
+                };
+                for (card first = 0; first < 52; ++first) {
+                    const auto first_bit = card_mask{1} << first;
+                    if ((dead & first_bit) != 0) {
+                        continue;
+                    }
+                    if (runout_cards == 1) {
+                        showdown(first_bit);
+                        continue;
+                    }
+                    for (auto second = static_cast<card>(first + 1); second < 52; ++second) {
+                        const auto second_bit = card_mask{1} << second;
+                        if ((dead & second_bit) == 0) {
+                            showdown(first_bit | second_bit);
+                        }
+                    }
+                }
+                value += static_cast<double>(villain.range[o]) * payoff_sum / static_cast<double>(runouts);
+            }
+            values.emplace_back(cli::detail::hand_text_from_combo(h), value);
+        }
+        return values;
+    }
+
+    void check_matches_brute_force(const char* spot_json)
+    {
+        auto spot = zeta::holdem::cli::parse_spot_json(spot_json);
+        BOOST_REQUIRE(spot.has_value());
+        auto output = zeta::holdem::cli::solve_spot(*spot, 4);
+        BOOST_REQUIRE(output.has_value());
+
+        const auto expected = brute_force_checkdown_values(*spot);
+        BOOST_REQUIRE(!expected.empty());
+        BOOST_REQUIRE_EQUAL(output->artifact.strategy.size(), expected.size());
+        for (const auto& [hand, value] : expected) {
+            const auto row = std::ranges::find(output->artifact.strategy, hand, &zeta::holdem::cli::hand_strategy::hand);
+            BOOST_REQUIRE_MESSAGE(row != output->artifact.strategy.end(), "missing strategy row for " << hand);
+            BOOST_CHECK_MESSAGE(std::fabs(row->ev - value) <= 1e-3 * std::max(1.0, std::fabs(value)),
+                hand << ": solver " << row->ev << " vs brute force " << value);
+        }
+    }
+
     constexpr const char* sample_spot_suit_symmetric_turn = R"({
   "street": "turn",
   "players": ["BTN", "BB"],
@@ -723,6 +875,41 @@ BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_solve_matches_hand_computed_nuts_ev
     // mass is exactly 1.0 and the counterfactual value is undivided.
     constexpr double expected_ev = 50.0;
     BOOST_CHECK_CLOSE(output->artifact.strategy.front().ev, expected_ev, 1.0);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_turn_checkdown_nuts_ev_survives_river_chance_node) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn_checkdown);
+    BOOST_REQUIRE(spot.has_value());
+
+    auto output = zeta::holdem::cli::solve_spot(*spot, 4);
+    BOOST_REQUIRE(output.has_value());
+    BOOST_REQUIRE_EQUAL(output->artifact.strategy.size(), 1u);
+
+    // No betting is possible, so the hero's royal flush is checked down and wins the
+    // 100 pot on each of the 44 rivers the two hands leave possible. The river chance
+    // weight must be 1/44, not the public 1/48, or the value comes out as 50 * 44/48.
+    BOOST_CHECK_CLOSE(output->artifact.strategy.front().ev, 50.0, 0.01);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_flop_checkdown_nuts_ev_survives_turn_and_river_chance_nodes) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_flop_checkdown);
+    BOOST_REQUIRE(spot.has_value());
+
+    auto output = zeta::holdem::cli::solve_spot(*spot, 4);
+    BOOST_REQUIRE(output.has_value());
+    BOOST_REQUIRE_EQUAL(output->artifact.strategy.size(), 1u);
+
+    // Two chance nodes: without the private-hand correction the value would be
+    // 50 * (45/49) * (44/48).
+    BOOST_CHECK_CLOSE(output->artifact.strategy.front().ev, 50.0, 0.01);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_turn_checkdown_matches_brute_force_reference) {
+    check_matches_brute_force(sample_spot_brute_force_turn);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_flop_checkdown_matches_brute_force_reference) {
+    check_matches_brute_force(sample_spot_brute_force_flop);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_solve_converges_with_iterations) {

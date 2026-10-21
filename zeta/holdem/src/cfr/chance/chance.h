@@ -369,6 +369,37 @@ namespace zeta::holdem::cfr {
         }
     }
 
+    /**
+     * Factor converting a public chance probability into the probability seen by a
+     * fixed profile of private hands.
+     *
+     * Public outcomes are uniform over every unseen card set, C(live, k) of them. For
+     * any `player_count` mutually compatible private hands exactly 2 * player_count of
+     * those live cards are held, so only C(live - 2N, k) outcomes are possible and the
+     * colliding ones contribute zero value. Multiplying each public probability by
+     * C(live, k) / C(live - 2N, k) restores the true conditional probability. The
+     * factor is the same for every compatible hand profile, so it also holds for
+     * outcomes collapsed by suit isomorphism (their probability is a member sum).
+     */
+    [[nodiscard]] inline double private_hand_chance_scale(
+        const chance_event& event,
+        const uint32_t player_count) noexcept
+    {
+        const auto cards_to_deal = public_chance_cards_to_deal(event.kind);
+        if (cards_to_deal == 0u) {
+            return 1.0;
+        }
+        const auto blocked = detail::card_count(event.board_cards | event.dead_cards);
+        const auto live = static_cast<uint32_t>(zeta::num_cards<zeta::default_deck>) - blocked;
+        const auto held = 2u * player_count;
+        if (live < held + cards_to_deal) {
+            return 1.0;
+        }
+        const auto public_count = detail::combination_count(live, cards_to_deal);
+        const auto private_count = detail::combination_count(live - held, cards_to_deal);
+        return private_count == 0u ? 1.0 : static_cast<double>(public_count) / static_cast<double>(private_count);
+    }
+
     [[nodiscard]] inline std::expected<void, public_state_registry_error> validate_public_state_registry(
        const public_state_registry& registry,
        const uint32_t node_count = 0) noexcept

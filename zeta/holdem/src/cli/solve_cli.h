@@ -1468,8 +1468,15 @@ namespace zeta::holdem::cli {
 
                 const auto edges = lowered.graph.out_edges(node_id);
                 if (kind == cfr::node_kind::chance) {
+                    // Public outcome probabilities ignore the hole cards; rescale so each
+                    // outcome compatible with a hand pair carries its true conditional weight.
+                    const auto* event = lowered.chance_events.event_for_node(node_id);
+                    const auto private_scale = event == nullptr
+                        ? 1.0
+                        : cfr::private_hand_chance_scale(*event, static_cast<uint32_t>(N));
                     for (const auto& edge : edges) {
-                        const auto probability = lowered.chance_events.probability_for_edge(node_id, edge);
+                        const auto probability = static_cast<float>(
+                            private_scale * lowered.chance_events.probability_for_edge(node_id, edge));
                         for (const auto combo : active_combos[updating_player]) {
                             node_values[node_id][combo] += probability * node_values[edge.child_node][combo];
                         }
