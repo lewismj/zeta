@@ -63,15 +63,18 @@ namespace zeta::holdem::cli {
         std::vector<action_strategy> strategy;
         double range_weight = 0.0;
         double reach_probability = 0.0;
-        double ev = 0.0;
+        double ev = 0.0;                    /**< Expected value in chips: counterfactual_value / opponent_reach_mass (0 when no opponent hand is compatible). */
+        double counterfactual_value = 0.0;  /**< Sum over compatible opponent hands of their reach times the payoff. */
+        double opponent_reach_mass = 0.0;   /**< Reach mass of opponent hands compatible with this hand and the board. */
     };
 
     struct solved_node_seat_value {
         uint8_t seat = 0;
-        double range_reach_mass = 0.0;
-        double reach_weighted_value = 0.0;
-        double conditional_range_ev = 0.0;
-        double counterfactual_value = 0.0;
+        double range_reach_mass = 0.0;      /**< Sum of the seat's path reach over its hands. */
+        double matchup_reach_mass = 0.0;    /**< Sum of path reach times opponent_reach_mass: the mass of compatible matchups. */
+        double reach_weighted_value = 0.0;  /**< Sum of path reach times the hand's counterfactual value. */
+        double conditional_range_ev = 0.0;  /**< Range EV in chips: reach_weighted_value / matchup_reach_mass. */
+        double counterfactual_value = 0.0;  /**< Sum of root range weight times the hand's counterfactual value. */
     };
 
     struct category_summary_action_frequency {
@@ -145,7 +148,10 @@ namespace zeta::holdem::cli {
         std::vector<std::string> warnings;
     };
 
-    inline constexpr uint32_t current_artifact_schema_version = 5;
+    inline constexpr uint32_t current_artifact_schema_version = 6;
+
+    /** Opponent (or matchup) reach mass at or below which an EV is undefined and reported as 0. */
+    inline constexpr double minimum_ev_reach_mass = 1.0e-12;
     inline constexpr uint32_t current_extraction_version = 1;
 
     enum class solve_artifact_export_mode : uint8_t {
@@ -824,19 +830,22 @@ namespace zeta::holdem::cli {
                 if (!std::isfinite(seat_value.range_reach_mass) || seat_value.range_reach_mass < 0.0) {
                     return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "solved_nodes.seat_values.range_reach_mass must be finite and non-negative."});
                 }
+                if (!std::isfinite(seat_value.matchup_reach_mass) || seat_value.matchup_reach_mass < 0.0) {
+                    return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "solved_nodes.seat_values.matchup_reach_mass must be finite and non-negative."});
+                }
                 if (!std::isfinite(seat_value.reach_weighted_value)
                     || !std::isfinite(seat_value.conditional_range_ev)
                     || !std::isfinite(seat_value.counterfactual_value)) {
                     return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "solved_nodes.seat_values metrics must be finite."});
                 }
-                if (seat_value.range_reach_mass > 0.0) {
-                    const auto reconstructed = seat_value.reach_weighted_value / seat_value.range_reach_mass;
-                    if (std::abs(reconstructed - seat_value.conditional_range_ev) > 1.0e-5) {
-                        return std::unexpected(cli_error{
-                            cli_error_kind::invalid_artifact,
-                            "solved_nodes.seat_values.conditional_range_ev must equal reach_weighted_value / range_reach_mass."
-                        });
-                    }
+                const auto reconstructed = seat_value.matchup_reach_mass > minimum_ev_reach_mass
+                    ? seat_value.reach_weighted_value / seat_value.matchup_reach_mass
+                    : 0.0;
+                if (std::abs(reconstructed - seat_value.conditional_range_ev) > 1.0e-5 * std::max(1.0, std::abs(reconstructed))) {
+                    return std::unexpected(cli_error{
+                        cli_error_kind::invalid_artifact,
+                        "solved_nodes.seat_values.conditional_range_ev must equal reach_weighted_value / matchup_reach_mass."
+                    });
                 }
             }
             if (node.category_summary_derivation_version != 1u) {
@@ -951,8 +960,15 @@ namespace zeta::holdem::cli {
             if (!std::isfinite(row.reach_probability) || row.reach_probability < 0.0 || row.reach_probability > 1.0) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "reach_probability must be finite and in [0,1] for hand: " + row.hand});
             }
-            if (!std::isfinite(row.ev)) {
+            if (!std::isfinite(row.ev) || !std::isfinite(row.counterfactual_value)) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "EV must be finite for hand: " + row.hand});
+            }
+            if (!std::isfinite(row.opponent_reach_mass) || row.opponent_reach_mass < 0.0) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "opponent_reach_mass must be finite and non-negative for hand: " + row.hand});
+            }
+            const auto expected_cfv = row.ev * row.opponent_reach_mass;
+            if (std::abs(expected_cfv - row.counterfactual_value) > 1.0e-6 * std::max(1.0, std::abs(row.counterfactual_value))) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_artifact, "ev * opponent_reach_mass must equal counterfactual_value for hand: " + row.hand});
             }
         }
 
@@ -1974,9 +1990,91 @@ namespace zeta::holdem::cli {
             return root_strategy;
         }
 
+        using combo_mass_array = std::array<double, combination_count>;
+
+        // Reach mass of opponent hands compatible with each of `seat`'s hands at a node
+        // whose public board is `board_mask`: the normaliser that turns a counterfactual
+        // value into an EV in chips. Heads-up this is exact, using the same blocker
+        // inclusion-exclusion as the fold kernel. Multiway it is the product of each
+        // opponent's compatible mass, which ignores card collisions between opponents and
+        // so slightly overstates the joint mass when their ranges share cards.
+        template <std::size_t N>
+        [[nodiscard]] inline combo_mass_array opponent_reach_masses(
+            const std::array<reach_vector, N>& reach,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const card_mask board_mask,
+            const uint8_t seat)
+        {
+            combo_mass_array masses{};
+            for (const auto combo : active_combos[seat]) {
+                if ((combination_mask(combo) & board_mask) == 0) {
+                    masses[combo] = 1.0;
+                }
+            }
+            for (uint8_t opponent = 0; opponent < N; ++opponent) {
+                if (opponent == seat) {
+                    continue;
+                }
+                const auto aggregate = accumulate_fold_opponent_mass(reach[opponent], active_combos[opponent], board_mask);
+                for (const auto combo : active_combos[seat]) {
+                    if (masses[combo] == 0.0) {
+                        continue;
+                    }
+                    const auto [first, second] = extract_combo_cards(combination_mask(combo));
+                    const auto self_weight = static_cast<double>(std::max(0.0f, reach[opponent][combo]));
+                    masses[combo] *= clamp_compatible_mass(
+                        aggregate.total - aggregate.mass_by_card[first] - aggregate.mass_by_card[second] + self_weight);
+                }
+            }
+            return masses;
+        }
+
+        // Public board at every node of a multi-street public game.
+        template <std::size_t N>
+        [[nodiscard]] inline std::vector<card_mask> multi_street_board_by_node(const cfr::holdem_public_game_graph<N>& game)
+        {
+            std::vector<card_mask> boards(game.graph.node_count, 0u);
+            for (uint32_t node_id = 0; node_id < game.graph.node_count; ++node_id) {
+                const auto state_id = game.annotations.state_by_node[node_id].public_state_id;
+                if (state_id < game.public_states.states.size()) {
+                    boards[node_id] = game.public_states.states[state_id].board_cards;
+                }
+            }
+            return boards;
+        }
+
+        // EV in chips from a counterfactual value and its opponent reach mass. A hand
+        // with no compatible opponent hand has no defined EV and reports 0.
+        [[nodiscard]] inline double ev_from_counterfactual_value(const double counterfactual_value, const double opponent_mass) noexcept
+        {
+            return opponent_mass > minimum_ev_reach_mass ? counterfactual_value / opponent_mass : 0.0;
+        }
+
+        [[nodiscard]] inline hand_strategy make_hand_strategy_row(
+            const combination_index combo,
+            std::vector<action_strategy> strategy,
+            const double range_weight,
+            const double reach_probability,
+            const double counterfactual_value,
+            const double opponent_mass)
+        {
+            const bool defined = opponent_mass > minimum_ev_reach_mass;
+            return hand_strategy{
+                .combination_index = combo,
+                .hand = hand_text_from_combo(combo),
+                .strategy = std::move(strategy),
+                .range_weight = range_weight,
+                .reach_probability = reach_probability,
+                .ev = defined ? counterfactual_value / opponent_mass : 0.0,
+                .counterfactual_value = defined ? counterfactual_value : 0.0,
+                .opponent_reach_mass = defined ? opponent_mass : 0.0
+            };
+        }
+
         template <std::size_t N>
         [[nodiscard]] inline std::vector<solved_node_seat_value> compute_node_seat_values(
             const uint32_t node_id,
+            const card_mask board_mask,
             const std::array<reach_vector, N>& base_reach,
             const std::array<std::vector<combination_index>, N>& active_combos,
             const std::vector<std::array<reach_vector, N>>& node_reach,
@@ -1985,7 +2083,9 @@ namespace zeta::holdem::cli {
             std::vector<solved_node_seat_value> out;
             out.reserve(N);
             for (uint8_t seat = 0; seat < N; ++seat) {
+                const auto masses = opponent_reach_masses<N>(node_reach[node_id], active_combos, board_mask, seat);
                 double range_reach_mass = 0.0;
+                double matchup_reach_mass = 0.0;
                 double reach_weighted_value = 0.0;
                 double counterfactual_value = 0.0;
                 for (const auto combo : active_combos[seat]) {
@@ -1993,14 +2093,16 @@ namespace zeta::holdem::cli {
                     const auto path_weight = std::max(0.0f, node_reach[node_id][seat][combo]);
                     const auto profile_value = static_cast<double>(node_values_by_seat[seat][node_id][combo]);
                     range_reach_mass += static_cast<double>(path_weight);
+                    matchup_reach_mass += static_cast<double>(path_weight) * masses[combo];
                     reach_weighted_value += static_cast<double>(path_weight) * profile_value;
                     counterfactual_value += static_cast<double>(base_weight) * profile_value;
                 }
                 out.push_back(solved_node_seat_value{
                     .seat = seat,
                     .range_reach_mass = range_reach_mass,
+                    .matchup_reach_mass = matchup_reach_mass,
                     .reach_weighted_value = reach_weighted_value,
-                    .conditional_range_ev = range_reach_mass > 0.0 ? reach_weighted_value / range_reach_mass : 0.0,
+                    .conditional_range_ev = ev_from_counterfactual_value(reach_weighted_value, matchup_reach_mass),
                     .counterfactual_value = counterfactual_value
                 });
             }
@@ -2010,6 +2112,7 @@ namespace zeta::holdem::cli {
         template <std::size_t N>
         [[nodiscard]] inline std::vector<hand_strategy> compute_node_strategy_rows(
             const uint32_t node_id,
+            const card_mask board_mask,
             const cfr::game_graph& graph,
             const cfr::solver::solver_graph_annotations& annotations,
             const combo_action_table& average_strategy,
@@ -2025,6 +2128,7 @@ namespace zeta::holdem::cli {
             rows.reserve(active_combos[seat].size());
             const auto infoset_id = is_player ? graph.infoset_id[node_id] : cfr::game_graph::INVALID_INFOSET;
             const auto action_count = is_player ? average_strategy.action_count(infoset_id) : 0u;
+            const auto masses = opponent_reach_masses<N>(node_reach[node_id], active_combos, board_mask, seat);
 
             for (const auto combo : active_combos[seat]) {
                 std::vector<action_strategy> combo_strategy;
@@ -2039,14 +2143,13 @@ namespace zeta::holdem::cli {
                 }
                 const auto range_weight = std::max(0.0f, base_reach[seat][combo]);
                 const auto path_weight = std::max(0.0f, node_reach[node_id][seat][combo]);
-                rows.push_back(hand_strategy{
-                    .combination_index = combo,
-                    .hand = hand_text_from_combo(combo),
-                    .strategy = std::move(combo_strategy),
-                    .range_weight = range_weight,
-                    .reach_probability = range_weight > 0.0 ? path_weight / range_weight : 0.0,
-                    .ev = node_values_by_seat[seat][node_id][combo]
-                });
+                rows.push_back(make_hand_strategy_row(
+                    combo,
+                    std::move(combo_strategy),
+                    range_weight,
+                    range_weight > 0.0 ? path_weight / range_weight : 0.0,
+                    node_values_by_seat[seat][node_id][combo],
+                    masses[combo]));
             }
             return rows;
         }
@@ -2057,7 +2160,8 @@ namespace zeta::holdem::cli {
             struct category_accumulator {
                 std::string category_name;
                 double mass = 0.0;
-                double weighted_ev = 0.0;
+                double matchup_mass = 0.0;
+                double weighted_counterfactual_value = 0.0;
                 std::vector<double> weighted_action_mass;
             };
 
@@ -2077,7 +2181,8 @@ namespace zeta::holdem::cli {
                     accumulators.push_back(category_accumulator{
                         .category_name = category,
                         .mass = 0.0,
-                        .weighted_ev = 0.0,
+                        .matchup_mass = 0.0,
+                        .weighted_counterfactual_value = 0.0,
                         .weighted_action_mass = std::vector<double>(row.strategy.size(), 0.0)
                     });
                     it = std::prev(accumulators.end());
@@ -2085,7 +2190,8 @@ namespace zeta::holdem::cli {
                     it->weighted_action_mass.resize(row.strategy.size(), 0.0);
                 }
                 it->mass += row_mass;
-                it->weighted_ev += row_mass * row.ev;
+                it->matchup_mass += row_mass * row.opponent_reach_mass;
+                it->weighted_counterfactual_value += row_mass * row.counterfactual_value;
                 for (std::size_t action_index = 0; action_index < row.strategy.size(); ++action_index) {
                     it->weighted_action_mass[action_index] += row_mass * row.strategy[action_index].frequency;
                 }
@@ -2108,7 +2214,7 @@ namespace zeta::holdem::cli {
                     .category_name = accumulator.category_name,
                     .frequency = total_mass > 0.0 ? accumulator.mass / total_mass : 0.0,
                     .range_weight = accumulator.mass,
-                    .average_ev = accumulator.mass > 0.0 ? accumulator.weighted_ev / accumulator.mass : 0.0,
+                    .average_ev = ev_from_counterfactual_value(accumulator.weighted_counterfactual_value, accumulator.matchup_mass),
                     .action_frequencies = std::move(action_frequencies)
                 });
             }
@@ -2124,18 +2230,22 @@ namespace zeta::holdem::cli {
             const std::array<reach_vector, N>& base_reach,
             const std::array<std::vector<combination_index>, N>& active_combos,
             const std::vector<std::array<reach_vector, N>>& node_reach,
-            const std::array<std::vector<reach_vector>, N>& node_values_by_seat)
+            const std::array<std::vector<reach_vector>, N>& node_values_by_seat,
+            const std::vector<card_mask>& board_by_node)
         {
             const auto hero_seat = static_cast<uint8_t>(std::min<std::size_t>(artifact.hero_seat, N - 1u));
             for (auto& node : artifact.solved_nodes) {
+                const auto board_mask = board_by_node[node.node_id];
                 node.seat_values = compute_node_seat_values(
                     node.node_id,
+                    board_mask,
                     base_reach,
                     active_combos,
                     node_reach,
                     node_values_by_seat);
                 node.strategy_rows = compute_node_strategy_rows(
                     node.node_id,
+                    board_mask,
                     graph,
                     annotations,
                     average_strategy,
@@ -2639,6 +2749,9 @@ namespace zeta::holdem::cli {
                     reach_vectors[hero],
                     spot.gross_pot);
 
+                const auto board_by_node = multi_street_board_by_node(public_game);
+                const auto root_masses = opponent_reach_masses<N>(
+                    node_reach[graph.root_node], active_combos, board_by_node[graph.root_node], hero);
                 for (const auto combo : active_combos[hero]) {
                     std::vector<action_strategy> combo_strategy;
                     combo_strategy.reserve(root_actions.size());
@@ -2648,14 +2761,13 @@ namespace zeta::holdem::cli {
                             .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
                         });
                     }
-                    artifact.strategy.push_back(hand_strategy{
-                        .combination_index = combo,
-                        .hand = hand_text_from_combo(combo),
-                        .strategy = std::move(combo_strategy),
-                        .range_weight = reach_vectors[hero][combo],
-                        .reach_probability = reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
-                        .ev = node_values[graph.root_node][combo]
-                    });
+                    artifact.strategy.push_back(make_hand_strategy_row(
+                        combo,
+                        std::move(combo_strategy),
+                        reach_vectors[hero][combo],
+                        reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
+                        node_values[graph.root_node][combo],
+                        root_masses[combo]));
                 }
 
                 std::vector<std::vector<action_strategy>> node_strategies(graph.node_count);
@@ -2709,7 +2821,8 @@ namespace zeta::holdem::cli {
                     reach_vectors,
                     active_combos,
                     node_reach,
-                    node_values_by_seat);
+                    node_values_by_seat,
+                    board_by_node);
                 output.artifact = std::move(artifact);
                 output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - extraction_begin).count();
@@ -2948,6 +3061,7 @@ namespace zeta::holdem::cli {
                 reach_vectors[hero],
                 spot.gross_pot);
 
+            const auto root_masses = opponent_reach_masses<N>(reach_vectors, active_combos, public_board.mask, hero);
             for (const auto combo : active_combos[hero]) {
                 std::vector<action_strategy> combo_strategy;
                 combo_strategy.reserve(root_actions.size());
@@ -2957,14 +3071,13 @@ namespace zeta::holdem::cli {
                         .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
                     });
                 }
-                artifact.strategy.push_back(hand_strategy{
-                    .combination_index = combo,
-                    .hand = hand_text_from_combo(combo),
-                    .strategy = std::move(combo_strategy),
-                    .range_weight = reach_vectors[hero][combo],
-                    .reach_probability = reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
-                    .ev = node_values[lowered.graph.root_node][combo]
-                });
+                artifact.strategy.push_back(make_hand_strategy_row(
+                    combo,
+                    std::move(combo_strategy),
+                    reach_vectors[hero][combo],
+                    reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
+                    node_values[lowered.graph.root_node][combo],
+                    root_masses[combo]));
             }
             std::vector<std::vector<action_strategy>> node_strategies(lowered.graph.node_count);
             for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
@@ -3016,7 +3129,8 @@ namespace zeta::holdem::cli {
                 reach_vectors,
                 active_combos,
                 node_reach,
-                node_values_by_seat);
+                node_values_by_seat,
+                std::vector<card_mask>(lowered.graph.node_count, public_board.mask));
             output.artifact = std::move(artifact);
             output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - extraction_begin).count();
@@ -3433,6 +3547,8 @@ namespace zeta::holdem::cli {
             }
 
             const auto hero = static_cast<std::size_t>(spot.hero_seat);
+            const auto root_masses = opponent_reach_masses<N>(
+                reach_vectors, active_combos, public_board.mask, static_cast<uint8_t>(hero));
             for (combination_index combo = 0; combo < combination_count; ++combo) {
                 if (reach_vectors[hero][combo] <= 0.0f) {
                     continue;
@@ -3445,14 +3561,13 @@ namespace zeta::holdem::cli {
                         .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
                     });
                 }
-                artifact.strategy.push_back(hand_strategy{
-                    .combination_index = combo,
-                    .hand = hand_text_from_combo(combo),
-                    .strategy = std::move(combo_strategy),
-                    .range_weight = reach_vectors[hero][combo],
-                    .reach_probability = 1.0,
-                    .ev = node_values_by_seat[hero][lowered_graph->root_node][combo]
-                });
+                artifact.strategy.push_back(make_hand_strategy_row(
+                    combo,
+                    std::move(combo_strategy),
+                    reach_vectors[hero][combo],
+                    1.0,
+                    node_values_by_seat[hero][lowered_graph->root_node][combo],
+                    root_masses[combo]));
             }
             artifact.root_strategy = std::move(root_strategy);
             std::vector<std::vector<action_strategy>> node_strategies(lowered_graph->node_count);
@@ -3495,7 +3610,8 @@ namespace zeta::holdem::cli {
                 reach_vectors,
                 active_combos,
                 node_reach,
-                node_values_by_seat);
+                node_values_by_seat,
+                std::vector<card_mask>(lowered_graph->node_count, public_board.mask));
             output.artifact = std::move(artifact);
 
             output.timing.extraction_ms = std::chrono::duration<double, std::milli>(

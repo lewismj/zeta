@@ -488,9 +488,19 @@ namespace zeta::holdem::cli {
             if (!reach_probability) {
                 return std::unexpected(reach_probability.error());
             }
+            auto counterfactual_value = required_double(object, "counterfactual_value");
+            if (!counterfactual_value) {
+                return std::unexpected(counterfactual_value.error());
+            }
+            auto opponent_reach_mass = required_double(object, "opponent_reach_mass");
+            if (!opponent_reach_mass) {
+                return std::unexpected(opponent_reach_mass.error());
+            }
             row.range_weight = *range_weight;
             row.reach_probability = *reach_probability;
             row.ev = *ev;
+            row.counterfactual_value = *counterfactual_value;
+            row.opponent_reach_mass = *opponent_reach_mass;
             return row;
         }
 
@@ -502,17 +512,20 @@ namespace zeta::holdem::cli {
             const auto& object = value.as_object();
             auto seat = required_uint<uint8_t>(object, "seat");
             auto range_reach_mass = required_double(object, "range_reach_mass");
+            auto matchup_reach_mass = required_double(object, "matchup_reach_mass");
             auto reach_weighted_value = required_double(object, "reach_weighted_value");
             auto conditional_range_ev = required_double(object, "conditional_range_ev");
             auto counterfactual_value = required_double(object, "counterfactual_value");
             if (!seat) return std::unexpected(seat.error());
             if (!range_reach_mass) return std::unexpected(range_reach_mass.error());
+            if (!matchup_reach_mass) return std::unexpected(matchup_reach_mass.error());
             if (!reach_weighted_value) return std::unexpected(reach_weighted_value.error());
             if (!conditional_range_ev) return std::unexpected(conditional_range_ev.error());
             if (!counterfactual_value) return std::unexpected(counterfactual_value.error());
             return solved_node_seat_value{
                 .seat = *seat,
                 .range_reach_mass = *range_reach_mass,
+                .matchup_reach_mass = *matchup_reach_mass,
                 .reach_weighted_value = *reach_weighted_value,
                 .conditional_range_ev = *conditional_range_ev,
                 .counterfactual_value = *counterfactual_value
@@ -755,6 +768,8 @@ namespace zeta::holdem::cli {
                 row_object["range_weight"] = row.range_weight;
                 row_object["reach_probability"] = row.reach_probability;
                 row_object["ev"] = row.ev;
+                row_object["counterfactual_value"] = row.counterfactual_value;
+                row_object["opponent_reach_mass"] = row.opponent_reach_mass;
                 rows.emplace_back(std::move(row_object));
             }
             return rows;
@@ -768,6 +783,7 @@ namespace zeta::holdem::cli {
                 json::object object;
                 object["seat"] = static_cast<uint64_t>(seat_value.seat);
                 object["range_reach_mass"] = seat_value.range_reach_mass;
+                object["matchup_reach_mass"] = seat_value.matchup_reach_mass;
                 object["reach_weighted_value"] = seat_value.reach_weighted_value;
                 object["conditional_range_ev"] = seat_value.conditional_range_ev;
                 object["counterfactual_value"] = seat_value.counterfactual_value;

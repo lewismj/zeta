@@ -179,14 +179,20 @@ namespace {
   "hero_seat": 0
 })";
 
+    struct brute_force_hand_value {
+        std::string hand;
+        double counterfactual_value = 0.0;
+        double opponent_mass = 0.0;
+    };
+
     /**
-     * Brute-force counterfactual value of every hero (seat 0) combo in a heads-up spot
-     * with no betting: for each opponent combo compatible with the hero hand and the
-     * board, average the showdown payoff over every runout the two hands leave possible,
-     * weighted by the opponent's range weight. Independent of the chance tables, the
-     * terminal kernels and the CFR machinery.
+     * Brute-force counterfactual value and opponent mass of every hero (seat 0) combo
+     * in a heads-up spot with no betting: for each opponent combo compatible with the
+     * hero hand and the board, average the showdown payoff over every runout the two
+     * hands leave possible, weighted by the opponent's range weight. Independent of the
+     * chance tables, the terminal kernels and the CFR machinery.
      */
-    std::vector<std::pair<std::string, double>> brute_force_checkdown_values(const struct zeta::holdem::cli::solve_spot& spot)
+    std::vector<brute_force_hand_value> brute_force_checkdown_values(const struct zeta::holdem::cli::solve_spot& spot)
     {
         using namespace zeta::holdem;
         using zeta::card;
@@ -206,13 +212,14 @@ namespace {
         const double awarded = spot.gross_pot - spot.rake;
         const double contribution = spot.contributions[0];
 
-        std::vector<std::pair<std::string, double>> values;
+        std::vector<brute_force_hand_value> values;
         for (combination_index h = 0; h < combination_count; ++h) {
             const auto hero_mask = combination_mask(h);
             if (hero.range[h] <= 0.0f || (hero_mask & board_mask) != 0) {
                 continue;
             }
             double value = 0.0;
+            double opponent_mass = 0.0;
             for (combination_index o = 0; o < combination_count; ++o) {
                 const auto villain_mask = combination_mask(o);
                 if (villain.range[o] <= 0.0f || (villain_mask & (board_mask | hero_mask)) != 0) {
@@ -247,8 +254,13 @@ namespace {
                     }
                 }
                 value += static_cast<double>(villain.range[o]) * payoff_sum / static_cast<double>(runouts);
+                opponent_mass += static_cast<double>(villain.range[o]);
             }
-            values.emplace_back(cli::detail::hand_text_from_combo(h), value);
+            values.push_back(brute_force_hand_value{
+                .hand = cli::detail::hand_text_from_combo(h),
+                .counterfactual_value = value,
+                .opponent_mass = opponent_mass
+            });
         }
         return values;
     }
@@ -263,12 +275,41 @@ namespace {
         const auto expected = brute_force_checkdown_values(*spot);
         BOOST_REQUIRE(!expected.empty());
         BOOST_REQUIRE_EQUAL(output->artifact.strategy.size(), expected.size());
-        for (const auto& [hand, value] : expected) {
-            const auto row = std::ranges::find(output->artifact.strategy, hand, &zeta::holdem::cli::hand_strategy::hand);
-            BOOST_REQUIRE_MESSAGE(row != output->artifact.strategy.end(), "missing strategy row for " << hand);
-            BOOST_CHECK_MESSAGE(std::fabs(row->ev - value) <= 1e-3 * std::max(1.0, std::fabs(value)),
-                hand << ": solver " << row->ev << " vs brute force " << value);
+        const auto close = [](const double actual, const double reference) {
+            return std::fabs(actual - reference) <= 1e-3 * std::max(1.0, std::fabs(reference));
+        };
+        for (const auto& reference : expected) {
+            const auto row = std::ranges::find(output->artifact.strategy, reference.hand, &zeta::holdem::cli::hand_strategy::hand);
+            BOOST_REQUIRE_MESSAGE(row != output->artifact.strategy.end(), "missing strategy row for " << reference.hand);
+            BOOST_CHECK_MESSAGE(close(row->counterfactual_value, reference.counterfactual_value),
+                reference.hand << ": solver CFV " << row->counterfactual_value
+                    << " vs brute force " << reference.counterfactual_value);
+            BOOST_CHECK_MESSAGE(close(row->opponent_reach_mass, reference.opponent_mass),
+                reference.hand << ": solver opponent mass " << row->opponent_reach_mass
+                    << " vs brute force " << reference.opponent_mass);
+            const auto reference_ev = reference.counterfactual_value / reference.opponent_mass;
+            BOOST_CHECK_MESSAGE(close(row->ev, reference_ev),
+                reference.hand << ": solver EV " << row->ev << " vs brute force " << reference_ev);
         }
+
+        // Range EV over every compatible matchup: sum of w * CFV over sum of w * mass.
+        const auto hero_range = zeta::holdem::parse_range(spot->ranges[0]);
+        double weighted_counterfactual_value = 0.0;
+        double matchup_mass = 0.0;
+        for (const auto& reference : expected) {
+            const auto weight = static_cast<double>(hero_range.range[combo_index_for(reference.hand)]);
+            weighted_counterfactual_value += weight * reference.counterfactual_value;
+            matchup_mass += weight * reference.opponent_mass;
+        }
+        const auto& nodes = output->artifact.solved_nodes;
+        const auto root = std::ranges::find(nodes, output->artifact.root_node_id, &zeta::holdem::cli::solved_node::node_id);
+        BOOST_REQUIRE(root != nodes.end());
+        const auto hero_value = std::ranges::find(root->seat_values, uint8_t{0}, &zeta::holdem::cli::solved_node_seat_value::seat);
+        BOOST_REQUIRE(hero_value != root->seat_values.end());
+        BOOST_CHECK(close(hero_value->matchup_reach_mass, matchup_mass));
+        BOOST_CHECK_MESSAGE(close(hero_value->conditional_range_ev, weighted_counterfactual_value / matchup_mass),
+            "solver range EV " << hero_value->conditional_range_ev
+                << " vs brute force " << weighted_counterfactual_value / matchup_mass);
     }
 
     constexpr const char* sample_spot_suit_symmetric_turn = R"({
@@ -502,7 +543,7 @@ BOOST_AUTO_TEST_CASE(holdem_cli_solve_produces_valid_artifact) {
     BOOST_CHECK(std::ranges::all_of(output->artifact.strategy, [](const auto& row) {
         return !row.strategy.empty();
     }));
-    BOOST_CHECK_EQUAL(output->artifact.schema_version, 5u);
+    BOOST_CHECK_EQUAL(output->artifact.schema_version, zeta::holdem::cli::current_artifact_schema_version);
     BOOST_CHECK_EQUAL(output->artifact.extraction_version, 1u);
     BOOST_CHECK_EQUAL(output->artifact.game, "holdem");
     BOOST_CHECK_EQUAL(output->artifact.street, "river");
@@ -912,6 +953,37 @@ BOOST_AUTO_TEST_CASE(holdem_cli_flop_checkdown_matches_brute_force_reference) {
     check_matches_brute_force(sample_spot_brute_force_flop);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_cli_evs_are_normalised_to_chips_with_counterfactual_values_kept) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_asymmetric_river);
+    BOOST_REQUIRE(spot.has_value());
+    auto output = zeta::holdem::cli::solve_spot(*spot, 64);
+    BOOST_REQUIRE(output.has_value());
+    BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(output->artifact).has_value());
+
+    // Pot 100, contributions 50/50, stacks 200: no hand can win more than 250 or lose
+    // more than 250, whatever the size of the opponent's range.
+    const double bound = 250.0;
+    for (const auto& row : output->artifact.strategy) {
+        BOOST_CHECK_MESSAGE(row.ev >= -bound && row.ev <= bound, row.hand << " EV " << row.ev << " is not in chips");
+        BOOST_CHECK_GT(row.opponent_reach_mass, 1.0);
+        BOOST_CHECK_CLOSE(row.ev * row.opponent_reach_mass, row.counterfactual_value, 1e-6);
+    }
+
+    // With no rake the game is zero-sum, and both seats share the same set of compatible
+    // matchups, so the range EVs at every node are equal and opposite.
+    for (const auto& node : output->artifact.solved_nodes) {
+        BOOST_REQUIRE_EQUAL(node.seat_values.size(), 2u);
+        const auto& oop = node.seat_values[0];
+        const auto& ip = node.seat_values[1];
+        if (oop.matchup_reach_mass <= 1e-9) {
+            continue;
+        }
+        BOOST_CHECK_CLOSE(oop.matchup_reach_mass, ip.matchup_reach_mass, 1e-3);
+        BOOST_CHECK_SMALL(oop.conditional_range_ev + ip.conditional_range_ev, 1e-3);
+        BOOST_CHECK_LE(std::fabs(oop.conditional_range_ev), bound);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(holdem_cli_multi_street_solve_converges_with_iterations) {
     auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_golden_turn);
     BOOST_REQUIRE(spot.has_value());
@@ -1176,7 +1248,7 @@ BOOST_AUTO_TEST_CASE(holdem_cli_nonriver_artifact_persists_multi_street_graph_pa
 
     auto turn_output = zeta::holdem::cli::solve_spot(*turn_spot, 16, {.worker_threads = 2});
     BOOST_REQUIRE(turn_output.has_value());
-    BOOST_CHECK_EQUAL(turn_output->artifact.schema_version, 5u);
+    BOOST_CHECK_EQUAL(turn_output->artifact.schema_version, zeta::holdem::cli::current_artifact_schema_version);
     BOOST_CHECK_EQUAL(turn_output->artifact.extraction_version, 1u);
     BOOST_CHECK_EQUAL(turn_output->artifact.solver.algorithm, "cfr+");
     BOOST_CHECK(!turn_output->artifact.public_states.empty());

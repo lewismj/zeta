@@ -187,7 +187,7 @@ shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "extraction_version": 1,
   "game": "holdem",
   "street": "turn",
@@ -233,11 +233,31 @@ shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
         {"action": "check", "frequency": 0.42},
         {"action": "bet_75", "frequency": 0.58}
       ],
-      "ev": 1.234567
+      "ev": 1.234567,
+      "counterfactual_value": 24.69134,
+      "opponent_reach_mass": 20.0
     }
   ]
 }
 ```
+
+Value fields (schema 6):
+
+- `ev` is in chips: the hand's net result over the whole hand (its contribution
+  already in the pot included), averaged over the opponent hands it does not block.
+- `counterfactual_value` is the unnormalised value the solver works with: the sum,
+  over compatible opponent hands, of their reach times the payoff.
+- `opponent_reach_mass` is the reach of those compatible opponent hands, so
+  `ev * opponent_reach_mass == counterfactual_value`. A hand with no compatible
+  opponent hand reports `0` for all three.
+- In `solved_nodes[*].seat_values`, `matchup_reach_mass` is the sum of each hand's
+  path reach times its opponent reach mass, and `conditional_range_ev` is the
+  seat's range EV in chips: `reach_weighted_value / matchup_reach_mass`. The
+  category summaries' `average_ev` is normalised the same way.
+- Heads-up these are exact. Multiway, the opponent mass is the product of each
+  opponent's compatible mass, which ignores card collisions between opponents.
+
+Schema 5 artifacts reported unnormalised values in `ev` and are rejected.
 
 Validation checks include:
 
@@ -246,7 +266,7 @@ Validation checks include:
 3. 2..6 players and valid `hero_seat`
 4. Unique hand rows with exactly one combo per row
 5. Action frequencies in `[0,1]` summing to `1` (tolerance `1e-3`)
-6. Finite EV values
+6. Finite EV values, with `ev * opponent_reach_mass` equal to `counterfactual_value`
 
 The `solver.hashes` (FNV-1a digests as hex strings), `solver.convergence`
 (exploitability / normalized-regret report and curve), and `solver.warnings`

@@ -11,7 +11,7 @@
 
 namespace zeta::holdem::ui::solver {
 
-    inline constexpr uint32_t current_solution_schema_version = 3;
+    inline constexpr uint32_t current_solution_schema_version = 4;
     inline constexpr uint8_t invalid_solution_seat = 255;
 
     enum class solution_store_error_kind : uint8_t {
@@ -27,12 +27,13 @@ namespace zeta::holdem::ui::solver {
     struct solution_action_summary {
         std::string action;
         double frequency = 0.0;
-        double average_ev = 0.0;
+        double average_ev = 0.0;    /**< Acting seat's range EV in chips after taking this action; valid only when ev_available. */
+        bool ev_available = false;  /**< False when the action is never reached or no compatible matchup exists. */
     };
 
     struct solution_seat_ev {
         uint8_t seat = invalid_solution_seat;
-        double ev = 0.0;
+        double ev = 0.0;            /**< Seat's range EV in chips at the node. */
     };
 
     struct solution_table_state {

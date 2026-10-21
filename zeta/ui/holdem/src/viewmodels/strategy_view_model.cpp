@@ -7,6 +7,7 @@
 #include <cmath>
 #include <iomanip>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -267,6 +268,33 @@ namespace zeta::holdem::ui::viewmodels {
             return entropy / std::log(static_cast<double>(cards.size()));
         }
 
+        // Acting seat's range EV after taking `action` at the root: its EV at the child
+        // node, whose reach already includes how often each hand takes the action.
+        [[nodiscard]] std::optional<double> root_action_ev(const solve_artifact& artifact, const std::string& action)
+        {
+            const auto& nodes = artifact.solved_nodes;
+            auto root = std::ranges::find(nodes, artifact.root_node_id, &cli::solved_node::node_id);
+            if (root == nodes.end()) {
+                root = std::ranges::find(nodes, cfr::game_graph::INVALID_NODE, &cli::solved_node::parent_node_id);
+            }
+            if (root == nodes.end() || root->kind != "player") {
+                return std::nullopt;
+            }
+            const auto edge = std::ranges::find(root->actions, action, &cli::solved_node_action::action);
+            if (edge == root->actions.end()) {
+                return std::nullopt;
+            }
+            const auto child = std::ranges::find(nodes, edge->child_node_id, &cli::solved_node::node_id);
+            if (child == nodes.end()) {
+                return std::nullopt;
+            }
+            const auto seat_value = std::ranges::find(child->seat_values, root->acting_seat, &cli::solved_node_seat_value::seat);
+            if (seat_value == child->seat_values.end() || seat_value->matchup_reach_mass <= cli::minimum_ev_reach_mass) {
+                return std::nullopt;
+            }
+            return seat_value->conditional_range_ev;
+        }
+
     }
 
     strategy_view_model make_strategy_view_model(const spot& source, const solve_artifact& artifact)
@@ -296,8 +324,6 @@ namespace zeta::holdem::ui::viewmodels {
         const auto opponent_masks = opponent_live_masks(source, artifact);
         std::map<std::string, hand_class_accumulator> class_totals;
         std::map<std::string, double> action_totals;
-        std::map<std::string, double> action_weighted_evs;
-        std::map<std::string, double> action_weight_totals;
         double total_weight = 0.0;
         double reachable_weight = 0.0;
         double weighted_ev = 0.0;
@@ -316,8 +342,9 @@ namespace zeta::holdem::ui::viewmodels {
             const auto blocked_by = found_range == range_lookup.end()
                 ? std::vector<std::string>{}
                 : found_range->second.blocked_by;
-            const auto reachable = artifact_row.combination_index >= combination_count
-                || combo_is_reachable(opponent_masks, combination_masks[artifact_row.combination_index]);
+            const auto reachable = artifact_row.opponent_reach_mass > cli::minimum_ev_reach_mass
+                && (artifact_row.combination_index >= combination_count
+                    || combo_is_reachable(opponent_masks, combination_masks[artifact_row.combination_index]));
 
             const auto& effective_strategy = artifact_row.strategy.empty() ? artifact.root_strategy : artifact_row.strategy;
             std::vector<strategy_action_frequency> row_actions;
@@ -341,14 +368,18 @@ namespace zeta::holdem::ui::viewmodels {
                 .best_action = best_action_text(row_actions),
                 .actions = std::move(row_actions),
                 .ev = artifact_row.ev,
+                .counterfactual_value = artifact_row.counterfactual_value,
+                .opponent_reach_mass = artifact_row.opponent_reach_mass,
                 .range_weight = range_weight,
                 .live = live,
                 .reachable = reachable,
                 .blocked_by = blocked_by
             };
 
+            // Weighting each hand's EV by range weight times its opponent reach mass makes
+            // every class or range average an EV over compatible matchups.
             const auto positive_weight = std::max(0.0, range_weight);
-            const auto ev_weight = reachable ? positive_weight : 0.0;
+            const auto ev_weight = reachable ? positive_weight * artifact_row.opponent_reach_mass : 0.0;
             auto& class_total = class_totals[hand_class];
             class_total.weighted_ev += artifact_row.ev * ev_weight;
             class_total.total_weight += positive_weight;
@@ -357,8 +388,6 @@ namespace zeta::holdem::ui::viewmodels {
                 const auto contribution = positive_weight * action.frequency;
                 class_total.action_totals[action.action] += contribution;
                 action_totals[action.action] += contribution;
-                action_weighted_evs[action.action] += ev_weight * action.frequency * artifact_row.ev;
-                action_weight_totals[action.action] += ev_weight * action.frequency;
             }
             class_total.rows.push_back(row);
             weighted_ev += artifact_row.ev * ev_weight;
@@ -384,13 +413,12 @@ namespace zeta::holdem::ui::viewmodels {
         model.action_cards.reserve(action_totals.size());
         for (const auto& [action, total] : action_totals) {
             const auto frequency = total_weight > frequency_epsilon ? total / total_weight : 0.0;
-            const auto average_ev = action_weight_totals[action] > frequency_epsilon
-                ? action_weighted_evs[action] / action_weight_totals[action]
-                : 0.0;
+            const auto action_ev = root_action_ev(artifact, action);
             model.action_cards.push_back(strategy_action_card{
                 .action = action,
                 .frequency = frequency,
-                .average_ev = average_ev
+                .average_ev = action_ev.value_or(0.0),
+                .ev_available = action_ev.has_value()
             });
         }
         std::ranges::sort(model.action_cards, [](const auto& lhs, const auto& rhs) {

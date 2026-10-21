@@ -9,6 +9,7 @@
 #include <map>
 #include <numeric>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 
 namespace zeta::holdem::ui::solver {
@@ -295,26 +296,14 @@ namespace zeta::holdem::ui::solver {
         [[nodiscard]] std::vector<solution_action_summary> aggregate_root_strategy(
             const cli::solve_artifact& artifact)
         {
+            // Action EVs need the child nodes' seat values, so apply_action_evs fills
+            // them in when the artifact carries solved nodes.
             std::map<std::string, double> frequency_totals;
-            std::map<std::string, double> weighted_evs;
-            std::map<std::string, double> ev_weights;
-
             for (const auto& row : artifact.strategy) {
                 for (const auto& action : row.strategy) {
-                    const auto frequency = std::max(0.0, action.frequency);
-                    frequency_totals[action.action] += frequency;
-                    weighted_evs[action.action] += frequency * row.ev;
-                    ev_weights[action.action] += frequency;
+                    frequency_totals[action.action] += std::max(0.0, action.frequency);
                 }
             }
-
-            const auto action_ev = [&](const std::string& action_label) {
-                const auto it = ev_weights.find(action_label);
-                if (it == ev_weights.end() || it->second <= 0.000001) {
-                    return 0.0;
-                }
-                return weighted_evs.at(action_label) / it->second;
-            };
 
             if (!artifact.root_strategy.empty()) {
                 std::vector<solution_action_summary> out;
@@ -322,8 +311,7 @@ namespace zeta::holdem::ui::solver {
                 for (const auto& action : artifact.root_strategy) {
                     out.push_back(solution_action_summary{
                         .action = action.action,
-                        .frequency = std::max(0.0, action.frequency),
-                        .average_ev = action_ev(action.action)
+                        .frequency = std::max(0.0, action.frequency)
                     });
                 }
                 std::ranges::sort(out, [](const auto& lhs, const auto& rhs) {
@@ -341,8 +329,7 @@ namespace zeta::holdem::ui::solver {
             for (const auto& [action, total] : frequency_totals) {
                 out.push_back(solution_action_summary{
                     .action = action,
-                    .frequency = total / row_count,
-                    .average_ev = action_ev(action)
+                    .frequency = total / row_count
                 });
             }
             std::ranges::sort(out, [](const auto& lhs, const auto& rhs) {
@@ -359,16 +346,66 @@ namespace zeta::holdem::ui::solver {
             if (artifact.strategy.empty()) {
                 return {};
             }
-            double total = 0.0;
+            // Range EV: sum of weight * counterfactual value over sum of weight * opponent mass.
+            double weighted_counterfactual_value = 0.0;
+            double matchup_mass = 0.0;
             for (const auto& row : artifact.strategy) {
-                total += row.ev;
+                const auto weight = std::max(0.0, row.range_weight) * std::max(0.0, row.reach_probability);
+                weighted_counterfactual_value += weight * row.counterfactual_value;
+                matchup_mass += weight * row.opponent_reach_mass;
+            }
+            if (matchup_mass <= cli::minimum_ev_reach_mass) {
+                return {};
             }
             return {
                 solution_seat_ev{
                     .seat = artifact.hero_seat,
-                    .ev = total / static_cast<double>(artifact.strategy.size())
+                    .ev = weighted_counterfactual_value / matchup_mass
                 }
             };
+        }
+
+        using solved_node_index = std::unordered_map<uint32_t, const cli::solved_node*>;
+
+        [[nodiscard]] std::vector<solution_seat_ev> node_seat_evs(const cli::solved_node& node)
+        {
+            std::vector<solution_seat_ev> out;
+            for (const auto& seat_value : node.seat_values) {
+                if (seat_value.matchup_reach_mass > cli::minimum_ev_reach_mass) {
+                    out.push_back(solution_seat_ev{.seat = seat_value.seat, .ev = seat_value.conditional_range_ev});
+                }
+            }
+            return out;
+        }
+
+        // The EV of an action for the acting seat is that seat's range EV at the child
+        // node: the child reach already includes each hand's probability of taking the
+        // action, and the opponents' reach is unchanged by it.
+        void apply_action_evs(
+            std::vector<solution_action_summary>& summaries,
+            const cli::solved_node& node,
+            const solved_node_index& nodes_by_id)
+        {
+            if (node.kind != "player") {
+                return;
+            }
+            for (auto& summary : summaries) {
+                const auto action = std::ranges::find(node.actions, summary.action, &cli::solved_node_action::action);
+                if (action == node.actions.end()) {
+                    continue;
+                }
+                const auto child = nodes_by_id.find(action->child_node_id);
+                if (child == nodes_by_id.end()) {
+                    continue;
+                }
+                const auto& child_values = child->second->seat_values;
+                const auto seat_value = std::ranges::find(child_values, node.acting_seat, &cli::solved_node_seat_value::seat);
+                if (seat_value == child_values.end() || seat_value->matchup_reach_mass <= cli::minimum_ev_reach_mass) {
+                    continue;
+                }
+                summary.average_ev = seat_value->conditional_range_ev;
+                summary.ev_available = true;
+            }
         }
 
         [[nodiscard]] std::vector<std::string> root_action_labels_from_artifact(const cli::solve_artifact& artifact)
@@ -559,7 +596,8 @@ namespace zeta::holdem::ui::solver {
             const cli::solved_node& node,
             const struct cli::solve_spot& spot,
             const cli::solve_artifact& artifact,
-            const uint32_t root_node_id)
+            const uint32_t root_node_id,
+            const solved_node_index& nodes_by_id)
         {
             solution_node out;
             out.node_id = solution_node_id_label(node.node_id, root_node_id);
@@ -574,17 +612,17 @@ namespace zeta::holdem::ui::solver {
             out.table_state = solution_table_state_from_solved_node(node, spot);
             if (node.node_id == root_node_id) {
                 out.average_strategy = aggregate_root_strategy(artifact);
-                out.seat_evs = aggregate_root_evs(artifact);
             } else {
                 out.average_strategy.reserve(node.range_action_frequencies.size());
                 for (const auto& action : node.range_action_frequencies) {
                     out.average_strategy.push_back(solution_action_summary{
                         .action = action.action,
-                        .frequency = action.frequency,
-                        .average_ev = 0.0
+                        .frequency = action.frequency
                     });
                 }
             }
+            apply_action_evs(out.average_strategy, node, nodes_by_id);
+            out.seat_evs = node_seat_evs(node);
             out.legal_actions.reserve(node.actions.size());
             for (const auto& action : node.actions) {
                 out.legal_actions.push_back(action.action);
@@ -610,6 +648,13 @@ namespace zeta::holdem::ui::solver {
             auto action = required_string(object, "action");
             auto frequency = required_number(object, "frequency");
             auto average_ev = required_number(object, "average_ev");
+            const auto* ev_available = find_value(object, "ev_available");
+            if (ev_available == nullptr || !ev_available->is_bool()) {
+                return std::unexpected(solution_store_error{
+                    solution_store_error_kind::parse,
+                    "Action summary must contain a boolean ev_available field."
+                });
+            }
             if (!action) {
                 return std::unexpected(action.error());
             }
@@ -622,7 +667,8 @@ namespace zeta::holdem::ui::solver {
             return solution_action_summary{
                 .action = std::move(*action),
                 .frequency = *frequency,
-                .average_ev = *average_ev
+                .average_ev = *average_ev,
+                .ev_available = ev_available->as_bool()
             };
         }
 
@@ -938,6 +984,7 @@ namespace zeta::holdem::ui::solver {
                 object["action"] = action.action;
                 object["frequency"] = action.frequency;
                 object["average_ev"] = action.average_ev;
+                object["ev_available"] = action.ev_available;
                 out.emplace_back(std::move(object));
             }
             return out;
@@ -1004,8 +1051,13 @@ namespace zeta::holdem::ui::solver {
             const auto root_node_id = resolve_artifact_root_id(artifact);
             store.root_node_id = solution_node_id_label(root_node_id, root_node_id);
             store.nodes.reserve(artifact.solved_nodes.size());
+            solved_node_index nodes_by_id;
+            nodes_by_id.reserve(artifact.solved_nodes.size());
             for (const auto& node : artifact.solved_nodes) {
-                store.nodes.push_back(make_solution_node_from_artifact_node(node, spot, artifact, root_node_id));
+                nodes_by_id.emplace(node.node_id, &node);
+            }
+            for (const auto& node : artifact.solved_nodes) {
+                store.nodes.push_back(make_solution_node_from_artifact_node(node, spot, artifact, root_node_id, nodes_by_id));
             }
             const auto find_solved_node = [&artifact](const uint32_t node_id) -> const cli::solved_node* {
                 const auto found = std::ranges::find_if(artifact.solved_nodes, [node_id](const auto& candidate) {

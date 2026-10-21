@@ -122,7 +122,9 @@ namespace {
                     zeta::holdem::cli::action_strategy{.action = "check", .frequency = 0.75},
                     zeta::holdem::cli::action_strategy{.action = "bet_50", .frequency = 0.25}
                 },
-                .ev = 2.0
+                .ev = 2.0,
+                .counterfactual_value = 2.0,
+                .opponent_reach_mass = 1.0
             },
             zeta::holdem::cli::hand_strategy{
                 .combination_index = combo_index_for("AcAs"),
@@ -131,7 +133,9 @@ namespace {
                     zeta::holdem::cli::action_strategy{.action = "check", .frequency = 0.25},
                     zeta::holdem::cli::action_strategy{.action = "bet_50", .frequency = 0.75}
                 },
-                .ev = 4.0
+                .ev = 4.0,
+                .counterfactual_value = 4.0,
+                .opponent_reach_mass = 1.0
             },
             zeta::holdem::cli::hand_strategy{
                 .combination_index = combo_index_for("KdKh"),
@@ -139,7 +143,9 @@ namespace {
                 .strategy = {
                     zeta::holdem::cli::action_strategy{.action = "fold", .frequency = 1.0}
                 },
-                .ev = -1.0
+                .ev = -1.0,
+                .counterfactual_value = -1.0,
+                .opponent_reach_mass = 1.0
             }
         };
         return artifact;
@@ -405,7 +411,9 @@ BOOST_AUTO_TEST_CASE(holdem_ui_document_dirty_after_artifact_replacement_and_per
             .strategy = {
                 zeta::holdem::cli::action_strategy{.action = "check", .frequency = 1.0}
             },
-            .ev = 1.25
+            .ev = 1.25,
+            .counterfactual_value = 1.25,
+            .opponent_reach_mass = 1.0
         }
     };
 
@@ -963,6 +971,21 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_aggregates_matrix_table_cards
     BOOST_CHECK(model.metadata.seat_ranges[0].find("AhAd:0.5") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_weights_evs_by_opponent_reach_mass) {
+    // AcAs meets three times as much opponent reach as AhAd, so it counts three times as
+    // much in every average: AA = (0.5*2 + 1.0*12) / (0.5*1 + 1.0*3) = 13 / 3.5, and the
+    // range EV adds KK's (0.25 * -1) over 0.25 * 1 of matchup mass.
+    auto artifact = sample_strategy_artifact();
+    artifact.strategy[1].counterfactual_value = 12.0;
+    artifact.strategy[1].opponent_reach_mass = 3.0;
+    const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(sample_strategy_spot(), artifact);
+
+    const auto* aa = strategy_cell(model, "AA");
+    BOOST_REQUIRE(aa != nullptr);
+    BOOST_CHECK_CLOSE(aa->ev, 13.0 / 3.5, 0.001);
+    BOOST_CHECK_CLOSE(model.average_ev, 12.75 / 3.75, 0.001);
+}
+
 BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_marks_fully_blocked_combos_unreachable) {
     // Board holds the As, so the hero's AA combos are AhAd, AhAc, AdAc. The villain's
     // entire range is AA, which every hero AA combo fully blocks (no two remaining aces
@@ -981,7 +1004,8 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_view_model_marks_fully_blocked_combos_un
         {.combination_index = combo_index_for("AhAd"), .hand = "AhAd", .strategy = {all_in}, .ev = 0.0},
         {.combination_index = combo_index_for("AhAc"), .hand = "AhAc", .strategy = {all_in}, .ev = 0.0},
         {.combination_index = combo_index_for("AdAc"), .hand = "AdAc", .strategy = {all_in}, .ev = 0.0},
-        {.combination_index = combo_index_for("KhKd"), .hand = "KhKd", .strategy = {check}, .ev = -1.0}
+        {.combination_index = combo_index_for("KhKd"), .hand = "KhKd", .strategy = {check}, .ev = -1.0,
+            .counterfactual_value = -6.0, .opponent_reach_mass = 6.0}
     };
 
     auto spot = sample_heads_up_spot();
@@ -1094,9 +1118,9 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_roundtrips_action_tree_without_com
             .range_action_frequencies = artifact.root_strategy,
             .seat_values = {
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.2, .conditional_range_ev = 0.2, .counterfactual_value = 0.2},
+                    .seat = 0, .range_reach_mass = 1.0, .matchup_reach_mass = 1.0, .reach_weighted_value = 0.2, .conditional_range_ev = 0.2, .counterfactual_value = 0.2},
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = -0.2, .conditional_range_ev = -0.2, .counterfactual_value = -0.2}
+                    .seat = 1, .range_reach_mass = 1.0, .matchup_reach_mass = 1.0, .reach_weighted_value = -0.2, .conditional_range_ev = -0.2, .counterfactual_value = -0.2}
             }
         },
         zeta::holdem::cli::solved_node{
@@ -1109,9 +1133,9 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_roundtrips_action_tree_without_com
             .board = artifact.board,
             .seat_values = {
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.0, .conditional_range_ev = 0.0, .counterfactual_value = 0.0},
+                    .seat = 0, .range_reach_mass = 1.0, .matchup_reach_mass = 2.0, .reach_weighted_value = 1.0, .conditional_range_ev = 0.5, .counterfactual_value = 1.0},
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = 0.0, .conditional_range_ev = 0.0, .counterfactual_value = 0.0}
+                    .seat = 1, .range_reach_mass = 1.0, .matchup_reach_mass = 2.0, .reach_weighted_value = -1.0, .conditional_range_ev = -0.5, .counterfactual_value = -1.0}
             }
         }
     };
@@ -1143,6 +1167,21 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solution_store_roundtrips_action_tree_without_com
     BOOST_CHECK_EQUAL(child->kind, "terminal");
     BOOST_CHECK_EQUAL(child->graph_node_id, 1u);
     BOOST_CHECK_EQUAL(child->table_state.commitments.size(), spot.players.size());
+
+    // An action's EV is the acting seat's range EV at the child it leads to. Only the
+    // fold child is in the artifact, so the other actions report no EV.
+    for (const auto& summary : reopened_root->average_strategy) {
+        if (summary.action == "fold") {
+            BOOST_CHECK(summary.ev_available);
+            BOOST_CHECK_CLOSE(summary.average_ev, -0.5, 1e-9);
+        } else {
+            BOOST_CHECK(!summary.ev_available);
+        }
+    }
+    BOOST_REQUIRE_EQUAL(reopened_root->seat_evs.size(), 2u);
+    BOOST_CHECK_CLOSE(reopened_root->seat_evs[0].ev, 0.2, 1e-9);
+    BOOST_REQUIRE_EQUAL(child->seat_evs.size(), 2u);
+    BOOST_CHECK_CLOSE(child->seat_evs[1].ev, -0.5, 1e-9);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_artifact_and_action_filter) {
@@ -1168,19 +1207,20 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_artifact_and_act
     BOOST_REQUIRE(detail_table != nullptr);
     BOOST_REQUIRE(metadata != nullptr);
     BOOST_REQUIRE(node_actions != nullptr);
-    BOOST_CHECK_EQUAL(node_actions->horizontalHeaderItem(2)->text().toStdString(), "EV (node)");
+    BOOST_CHECK_EQUAL(node_actions->horizontalHeaderItem(2)->text().toStdString(), "Action EV");
     BOOST_CHECK(!node_actions->horizontalHeaderItem(2)->toolTip().isEmpty());
-    BOOST_CHECK_EQUAL(hand_table->horizontalHeaderItem(3)->text().toStdString(), "EV (hand)");
+    BOOST_CHECK_EQUAL(hand_table->horizontalHeaderItem(3)->text().toStdString(), "EV (chips)");
     BOOST_CHECK(!hand_table->horizontalHeaderItem(3)->toolTip().isEmpty());
-    BOOST_CHECK_EQUAL(detail_table->horizontalHeaderItem(2)->text().toStdString(), "EV (hand)");
+    BOOST_CHECK_EQUAL(detail_table->horizontalHeaderItem(2)->text().toStdString(), "EV (chips)");
     BOOST_CHECK(!detail_table->horizontalHeaderItem(2)->toolTip().isEmpty());
     auto* cards = explorer.findChild<QWidget*>("aggregateActionCards");
     BOOST_REQUIRE(cards != nullptr);
     const auto card_buttons = cards->findChildren<QPushButton*>();
     BOOST_REQUIRE(!card_buttons.empty());
     for (const auto* card : card_buttons) {
-        BOOST_CHECK(card->text().contains(QStringLiteral("EV (hand)")));
-        BOOST_CHECK(card->toolTip().contains(QStringLiteral("not the EV of choosing this action")));
+        // The sample artifact has no solved nodes, so no action EV can be derived.
+        BOOST_CHECK(card->text().contains(QStringLiteral("EV \u2014")));
+        BOOST_CHECK(card->toolTip().contains(QStringLiteral("range EV in chips after taking this action")));
     }
     BOOST_CHECK(metadata->text().contains(QStringLiteral("players 2")));
     BOOST_CHECK_EQUAL(hand_table->rowCount(), 3);
@@ -1214,9 +1254,9 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
             .range_action_frequencies = artifact.root_strategy,
             .seat_values = {
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.2, .conditional_range_ev = 0.2, .counterfactual_value = 0.2},
+                    .seat = 0, .range_reach_mass = 1.0, .matchup_reach_mass = 1.0, .reach_weighted_value = 0.2, .conditional_range_ev = 0.2, .counterfactual_value = 0.2},
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = -0.2, .conditional_range_ev = -0.2, .counterfactual_value = -0.2}
+                    .seat = 1, .range_reach_mass = 1.0, .matchup_reach_mass = 1.0, .reach_weighted_value = -0.2, .conditional_range_ev = -0.2, .counterfactual_value = -0.2}
             }
         },
         zeta::holdem::cli::solved_node{
@@ -1233,9 +1273,9 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
             },
             .seat_values = {
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.1, .conditional_range_ev = 0.1, .counterfactual_value = 0.1},
+                    .seat = 0, .range_reach_mass = 1.0, .matchup_reach_mass = 1.0, .reach_weighted_value = 0.1, .conditional_range_ev = 0.1, .counterfactual_value = 0.1},
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = -0.1, .conditional_range_ev = -0.1, .counterfactual_value = -0.1}
+                    .seat = 1, .range_reach_mass = 1.0, .matchup_reach_mass = 1.0, .reach_weighted_value = -0.1, .conditional_range_ev = -0.1, .counterfactual_value = -0.1}
             }
         },
         zeta::holdem::cli::solved_node{
@@ -1248,9 +1288,9 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
             .board = artifact.board,
             .seat_values = {
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 0, .range_reach_mass = 1.0, .reach_weighted_value = 0.0, .conditional_range_ev = 0.0, .counterfactual_value = 0.0},
+                    .seat = 0, .range_reach_mass = 1.0, .matchup_reach_mass = 2.0, .reach_weighted_value = 1.0, .conditional_range_ev = 0.5, .counterfactual_value = 1.0},
                 zeta::holdem::cli::solved_node_seat_value{
-                    .seat = 1, .range_reach_mass = 1.0, .reach_weighted_value = 0.0, .conditional_range_ev = 0.0, .counterfactual_value = 0.0}
+                    .seat = 1, .range_reach_mass = 1.0, .matchup_reach_mass = 2.0, .reach_weighted_value = -1.0, .conditional_range_ev = -0.5, .counterfactual_value = -1.0}
             }
         }
     };
@@ -1281,6 +1321,9 @@ BOOST_AUTO_TEST_CASE(holdem_ui_strategy_explorer_widget_renders_solution_action_
     BOOST_REQUIRE_EQUAL(tree->topLevelItemCount(), 1);
     BOOST_REQUIRE(tree->topLevelItem(0)->childCount() > 0);
     BOOST_CHECK_EQUAL(node_actions->rowCount(), 3);
+    BOOST_CHECK_EQUAL(node_actions->item(0, 2)->text().toStdString(), "-0.10");
+    BOOST_CHECK(node_actions->item(1, 2)->text() == QStringLiteral("\u2014"));
+    BOOST_CHECK(node_actions->item(2, 2)->text() == QStringLiteral("\u2014"));
     BOOST_CHECK(state->text().contains(QStringLiteral("BB")));
     BOOST_CHECK(state->text().contains(QStringLiteral("board")));
 

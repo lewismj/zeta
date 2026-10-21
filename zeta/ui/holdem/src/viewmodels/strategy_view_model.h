@@ -27,7 +27,9 @@ namespace zeta::holdem::ui::viewmodels {
         std::string hand_class;
         std::string best_action;
         std::vector<strategy_action_frequency> actions;
-        double ev = 0.0;
+        double ev = 0.0;                    ///< EV in chips against the compatible opponent range.
+        double counterfactual_value = 0.0;  ///< ev times opponent_reach_mass.
+        double opponent_reach_mass = 0.0;   ///< Opponent reach mass compatible with this hand.
         double range_weight = 0.0;
         bool live = true;
         /// False when no opponent combo is compatible with this holding (fully
@@ -51,7 +53,8 @@ namespace zeta::holdem::ui::viewmodels {
     struct strategy_action_card {
         std::string action;
         double frequency = 0.0;
-        double average_ev = 0.0;
+        double average_ev = 0.0;    ///< Acting seat's range EV in chips after taking this action.
+        bool ev_available = false;  ///< False when the artifact has no solved node for the action, or it is never taken.
     };
 
     struct strategy_filter_option {
@@ -77,7 +80,7 @@ namespace zeta::holdem::ui::viewmodels {
         std::vector<strategy_hand_row> hands;
         std::vector<strategy_action_card> action_cards;
         strategy_metadata_summary metadata;
-        double average_ev = 0.0;
+        double average_ev = 0.0;  ///< Hero range EV in chips at the root.
         double mix_indicator = 0.0;
     };
 

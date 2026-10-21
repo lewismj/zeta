@@ -124,6 +124,25 @@ namespace zeta::holdem::ui::widgets {
             return QStringLiteral("No unblocked opponent combos \u2014 this matchup can't occur, so EV is undefined.");
         }
 
+        [[nodiscard]] QString hand_ev_tooltip(const viewmodels::strategy_hand_row& hand)
+        {
+            if (!hand.reachable) {
+                return unreachable_tooltip();
+            }
+            return QStringLiteral("Counterfactual value %1 over opponent reach mass %2")
+                .arg(hand.counterfactual_value, 0, 'f', 3)
+                .arg(hand.opponent_reach_mass, 0, 'f', 3);
+        }
+
+        [[nodiscard]] QString hand_ev_header_tooltip()
+        {
+            return QStringLiteral(
+                "EV in chips for this exact hand at the root under the solved strategy: net chips won or lost over "
+                "the whole hand, including its contribution already in the pot, averaged over the opponent hands it "
+                "does not block. Hover a value for the counterfactual value and opponent reach mass it comes from. "
+                "An em dash means no unblocked opponent combos exist, so EV is undefined.");
+        }
+
         [[nodiscard]] QString percent_text(const double frequency)
         {
             return QString::fromStdString(viewmodels::format_strategy_percent(frequency));
@@ -233,10 +252,10 @@ namespace zeta::holdem::ui::widgets {
         node_action_table_ = new QTableWidget{tree_panel};
         node_action_table_->setObjectName("solutionNodeActionTable");
         node_action_table_->setColumnCount(3);
-        node_action_table_->setHorizontalHeaderLabels({tr("Action"), tr("Frequency"), tr("EV (node)")});
+        node_action_table_->setHorizontalHeaderLabels({tr("Action"), tr("Frequency"), tr("Action EV")});
         node_action_table_->horizontalHeaderItem(2)->setToolTip(
-            tr("Action EV summary from the selected node in the solution tree. "
-               "This is a node-level value, not the root hand EV shown below."));
+            tr("The acting seat's range EV in chips after taking this action at the selected node, averaged over "
+               "every hand matchup the two ranges allow. An em dash means the action is never taken."));
         node_action_table_->verticalHeader()->setVisible(false);
         node_action_table_->horizontalHeader()->setStretchLastSection(true);
         node_action_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -286,11 +305,11 @@ namespace zeta::holdem::ui::widgets {
         for (const auto& card : model_.action_cards) {
             auto* button = new QPushButton{
                 display_action_text(card.action) + QStringLiteral("\n") + percent_text(card.frequency)
-                    + tr(" | EV (hand) ") + ev_text(card.average_ev),
+                    + tr(" | EV ") + (card.ev_available ? ev_text(card.average_ev) : QStringLiteral("\u2014")),
                 aggregate};
-            button->setToolTip(tr("Average root hand EV, weighted by range weight and how often each hand "
-                                 "takes this action. This is not the EV of choosing this action. "
-                                 "Hands with no unblocked opponent combos are excluded."));
+            button->setToolTip(tr("The root actor's range EV in chips after taking this action: net chips won or "
+                                 "lost over the whole hand, averaged over every hand matchup the ranges allow. "
+                                 "An em dash means the action is never taken."));
             button->setObjectName(card.action == "fold" ? "foldButton" : "callButton");
             button->setMinimumHeight(metrics_.action_button_height);
             button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -300,11 +319,12 @@ namespace zeta::holdem::ui::widgets {
             aggregate_layout->addWidget(make_muted_label(tr("No action strategy is available.")));
         }
         summary_layout->addWidget(aggregate);
-        auto* average_ev_label = make_muted_label(tr("Average EV (hand) %1 | Mix %2%")
+        auto* average_ev_label = make_muted_label(tr("Range EV %1 | Mix %2%")
             .arg(ev_text(model_.average_ev))
             .arg(model_.mix_indicator * 100.0, 0, 'f', 1));
-        average_ev_label->setToolTip(tr("Range-weighted average of root hand EVs under the solved strategy. "
-                                       "Hands with no unblocked opponent combos are excluded."));
+        average_ev_label->setToolTip(tr("Hero's range EV in chips at the root under the solved strategy: each hand's "
+                                       "EV weighted by its range weight and by the opponent reach it can meet, so "
+                                       "every compatible matchup counts once. Fully blocked hands are excluded."));
         summary_layout->addWidget(average_ev_label);
         root->addWidget(summary_panel);
 
@@ -356,10 +376,8 @@ namespace zeta::holdem::ui::widgets {
         detail_table_ = new QTableWidget{detail_panel};
         detail_table_->setObjectName("strategyDetailTable");
         detail_table_->setColumnCount(5);
-        detail_table_->setHorizontalHeaderLabels({tr("Combo"), tr("Actions"), tr("EV (hand)"), tr("Weight"), tr("Blockers")});
-        detail_table_->horizontalHeaderItem(2)->setToolTip(
-            tr("Root EV for this exact hand under the solved strategy, not an individual action EV. "
-               "An em dash means no unblocked opponent combos exist, so EV is undefined."));
+        detail_table_->setHorizontalHeaderLabels({tr("Combo"), tr("Actions"), tr("EV (chips)"), tr("Weight"), tr("Blockers")});
+        detail_table_->horizontalHeaderItem(2)->setToolTip(hand_ev_header_tooltip());
         detail_table_->verticalHeader()->setVisible(false);
         detail_table_->horizontalHeader()->setStretchLastSection(true);
         detail_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -371,7 +389,7 @@ namespace zeta::holdem::ui::widgets {
         hand_table_ = new QTableWidget{this};
         hand_table_->setObjectName("strategyHandTable");
         hand_table_->setColumnCount(5);
-        hand_table_->setHorizontalHeaderLabels({tr("Hand"), tr("Best action"), tr("Action frequencies"), tr("EV (hand)"), tr("Range weight")});
+        hand_table_->setHorizontalHeaderLabels({tr("Hand"), tr("Best action"), tr("Action frequencies"), tr("EV (chips)"), tr("Range weight")});
         hand_table_->horizontalHeaderItem(3)->setToolTip(detail_table_->horizontalHeaderItem(2)->toolTip());
         hand_table_->verticalHeader()->setVisible(false);
         hand_table_->horizontalHeader()->setStretchLastSection(true);
@@ -460,7 +478,9 @@ namespace zeta::holdem::ui::widgets {
             node_action_table_->setItem(row, 1, new QTableWidgetItem{
                 found == node->average_strategy.end() ? QStringLiteral("-") : percent_text(found->frequency)});
             node_action_table_->setItem(row, 2, new QTableWidgetItem{
-                found == node->average_strategy.end() ? QStringLiteral("-") : ev_text(found->average_ev)});
+                found == node->average_strategy.end() || !found->ev_available
+                    ? QStringLiteral("\u2014")
+                    : ev_text(found->average_ev)});
         }
 
         refresh_matrix();
@@ -480,7 +500,7 @@ namespace zeta::holdem::ui::widgets {
             const auto visible = show_combo_strategy && viewmodels::strategy_cell_matches_filter(model, filter);
             QString text = q(model.hand_class);
             if (show_combo_strategy && model.available) {
-                text += tr("\n%1\nEV (hand) %2")
+                text += tr("\n%1\nEV %2")
                     .arg(action_text(model.actions))
                     .arg(ev_cell_text(model.reachable, model.ev));
             } else if (!show_combo_strategy) {
@@ -493,8 +513,8 @@ namespace zeta::holdem::ui::widgets {
             cell->setObjectName(visible ? "rangeCellPrimary" : "rangeCellMuted");
             cell->setToolTip(show_combo_strategy && model.available
                 ? (model.reachable
-                    ? tr("%1 combos | weight %2\nRange-weighted average root hand EV under the solved strategy, "
-                         "not an individual action EV. Unreachable combos are excluded.")
+                    ? tr("%1 combos | weight %2\nEV in chips for this hand class at the root, weighted by range "
+                         "weight and the opponent reach each combo can meet. Unreachable combos are excluded.")
                         .arg(model.exact_combos.size()).arg(model.range_weight, 0, 'f', 3)
                     : unreachable_tooltip())
                 : tr("No combo strategy is available for this node"));
@@ -519,9 +539,7 @@ namespace zeta::holdem::ui::widgets {
             hand_table_->setItem(row, 1, new QTableWidgetItem{display_action_text(hand.best_action)});
             hand_table_->setItem(row, 2, new QTableWidgetItem{action_text(hand.actions)});
             auto* ev_item = new numeric_table_item{ev_cell_text(hand.reachable, hand.ev), hand.ev};
-            if (!hand.reachable) {
-                ev_item->setToolTip(unreachable_tooltip());
-            }
+            ev_item->setToolTip(hand_ev_tooltip(hand));
             hand_table_->setItem(row, 3, ev_item);
             hand_table_->setItem(row, 4, new numeric_table_item{QString::number(hand.range_weight, 'f', 3), hand.range_weight});
         }
@@ -545,14 +563,14 @@ namespace zeta::holdem::ui::widgets {
             return;
         }
 
-        detail_title_->setText(tr("%1 | %2 | EV (hand) %3 | weight %4")
+        detail_title_->setText(tr("%1 | %2 | EV %3 | weight %4")
             .arg(hand_class)
             .arg(display_action_text(found->best_action))
             .arg(ev_cell_text(found->reachable, found->ev))
             .arg(found->range_weight, 0, 'f', 3));
         detail_title_->setToolTip(found->reachable
-            ? tr("Range-weighted average root hand EV for this hand class under the solved strategy. "
-                 "Unreachable combos are excluded.")
+            ? tr("EV in chips for this hand class at the root, weighted by range weight and the opponent reach "
+                 "each combo can meet. Unreachable combos are excluded.")
             : unreachable_tooltip());
 
         std::vector<viewmodels::strategy_hand_row> rows;
@@ -575,9 +593,7 @@ namespace zeta::holdem::ui::widgets {
             detail_table_->setItem(row, 0, new QTableWidgetItem{q(combo.hand)});
             detail_table_->setItem(row, 1, new QTableWidgetItem{action_text(combo.actions)});
             auto* combo_ev_item = new QTableWidgetItem{ev_cell_text(combo.reachable, combo.ev)};
-            if (!combo.reachable) {
-                combo_ev_item->setToolTip(unreachable_tooltip());
-            }
+            combo_ev_item->setToolTip(hand_ev_tooltip(combo));
             detail_table_->setItem(row, 2, combo_ev_item);
             detail_table_->setItem(row, 3, new QTableWidgetItem{QString::number(combo.range_weight, 'f', 3)});
             detail_table_->setItem(row, 4, new QTableWidgetItem{blocked_text(combo.blocked_by)});

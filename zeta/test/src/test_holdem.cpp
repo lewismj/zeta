@@ -350,9 +350,23 @@ namespace {
         const double value_tolerance = 0.01,
         const double summary_tolerance = 0.05
     ) {
-        for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
-            check_close_abs(actual.values[zeta::holdem::player::oop][i], expected.values[zeta::holdem::player::oop][i], value_tolerance);
-            check_close_abs(actual.values[zeta::holdem::player::ip][i], expected.values[zeta::holdem::player::ip][i], value_tolerance);
+        // One assertion per seat, naming the worst combo, rather than one per combo: with
+        // passing assertions logged, per-combo checks emit millions of lines per run.
+        for (const auto seat : {zeta::holdem::player::oop, zeta::holdem::player::ip}) {
+            double worst_error = 0.0;
+            zeta::holdem::combination_index worst_combo = 0;
+            for (zeta::holdem::combination_index i = 0; i < zeta::holdem::combination_count; ++i) {
+                const auto error = std::abs(static_cast<double>(actual.values[seat][i]) - expected.values[seat][i]);
+                if (!(error <= worst_error)) {
+                    worst_error = error;
+                    worst_combo = i;
+                }
+            }
+            BOOST_CHECK_MESSAGE(worst_error <= value_tolerance,
+                "seat " << zeta::holdem::player_index(seat) << " combo " << worst_combo
+                    << ": actual " << actual.values[seat][worst_combo]
+                    << " vs reference " << expected.values[seat][worst_combo]
+                    << " (error " << worst_error << " > " << value_tolerance << ")");
         }
         check_close_abs(actual.summary.oop_ev, expected.summary.oop_ev, summary_tolerance);
         check_close_abs(actual.summary.ip_ev, expected.summary.ip_ev, summary_tolerance);
