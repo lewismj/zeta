@@ -19,10 +19,6 @@ namespace zeta::holdem {
             }
         }
 
-        [[nodiscard]] static constexpr bool is_heads_up_exact() noexcept {
-            return kernel_family() == terminal_kernel_family::heads_up_exact;
-        }
-
         /** Showdown dispatch to the exact kernel family (heads-up and N-way). */
         [[nodiscard]] auto evaluate_showdown(
             const river_terminal_cache& cache,

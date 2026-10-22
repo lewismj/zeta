@@ -25,7 +25,6 @@ add_executable(zeta_tests
     ../ui/holdem/src/document_workspace_widget.cpp
     ../ui/holdem/src/solver/solution_store.cpp
     ../ui/holdem/src/solver/solver_session.cpp
-    ../ui/holdem/src/study/study_workflow.cpp
     ../ui/holdem/src/solver_state.cpp
     ../ui/holdem/src/spot_document.cpp
     ../ui/holdem/src/theme/theme_registry.cpp

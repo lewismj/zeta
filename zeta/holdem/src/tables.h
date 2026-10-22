@@ -171,17 +171,6 @@ namespace zeta::holdem::lookup {
         return out;
     }
 
-    [[nodiscard]] constexpr std::size_t quinary_index_from_counts(const std::array<uint8_t, 13>& counts) noexcept {
-        std::size_t index = 0;
-        std::size_t remaining = 7;
-        for (std::size_t rank = 0; rank < counts.size(); ++rank) {
-            const auto count = static_cast<std::size_t>(counts[rank]);
-            index += quinary_dp[count][counts.size() - rank - 1][remaining];
-            remaining -= count;
-        }
-        return index;
-    }
-
     [[nodiscard]] inline_always std::size_t quinary_index_from_layers(
         const uint16_t ones,
         const uint16_t twos,

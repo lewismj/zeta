@@ -29,9 +29,10 @@ bits 39–51  clubs    (2♣=39 .. A♣=51)
 hand_rank evaluate(card_mask seven) noexcept {
     const hand_masks masks = suit_rank_masks(seven);
 
-    suit flush = suit::spades;
-    if (find_flush_suit(masks, flush))
-        return flush_table[flush_index(masks, flush)];
+    // At most one suit can hold 5+ of 7 cards; its rank mask indexes the flush table.
+    for (const uint16_t suited : {masks.spades, masks.hearts, masks.diamonds, masks.clubs})
+        if (popcount(suited) >= 5)
+            return flush_table[suited];
 
     const std::size_t index = non_flush_quinary_index(masks);
     return non_flush_table[index];

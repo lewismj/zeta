@@ -8,7 +8,6 @@
 #include "solver/solver_session.h"
 #include "solver_state.h"
 #include "spot_document.h"
-#include "study/study_workflow.h"
 #include "theme/theme_registry.h"
 #include "theme/theme_styles.h"
 #include "viewmodels/range_view_model.h"
@@ -1495,105 +1494,6 @@ BOOST_AUTO_TEST_CASE(holdem_ui_widget_render_smoke_covers_every_theme) {
 
         BOOST_CHECK_MESSAGE(sampled_colors.size() > 1u, "Theme render produced a flat image for " << theme.display_name);
     }
-}
-
-BOOST_AUTO_TEST_CASE(holdem_ui_study_filtering_prioritizes_pinned_recent_and_tags) {
-    const std::vector<zeta::holdem::ui::study::study_record> studies{
-        zeta::holdem::ui::study::study_record{
-            .path = "C:/study/river-a.json",
-            .title = "River A",
-            .tags = {"river", "btn"},
-            .pinned = false,
-            .updated_utc = "2026-08-03T20:00:00Z"
-        },
-        zeta::holdem::ui::study::study_record{
-            .path = "C:/study/flop-pinned.json",
-            .title = "Flop pinned",
-            .tags = {"flop", "multiway"},
-            .pinned = true,
-            .updated_utc = "2026-08-01T20:00:00Z"
-        },
-        zeta::holdem::ui::study::study_record{
-            .path = "C:/study/flop-new.json",
-            .title = "Flop new",
-            .tags = {"flop"},
-            .pinned = false,
-            .updated_utc = "2026-08-04T20:00:00Z"
-        }
-    };
-
-    const auto filtered = zeta::holdem::ui::study::filter_studies(studies, "flop", std::string_view{"flop"});
-
-    BOOST_REQUIRE_EQUAL(filtered.size(), 2u);
-    BOOST_CHECK(filtered[0].pinned);
-    BOOST_CHECK_EQUAL(filtered[0].title, "Flop pinned");
-    BOOST_CHECK_EQUAL(filtered[1].title, "Flop new");
-}
-
-BOOST_AUTO_TEST_CASE(holdem_ui_exports_strategy_and_hand_tables_as_stable_csv) {
-    const auto artifact = sample_strategy_artifact();
-    const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(
-        sample_strategy_spot(),
-        artifact);
-
-    const auto strategy_csv = zeta::holdem::ui::study::export_strategy_csv(artifact);
-    const auto hand_csv = zeta::holdem::ui::study::export_hand_table_csv(model);
-
-    BOOST_CHECK(strategy_csv.starts_with("hand,ev,bet_50,check,fold"));
-    BOOST_CHECK(strategy_csv.find("AhAd,2.000000,0.250000,0.750000,0.000000") != std::string::npos);
-    BOOST_CHECK(hand_csv.starts_with("hand,hand_class,best_action,actions,ev,range_weight,live"));
-    BOOST_CHECK(hand_csv.find(",AA,bet_50") != std::string::npos);
-}
-
-BOOST_AUTO_TEST_CASE(holdem_ui_run_comparison_reports_deltas_and_rejects_incompatible_spots) {
-    auto before = sample_strategy_artifact();
-    auto after = before;
-    after.solver.iterations = 50;
-    after.strategy[0].strategy = {
-        zeta::holdem::cli::action_strategy{.action = "check", .frequency = 0.10},
-        zeta::holdem::cli::action_strategy{.action = "bet_50", .frequency = 0.90}
-    };
-    after.strategy[0].ev = 3.0;
-    auto spot = sample_strategy_spot();
-
-    auto comparison = zeta::holdem::ui::study::compare_strategy_runs(spot, before, spot, after);
-
-    BOOST_REQUIRE(comparison.has_value());
-    BOOST_CHECK_EQUAL(comparison->changed_best_action_count, 1u);
-    BOOST_REQUIRE(!comparison->settings_differences.empty());
-    BOOST_CHECK_EQUAL(comparison->settings_differences[0], "iterations");
-    BOOST_CHECK(std::ranges::any_of(comparison->action_deltas, [](const auto& delta) {
-        return delta.action == "bet_50" && delta.delta > 0.0;
-    }));
-    BOOST_CHECK(std::ranges::any_of(comparison->ev_deltas, [](const auto& delta) {
-        return delta.hand == "AhAd" && delta.delta > 0.0;
-    }));
-
-    auto incompatible = spot;
-    incompatible.board[0] = "Ac";
-    BOOST_CHECK(!zeta::holdem::ui::study::compare_strategy_runs(spot, before, incompatible, after).has_value());
-}
-
-BOOST_AUTO_TEST_CASE(holdem_ui_share_summary_and_screenshot_capture_current_widget) {
-    auto& app = qt_app();
-    const auto spot = sample_strategy_spot();
-    const auto artifact = sample_strategy_artifact();
-    const auto model = zeta::holdem::ui::viewmodels::make_strategy_view_model(spot, artifact);
-
-    const auto summary = zeta::holdem::ui::study::make_share_summary(spot, artifact, model);
-
-    BOOST_CHECK(summary.find("Players: BTN, BB") != std::string::npos);
-    BOOST_CHECK(summary.find("Board: 2s 3d 4c 5h 6s") != std::string::npos);
-    BOOST_CHECK(summary.find("Iterations: 25") != std::string::npos);
-    BOOST_CHECK(summary.find("Top actions:") != std::string::npos);
-
-    QLabel label{QStringLiteral("Current strategy view")};
-    label.resize(240, 60);
-    label.show();
-    app.processEvents();
-    const auto image = zeta::holdem::ui::study::capture_widget_image(label);
-    BOOST_CHECK_EQUAL(image.width(), 240);
-    BOOST_CHECK_EQUAL(image.height(), 60);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_resources_expose_toolbar_icons_and_ddin_font) {

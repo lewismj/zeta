@@ -103,10 +103,6 @@ namespace zeta::holdem {
         }
     };
 
-    [[nodiscard]] inline_always hand_range full_range(const combo_weight weight = 1.0f) noexcept {
-        return hand_range{weight};
-    }
-
     [[nodiscard]] inline_always card_mask combination_mask(const combination_index idx) noexcept {
         return combination_masks[idx];
     }

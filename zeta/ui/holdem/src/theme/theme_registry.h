@@ -16,7 +16,6 @@ namespace zeta::holdem::ui::theme {
 
     [[nodiscard]] std::optional<density_mode> density_mode_from_key(std::string_view key) noexcept;
     [[nodiscard]] std::string_view density_mode_key(density_mode mode) noexcept;
-    [[nodiscard]] std::string_view density_mode_label(density_mode mode) noexcept;
     [[nodiscard]] density_metrics metrics_for_density(density_mode mode) noexcept;
 
 }

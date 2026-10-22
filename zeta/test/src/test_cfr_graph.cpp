@@ -162,6 +162,37 @@ game_graph create_chance_tree()
     return require_graph(builder.build());
 }
 
+/** Uniform outcomes for every chance node, aligned with the graph edges. */
+chance_event_table make_uniform_chance_event_table(const game_graph& graph)
+{
+    chance_event_table table;
+    table.event_id_by_node.assign(graph.node_count, INVALID_CHANCE_EVENT);
+    for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+        if (graph.node_types[node_id] != node_kind::chance) {
+            continue;
+        }
+        const auto edges = graph.out_edges(node_id);
+        const auto first_outcome = static_cast<uint32_t>(table.outcomes.size());
+        table.event_id_by_node[node_id] = static_cast<uint32_t>(table.events.size());
+        table.events.push_back(chance_event{
+            .node_id = node_id,
+            .first_outcome = first_outcome,
+            .outcome_count = static_cast<uint32_t>(edges.size())
+        });
+        const auto probability = edges.empty() ? 0.0f : 1.0f / static_cast<float>(edges.size());
+        for (const auto& child_edge : edges) {
+            table.outcomes.push_back(chance_outcome{
+                .child_node = child_edge.child_node,
+                .action_index = child_edge.action_index,
+                .probability = probability,
+                .board_partition_id = child_edge.action_index,
+                .outcome_id = static_cast<chance_outcome_id>(table.outcomes.size())
+            });
+        }
+    }
+    return table;
+}
+
 BOOST_AUTO_TEST_SUITE(cfr_graph_types)
 
 /** Check that graph types are properly defined. */
@@ -887,6 +918,7 @@ BOOST_AUTO_TEST_CASE(short_all_in_keeps_previous_increment_and_does_not_reopen) 
     state.actor = 0;
     state.stacks = {30.0, 100.0, 100.0};
     state.committed = {100.0, 100.0, 100.0};
+    state.street_committed = {100.0, 100.0, 100.0};
     state.current_bet = 100.0;
     state.last_raise_increment = 50.0;
     state.raise_count = 1;
@@ -916,6 +948,7 @@ BOOST_AUTO_TEST_CASE(short_all_in_does_not_generate_raise_actions_when_not_reope
     state.actor = 1;
     state.stacks = {100.0, 100.0, 100.0};
     state.committed = {100.0, 100.0, 130.0};
+    state.street_committed = {100.0, 100.0, 130.0};
     state.current_bet = 130.0;
     state.last_raise_increment = 50.0;
     state.raise_count = 1;
@@ -923,12 +956,11 @@ BOOST_AUTO_TEST_CASE(short_all_in_does_not_generate_raise_actions_when_not_reope
 
     auto actions = legal_betting_actions(state, config.abstraction);
 
-    BOOST_CHECK(std::ranges::none_of(actions, [](const betting_action& action) {
-        return action.kind == betting_action_kind::bet || action.kind == betting_action_kind::raise;
-    }));
-    BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
-        return action.kind == betting_action_kind::all_in;
-    }));
+    // Seat 1 acted before the short all-in and was not re-raised, so it may only fold
+    // or call. Its own all-in would be a raise and is gated the same way.
+    BOOST_REQUIRE_EQUAL(actions.size(), 2u);
+    BOOST_CHECK(actions[0].kind == betting_action_kind::fold);
+    BOOST_CHECK(actions[1].kind == betting_action_kind::call);
 }
 
 BOOST_AUTO_TEST_CASE(targets_below_re_raise_minimum_are_filtered) {
@@ -942,6 +974,7 @@ BOOST_AUTO_TEST_CASE(targets_below_re_raise_minimum_are_filtered) {
     state.actor = 1;
     state.stacks = {100.0, 100.0, 100.0};
     state.committed = {100.0, 100.0, 130.0};
+    state.street_committed = {100.0, 100.0, 130.0};
     state.current_bet = 130.0;
     state.last_raise_increment = 50.0;
     state.raise_count = 1;
@@ -965,16 +998,18 @@ BOOST_AUTO_TEST_CASE(legal_actions_are_derived_from_betting_state_and_abstractio
     BOOST_CHECK(actions[0].kind == betting_action_kind::fold);
     BOOST_CHECK(actions[1].kind == betting_action_kind::call);
     BOOST_CHECK_EQUAL(actions[1].amount, 1.0);
-    const auto raise_35 = std::ranges::find_if(actions, [](const betting_action& action) {
-        return action.kind == betting_action_kind::raise && action.target_bet == 3.5;
+    const auto raise_25 = std::ranges::find_if(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::raise && action.target_bet == 2.5;
     });
-    const auto raise_50 = std::ranges::find_if(actions, [](const betting_action& action) {
-        return action.kind == betting_action_kind::raise && action.target_bet == 5.0;
+    const auto raise_40 = std::ranges::find_if(actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::raise && action.target_bet == 4.0;
     });
-    BOOST_REQUIRE(raise_35 != actions.end());
-    BOOST_REQUIRE(raise_50 != actions.end());
+    BOOST_REQUIRE(raise_25 != actions.end());
+    BOOST_REQUIRE(raise_40 != actions.end());
+    BOOST_CHECK_EQUAL(raise_25->amount, 2.5);
+    BOOST_CHECK_EQUAL(raise_40->amount, 4.0);
     BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
-        return action.kind == betting_action_kind::all_in && action.target_bet == 100.0;
+        return action.kind == betting_action_kind::all_in && action.target_bet == 99.0;
     }));
 }
 
@@ -982,8 +1017,10 @@ BOOST_AUTO_TEST_CASE(raise_multiple_targets_use_current_bet_multipliers) {
     betting_state<3> state{};
     state.street = holdem_street::river;
     state.actor = 1;
-    state.stacks = {50.0, 100.0, 100.0};
-    state.committed = {50.0, 50.0, 50.0};
+    // 50 each from earlier streets, then seat 0 bets 50 on the river.
+    state.stacks = {150.0, 200.0, 200.0};
+    state.committed = {100.0, 50.0, 50.0};
+    state.street_committed = {50.0, 0.0, 0.0};
     state.current_bet = 50.0;
     state.last_raise_increment = 50.0;
     state.raise_count = 0;
@@ -996,7 +1033,7 @@ BOOST_AUTO_TEST_CASE(raise_multiple_targets_use_current_bet_multipliers) {
     auto actions = legal_betting_actions(state, policy);
 
     BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
-        return action.kind == betting_action_kind::raise && action.target_bet == 125.0;
+        return action.kind == betting_action_kind::raise && action.target_bet == 125.0 && action.amount == 125.0;
     }));
 }
 
@@ -1004,8 +1041,9 @@ BOOST_AUTO_TEST_CASE(snapped_size_targets_become_all_in_and_deduplicate) {
     betting_state<3> state{};
     state.street = holdem_street::river;
     state.actor = 0;
-    state.stacks = {100.0, 0.0, 0.0};
+    state.stacks = {100.0, 100.0, 100.0};
     state.committed = {100.0, 0.0, 0.0};
+    state.street_committed = {100.0, 0.0, 0.0};
     state.current_bet = 100.0;
     state.last_raise_increment = 50.0;
     state.raise_count = 1;
@@ -1026,6 +1064,159 @@ BOOST_AUTO_TEST_CASE(snapped_size_targets_become_all_in_and_deduplicate) {
     BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
         return action.kind == betting_action_kind::all_in && action.target_bet == 200.0;
     }));
+}
+
+// Review section 3.3 regressions: each case below was wrong in the original tree.
+
+BOOST_AUTO_TEST_CASE(street_opens_with_a_bet_and_raise_cap_counts_raises_not_bets) {
+    holdem_betting_graph_config<2> config{};
+    config.initial_stacks = {500.0, 500.0};
+    config.initial_committed = {50.0, 50.0};
+    config.root_actor = 0;
+    config.abstraction.fixed_pot_fractions = {0.5};
+    config.abstraction.max_raises = 1;
+
+    // Chips from earlier streets are matched: no live bet, so the first wager is a bet.
+    auto state = make_initial_betting_state(config);
+    BOOST_CHECK_EQUAL(state.current_bet, 0.0);
+    auto actions = legal_betting_actions(state, config.abstraction);
+    auto bet = std::ranges::find_if(actions, [](const betting_action& a) { return a.kind == betting_action_kind::bet; });
+    BOOST_REQUIRE(bet != actions.end());
+    BOOST_CHECK_EQUAL(bet->amount, 50.0);
+    BOOST_CHECK(std::ranges::none_of(actions, [](const betting_action& a) { return a.kind == betting_action_kind::raise; }));
+
+    auto after_bet = apply_betting_action(state, *bet, config.abstraction);
+    BOOST_REQUIRE(after_bet.has_value());
+    BOOST_CHECK_EQUAL(after_bet->raise_count, 0u);
+    BOOST_CHECK_EQUAL(after_bet->current_bet, 50.0);
+    BOOST_CHECK_EQUAL(after_bet->committed[0], 100.0);
+
+    // With max_raises 1 the bet can still be raised once; raise sizes scale the street bet.
+    actions = legal_betting_actions(*after_bet, config.abstraction);
+    auto raise = std::ranges::find_if(actions, [](const betting_action& a) { return a.kind == betting_action_kind::raise; });
+    BOOST_REQUIRE(raise != actions.end());
+    BOOST_CHECK_EQUAL(raise->target_bet, 125.0);
+
+    auto after_raise = apply_betting_action(*after_bet, *raise, config.abstraction);
+    BOOST_REQUIRE(after_raise.has_value());
+    BOOST_CHECK_EQUAL(after_raise->raise_count, 1u);
+
+    // The cap is reached: the opener may fold or call, and may not shove instead.
+    actions = legal_betting_actions(*after_raise, config.abstraction);
+    BOOST_REQUIRE_EQUAL(actions.size(), 2u);
+    BOOST_CHECK(actions[0].kind == betting_action_kind::fold);
+    BOOST_CHECK(actions[1].kind == betting_action_kind::call);
+}
+
+BOOST_AUTO_TEST_CASE(all_in_that_matches_the_call_is_offered_once_as_call) {
+    holdem_betting_graph_config<2> config{};
+    config.initial_stacks = {100.0, 20.0};
+    config.initial_committed = {50.0, 50.0};
+    config.root_actor = 0;
+    config.abstraction.fixed_pot_fractions = {0.5};
+
+    auto state = make_initial_betting_state(config);
+    auto actions = legal_betting_actions(state, config.abstraction);
+    auto bet = std::ranges::find_if(actions, [](const betting_action& a) { return a.kind == betting_action_kind::bet; });
+    BOOST_REQUIRE(bet != actions.end());
+    auto facing = apply_betting_action(state, *bet, config.abstraction);
+    BOOST_REQUIRE(facing.has_value());
+
+    actions = legal_betting_actions(*facing, config.abstraction);
+    BOOST_REQUIRE_EQUAL(actions.size(), 2u);
+    BOOST_CHECK(actions[0].kind == betting_action_kind::fold);
+    BOOST_CHECK(actions[1].kind == betting_action_kind::call);
+    BOOST_CHECK_EQUAL(actions[1].amount, 20.0);
+
+    auto called = apply_betting_action(*facing, actions[1], config.abstraction);
+    BOOST_REQUIRE(called.has_value());
+    BOOST_CHECK(called->all_in[1]);
+    BOOST_CHECK(called->terminal_kind == zeta::holdem::terminal_state_kind::showdown);
+}
+
+BOOST_AUTO_TEST_CASE(no_bets_or_shoves_are_offered_against_all_in_opponents) {
+    holdem_betting_graph_config<2> config{};
+    config.initial_stacks = {20.0, 100.0};
+    config.initial_committed = {50.0, 50.0};
+    config.root_actor = 0;
+    config.abstraction.fixed_pot_fractions = {0.5, 1.0};
+
+    auto state = make_initial_betting_state(config);
+    auto actions = legal_betting_actions(state, config.abstraction);
+    auto shove = std::ranges::find_if(actions, [](const betting_action& a) { return a.kind == betting_action_kind::all_in; });
+    BOOST_REQUIRE(shove != actions.end());
+    auto facing = apply_betting_action(state, *shove, config.abstraction);
+    BOOST_REQUIRE(facing.has_value());
+
+    // Extra chips over an all-in can't be called, so only fold and call remain.
+    actions = legal_betting_actions(*facing, config.abstraction);
+    BOOST_REQUIRE_EQUAL(actions.size(), 2u);
+    BOOST_CHECK(actions[0].kind == betting_action_kind::fold);
+    BOOST_CHECK(actions[1].kind == betting_action_kind::call);
+    BOOST_CHECK_EQUAL(actions[1].amount, 20.0);
+}
+
+BOOST_AUTO_TEST_CASE(calling_all_in_for_less_never_lowers_the_current_bet) {
+    holdem_betting_graph_config<3> config{};
+    config.initial_stacks = {100.0, 30.0, 100.0};
+    config.initial_committed = {10.0, 10.0, 10.0};
+    config.root_actor = 0;
+    config.abstraction.fixed_pot_fractions = {2.0};
+
+    auto state = make_initial_betting_state(config);
+    auto actions = legal_betting_actions(state, config.abstraction);
+    auto bet = std::ranges::find_if(actions, [](const betting_action& a) { return a.kind == betting_action_kind::bet; });
+    BOOST_REQUIRE(bet != actions.end());
+    BOOST_REQUIRE_EQUAL(bet->target_bet, 60.0);
+    auto facing = apply_betting_action(state, *bet, config.abstraction);
+    BOOST_REQUIRE(facing.has_value());
+
+    // Seat 1 can only put in 30 of the 60: that is its call, and it is all-in.
+    actions = legal_betting_actions(*facing, config.abstraction);
+    BOOST_REQUIRE_EQUAL(actions.size(), 2u);
+    BOOST_CHECK_EQUAL(actions[1].amount, 30.0);
+    auto short_call = apply_betting_action(*facing, actions[1], config.abstraction);
+    BOOST_REQUIRE(short_call.has_value());
+    BOOST_CHECK(short_call->all_in[1]);
+    BOOST_CHECK_EQUAL(short_call->current_bet, 60.0);
+
+    // Seat 2 still faces the full 60.
+    BOOST_REQUIRE_EQUAL(short_call->actor, 2u);
+    actions = legal_betting_actions(*short_call, config.abstraction);
+    auto call = std::ranges::find_if(actions, [](const betting_action& a) { return a.kind == betting_action_kind::call; });
+    BOOST_REQUIRE(call != actions.end());
+    BOOST_CHECK_EQUAL(call->amount, 60.0);
+}
+
+BOOST_AUTO_TEST_CASE(next_street_resets_street_bets_but_keeps_contributions) {
+    holdem_betting_graph_config<2> config{};
+    config.street = holdem_street::turn;
+    config.initial_stacks = {500.0, 500.0};
+    config.initial_committed = {50.0, 50.0};
+    config.root_actor = 0;
+    config.abstraction.fixed_pot_fractions = {0.5};
+
+    auto state = make_initial_betting_state(config);
+    auto bet = legal_betting_actions(state, config.abstraction)[1];
+    BOOST_REQUIRE(bet.kind == betting_action_kind::bet);
+    auto facing = apply_betting_action(state, bet, config.abstraction);
+    BOOST_REQUIRE(facing.has_value());
+    auto call = legal_betting_actions(*facing, config.abstraction)[1];
+    BOOST_REQUIRE(call.kind == betting_action_kind::call);
+    auto settled = apply_betting_action(*facing, call, config.abstraction);
+    BOOST_REQUIRE(settled.has_value());
+
+    const auto river = detail::make_next_street_state(*settled, holdem_street::river, config.root_actor);
+    BOOST_CHECK_EQUAL(river.committed[0], 100.0);
+    BOOST_CHECK_EQUAL(river.committed[1], 100.0);
+    BOOST_CHECK_EQUAL(river.street_committed[0], 0.0);
+    BOOST_CHECK_EQUAL(river.street_committed[1], 0.0);
+    BOOST_CHECK_EQUAL(river.current_bet, 0.0);
+    BOOST_CHECK(validate_betting_state(river).has_value());
+    const auto river_actions = legal_betting_actions(river, config.abstraction);
+    BOOST_CHECK(river_actions[0].kind == betting_action_kind::check);
+    BOOST_CHECK(river_actions[1].kind == betting_action_kind::bet);
+    BOOST_CHECK_EQUAL(river_actions[1].amount, 100.0);
 }
 
 BOOST_AUTO_TEST_CASE(betting_transitions_are_pure_and_reach_river_showdown) {
@@ -1163,12 +1354,14 @@ BOOST_AUTO_TEST_CASE(stage5_named_preset_factories_round_trip_through_json) {
     actor_sizes[static_cast<std::size_t>(holdem_street::river)].resize(2);
     actor_sizes[static_cast<std::size_t>(holdem_street::river)][0].fractions = {0.5, 1.0};
     actor_sizes[static_cast<std::size_t>(holdem_street::river)][1].raise_multiples = {2.0};
-    auto actor_policy = make_actor_policy(actor_sizes);
-    BOOST_REQUIRE(actor_policy.has_value());
-    const auto actor_json = serialize_betting_abstraction_policy(*actor_policy);
+    betting_abstraction_policy actor_policy{};
+    actor_policy.street_actor_sizes = actor_sizes;
+    actor_policy.max_raises = 2;
+    BOOST_REQUIRE(validate_betting_abstraction_policy(actor_policy).has_value());
+    const auto actor_json = serialize_betting_abstraction_policy(actor_policy);
     auto actor_round_trip = deserialize_betting_abstraction_policy(actor_json);
     BOOST_REQUIRE(actor_round_trip.has_value());
-    BOOST_CHECK_EQUAL(hash_betting_abstraction_policy(*actor_policy), hash_betting_abstraction_policy(*actor_round_trip));
+    BOOST_CHECK_EQUAL(hash_betting_abstraction_policy(actor_policy), hash_betting_abstraction_policy(*actor_round_trip));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -1382,11 +1575,12 @@ BOOST_AUTO_TEST_CASE(chance_event_table_rejects_duplicate_board_cards) {
 
 BOOST_AUTO_TEST_CASE(public_card_chance_enumeration_is_blocker_safe) {
     const auto dead_cards = card(0, 0) | card(1, 1);
-    const auto flop_outcomes = enumerate_flop_outcomes(dead_cards);
-    const auto turn_outcomes = enumerate_turn_outcomes(card(2, 2) | card(2, 3) | card(2, 4), dead_cards);
-    const auto river_outcomes = enumerate_river_outcomes(
+    const auto flop_outcomes = enumerate_public_card_outcomes(0, dead_cards, 3);
+    const auto turn_outcomes = enumerate_public_card_outcomes(card(2, 2) | card(2, 3) | card(2, 4), dead_cards, 1);
+    const auto river_outcomes = enumerate_public_card_outcomes(
         card(2, 2) | card(2, 3) | card(2, 4) | card(3, 5),
-        dead_cards);
+        dead_cards,
+        1);
 
     BOOST_CHECK_EQUAL(flop_outcomes.size(), 19600u);
     BOOST_CHECK_EQUAL(turn_outcomes.size(), 47u);
@@ -1395,45 +1589,6 @@ BOOST_AUTO_TEST_CASE(public_card_chance_enumeration_is_blocker_safe) {
         BOOST_CHECK_EQUAL(outcome.cards & dead_cards, 0u);
         BOOST_CHECK_EQUAL(outcome.cards & (card(2, 2) | card(2, 3) | card(2, 4)), 0u);
     }
-}
-
-BOOST_AUTO_TEST_CASE(public_card_chance_event_table_aligns_turn_outcomes) {
-    graph_builder builder;
-    const auto root = builder.add_node(node_kind::chance);
-    for (uint16_t action = 0; action < 47u; ++action) {
-        const auto terminal = builder.add_node(node_kind::terminal);
-        builder.add_edge(root, terminal, action);
-    }
-    auto graph = require_graph(builder.build());
-
-    const auto board_cards = card(2, 2) | card(2, 3) | card(2, 4);
-    const auto dead_cards = card(0, 0) | card(1, 1);
-    const std::array configs{
-        public_card_chance_event_config{
-            .node_id = graph.root_node,
-            .kind = public_chance_event_kind::turn,
-            .board_cards = board_cards,
-            .dead_cards = dead_cards,
-            .board_partition_base = 5
-        }
-    };
-
-    auto table = make_public_card_chance_event_table(graph, configs);
-
-    BOOST_REQUIRE(table.has_value());
-    BOOST_REQUIRE_EQUAL(table->events.size(), 1u);
-    BOOST_CHECK(table->events.front().kind == public_chance_event_kind::turn);
-    BOOST_CHECK_EQUAL(table->events.front().outcome_count, 47u);
-    BOOST_CHECK_EQUAL(table->outcomes.front().board_partition_id, 5u);
-    BOOST_CHECK_EQUAL(table->outcomes.back().board_partition_id, 51u);
-    double probability_sum = 0.0;
-    for (const auto& outcome : table->event_outcomes(table->events.front())) {
-        probability_sum += outcome.probability;
-        BOOST_CHECK_EQUAL(outcome.cards & board_cards, 0u);
-        BOOST_CHECK_EQUAL(outcome.cards & dead_cards, 0u);
-        BOOST_CHECK(outcome.legal);
-    }
-    BOOST_CHECK_SMALL(probability_sum - 1.0, 0.00001);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

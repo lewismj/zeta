@@ -175,17 +175,6 @@ namespace zeta::holdem::ui::theme {
         return "comfortable";
     }
 
-    std::string_view density_mode_label(const density_mode mode) noexcept
-    {
-        switch (mode) {
-            case density_mode::compact:
-                return "Compact";
-            case density_mode::comfortable:
-                return "Comfortable";
-        }
-        return "Comfortable";
-    }
-
     density_metrics metrics_for_density(const density_mode mode) noexcept
     {
         switch (mode) {

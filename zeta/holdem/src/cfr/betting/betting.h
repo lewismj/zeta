@@ -35,7 +35,7 @@ namespace zeta::holdem::cfr {
     struct betting_action {
         betting_action_kind kind = betting_action_kind::check;
         utility amount = 0.0;      /**< Chips added by the acting player. */
-        utility target_bet = 0.0;  /**< Actor's committed amount after the action. */
+        utility target_bet = 0.0;  /**< Actor's bet on the current street after the action. */
     };
 
     struct betting_action_record {
@@ -89,9 +89,13 @@ namespace zeta::holdem::cfr {
         solver::holdem_street street = solver::holdem_street::river;
         uint8_t actor = 0;
         std::array<utility, N> stacks{};
+        /** Chips each seat has put in over the whole hand; these settle the pot. */
         std::array<utility, N> committed{};
+        /** Chips each seat has put in on the current street; bets are matched on these. */
+        std::array<utility, N> street_committed{};
         folded_mask<N> folded{};
         player_mask<N> all_in{};
+        /** Highest street bet, the amount every seat still in must match. */
         utility current_bet = 0.0;
         /** Minimum increment established by the last full bet or raise. */
         utility last_raise_increment = 0.0;
@@ -306,7 +310,7 @@ namespace zeta::holdem::cfr {
                 if (state.folded[seat] || state.all_in[seat]) {
                     continue;
                 }
-                if (!state.acted_since_aggression[seat] || state.committed[seat] < state.current_bet) {
+                if (!state.acted_since_aggression[seat] || state.street_committed[seat] < state.current_bet) {
                     return false;
                 }
             }
@@ -424,7 +428,8 @@ namespace zeta::holdem::cfr {
             state.raise_count = 0;
             state.acted_since_aggression.fill(false);
             state.terminal_kind = terminal_state_kind::none;
-            state.current_bet = *std::max_element(state.committed.begin(), state.committed.end());
+            state.street_committed.fill(0.0);
+            state.current_bet = 0.0;
             state.pot_layers = make_pot_layers(state);
 
             if (active_count(state) <= 1u) {
@@ -523,10 +528,50 @@ namespace zeta::holdem::cfr {
             if (actor >= N || state.folded[actor] || state.all_in[actor]) {
                 return false;
             }
-            const auto to_call = std::max<utility>(0.0, state.current_bet - state.committed[actor]);
+            const auto to_call = std::max<utility>(0.0, state.current_bet - state.street_committed[actor]);
             return state.stacks[actor] > to_call
                 && state.raise_count < policy.max_raises_for_street(state.street)
                 && !state.acted_since_aggression[actor];
+        }
+
+        /**
+         * Street bets implied by a spot's cumulative contributions. Chips from earlier
+         * streets are already matched, so the street bet is the part of a contribution
+         * above the lowest contribution among seats that can still act. Equal
+         * contributions open the street with no bet; `[40, 60]` leaves 20 to call. A
+         * seat already all-in for less than that baseline adds nothing to match.
+         */
+        template <std::size_t N>
+        [[nodiscard]] std::array<utility, N> initial_street_bets(
+            const std::array<utility, N>& committed,
+            const std::array<utility, N>& stacks) noexcept
+        {
+            auto baseline = std::numeric_limits<utility>::infinity();
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                if (stacks[seat] > 0.0) {
+                    baseline = std::min(baseline, committed[seat]);
+                }
+            }
+            if (!std::isfinite(baseline)) {
+                baseline = *std::min_element(committed.begin(), committed.end());
+            }
+            std::array<utility, N> street_bets{};
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                street_bets[seat] = std::max<utility>(0.0, committed[seat] - baseline);
+            }
+            return street_bets;
+        }
+
+        /** Whether any other seat still in the hand has chips left to answer a bet. */
+        template <std::size_t N>
+        [[nodiscard]] bool has_opponent_who_can_respond(const betting_state<N>& state, const uint8_t actor) noexcept
+        {
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                if (seat != actor && !state.folded[seat] && !state.all_in[seat]) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         template <std::size_t N>
@@ -1005,20 +1050,6 @@ namespace zeta::holdem::cfr {
         return policy;
     }
 
-    [[nodiscard]] inline std::expected<betting_abstraction_policy, betting_policy_error>
-    make_actor_policy(
-        const std::array<std::vector<actor_size_set>, 5> actor_sizes,
-        const uint16_t max_raises = 2)
-    {
-        betting_abstraction_policy policy{};
-        policy.street_actor_sizes = actor_sizes;
-        policy.max_raises = max_raises;
-        if (auto result = validate_betting_abstraction_policy(policy); !result) {
-            return std::unexpected(result.error());
-        }
-        return policy;
-    }
-
     template <std::size_t N>
     [[nodiscard]] std::expected<void, betting_validation_error> validate_betting_state(
         const betting_state<N>& state,
@@ -1032,17 +1063,19 @@ namespace zeta::holdem::cfr {
             return std::unexpected(betting_validation_error{betting_validation_error_kind::invalid_actor, state_id});
         }
 
-        utility max_committed = 0.0;
+        utility max_street_committed = 0.0;
         for (std::size_t seat = 0; seat < N; ++seat) {
             if (state.stacks[seat] < 0.0) {
                 return std::unexpected(betting_validation_error{betting_validation_error_kind::invalid_stack, state_id});
             }
-            if (state.committed[seat] < 0.0) {
+            if (state.committed[seat] < 0.0
+                || state.street_committed[seat] < 0.0
+                || state.street_committed[seat] > state.committed[seat]) {
                 return std::unexpected(betting_validation_error{betting_validation_error_kind::invalid_commitment, state_id});
             }
-            max_committed = std::max(max_committed, state.committed[seat]);
+            max_street_committed = std::max(max_street_committed, state.street_committed[seat]);
         }
-        if (state.current_bet < 0.0 || state.current_bet < max_committed) {
+        if (state.current_bet != max_street_committed) {
             return std::unexpected(betting_validation_error{betting_validation_error_kind::invalid_current_bet, state_id});
         }
         return {};
@@ -1059,33 +1092,39 @@ namespace zeta::holdem::cfr {
         }
 
         const auto actor = state.actor;
-        const auto to_call = std::max<utility>(0.0, state.current_bet - state.committed[actor]);
+        const auto street_bet = state.street_committed[actor];
+        const auto to_call = std::max<utility>(0.0, state.current_bet - street_bet);
         const auto stack = state.stacks[actor];
         if (to_call > 0.0) {
             actions.push_back(betting_action{
                 .kind = betting_action_kind::fold,
                 .amount = 0.0,
-                .target_bet = state.committed[actor]
+                .target_bet = street_bet
             });
+            // A call for the whole stack is the all-in; it is offered once, as the call.
             actions.push_back(betting_action{
                 .kind = betting_action_kind::call,
                 .amount = std::min(stack, to_call),
-                .target_bet = state.committed[actor] + std::min(stack, to_call)
+                .target_bet = street_bet + std::min(stack, to_call)
             });
         } else {
             actions.push_back(betting_action{
                 .kind = betting_action_kind::check,
                 .amount = 0.0,
-                .target_bet = state.committed[actor]
+                .target_bet = street_bet
             });
         }
 
-        const auto can_aggress = detail::can_raise(state, actor, policy);
+        // Every bigger action, the all-in included, is a bet or raise: it needs the
+        // right to raise (raise cap and reopen rule) and an opponent with chips left
+        // to answer it. Against players who are all-in, the extra chips can't be called.
+        const auto can_aggress = detail::can_raise(state, actor, policy)
+            && detail::has_opponent_who_can_respond(state, actor);
         if (can_aggress) {
             const auto pot = detail::live_pot(state);
             const auto required_increment = detail::required_raise_increment(state, policy);
             const auto& sizes = policy.sizes_for_actor(state.street, actor);
-            const auto all_in_target = state.committed[actor] + stack;
+            const auto all_in_target = street_bet + stack;
             const auto all_in_snap_target = all_in_target * static_cast<utility>(policy.all_in_threshold_for_street(state.street));
 
             auto add_target_action = [&](const utility raw_target) {
@@ -1093,7 +1132,7 @@ namespace zeta::holdem::cfr {
                 if (state.current_bet == 0.0) {
                     target = std::max(target, policy.min_bet_increment);
                 }
-                if (target <= state.current_bet || target <= state.committed[actor]) {
+                if (target <= state.current_bet || target <= street_bet) {
                     return;
                 }
 
@@ -1112,7 +1151,7 @@ namespace zeta::holdem::cfr {
                 if (!detail::contains_action_kind(actions, kind, final_target)) {
                     actions.push_back(betting_action{
                         .kind = kind,
-                        .amount = final_target - state.committed[actor],
+                        .amount = final_target - street_bet,
                         .target_bet = final_target
                     });
                 }
@@ -1130,15 +1169,14 @@ namespace zeta::holdem::cfr {
                 }
                 add_target_action(state.current_bet * static_cast<utility>(multiple));
             }
-        }
 
-        if (stack > 0.0) {
-            const auto target = state.committed[actor] + stack;
-            if (!detail::contains_action_kind(actions, betting_action_kind::all_in, target)) {
+            // can_raise guarantees the stack covers more than the call, so this all-in
+            // is always above the current bet and never duplicates the call.
+            if (!detail::contains_action_kind(actions, betting_action_kind::all_in, all_in_target)) {
                 actions.push_back(betting_action{
                     .kind = betting_action_kind::all_in,
                     .amount = stack,
-                    .target_bet = target
+                    .target_bet = all_in_target
                 });
             }
         }
@@ -1177,18 +1215,19 @@ namespace zeta::holdem::cfr {
             next.folded.set_folded(actor, true);
             next.acted_since_aggression[actor] = true;
         } else {
-            const auto chips = std::min(next.stacks[actor], std::max<utility>(0.0, action.target_bet - next.committed[actor]));
+            const auto chips = std::min(
+                next.stacks[actor], std::max<utility>(0.0, action.target_bet - next.street_committed[actor]));
             next.stacks[actor] -= chips;
             next.committed[actor] += chips;
+            next.street_committed[actor] += chips;
             if (next.stacks[actor] == 0.0 || action.kind == betting_action_kind::all_in) {
                 next.all_in.set(actor);
             }
             next.acted_since_aggression[actor] = true;
-            const auto new_current_bet = next.committed[actor];
+            const auto new_current_bet = next.street_committed[actor];
             const auto full_raise = detail::is_full_raise(state, new_current_bet, policy);
-            if (action.kind == betting_action_kind::bet
-                || action.kind == betting_action_kind::raise
-                || action.kind == betting_action_kind::all_in) {
+            // Only a bet above the current one moves it; nothing lowers what others must match.
+            if (new_current_bet > state.current_bet) {
                 next.current_bet = new_current_bet;
                 if (full_raise) {
                     next.last_raise_increment = new_current_bet - state.current_bet;
@@ -1217,8 +1256,10 @@ namespace zeta::holdem::cfr {
         state.actor = config.root_actor;
         state.stacks = config.initial_stacks;
         state.committed = config.initial_committed;
-        state.current_bet = *std::max_element(state.committed.begin(), state.committed.end());
-        state.last_raise_increment = 0.0;
+        state.street_committed = detail::initial_street_bets(config.initial_committed, config.initial_stacks);
+        state.current_bet = *std::max_element(state.street_committed.begin(), state.street_committed.end());
+        // A live bet at the root is the opening bet, so it sets the minimum raise.
+        state.last_raise_increment = state.current_bet;
         state.pot_layers = detail::make_pot_layers(state);
         return state;
     }

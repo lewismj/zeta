@@ -67,7 +67,6 @@ The Swiss aliases map Jass suit names onto the same underlying suit enum.
 | `cards_in_suit<Variant>(mask, suit)` | Filter cards by suit |
 | `suit_ranks<Variant>(mask, suit)` | Convert suited cards to a compact rank mask |
 | `ranks_to_cards<Variant>(ranks, suit)` | Scatter a rank mask back into card bits |
-| `nth_set_bit(mask, n)` | Select the nth card in a mask |
 
 `suit_ranks` and `ranks_to_cards` can use BMI2 `PEXT`/`PDEP` when enabled, but the default 52-card contiguous suit layout is already efficient with shift-and-mask operations.
 

@@ -395,22 +395,4 @@ namespace zeta::holdem {
         }
     }
 
-    [[nodiscard]] inline_always terminal_summary<2> summarize_showdown(
-        const river_terminal_cache& cache,
-        const river_reach_index& oop_index,
-        const river_reach_index& ip_index,
-        const terminal_context<2>& context
-    ) noexcept {
-        return evaluate_showdown(cache, oop_index, ip_index, context).summary;
-    }
-
-    [[nodiscard]] inline_always terminal_summary<2> summarize_showdown(
-        const river_terminal_cache& cache,
-        const reach_vector& oop_reach,
-        const reach_vector& ip_reach,
-        const terminal_context<2>& context
-    ) noexcept {
-        return evaluate_showdown(cache, oop_reach, ip_reach, context).summary;
-    }
-
 }

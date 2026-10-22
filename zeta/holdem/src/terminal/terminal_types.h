@@ -424,10 +424,6 @@ namespace zeta::holdem {
         uint8_t second = 0;
     };
 
-    [[nodiscard]] constexpr bool combo_live(const combo_bitset& bits, const combination_index idx) noexcept {
-        return (bits[idx / 64u] & (uint64_t{1} << (idx % 64u))) != 0;
-    }
-
     constexpr void set_combo_live(combo_bitset& bits, const combination_index idx) noexcept {
         bits[idx / 64u] |= uint64_t{1} << (idx % 64u);
     }

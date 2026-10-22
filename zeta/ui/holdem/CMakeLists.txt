@@ -30,8 +30,6 @@ add_executable(zeta-ui-holdem
     src/solver/solution_store.cpp
     src/solver/solver_session.h
     src/solver/solver_session.cpp
-    src/study/study_workflow.h
-    src/study/study_workflow.cpp
     src/solver_state.h
     src/solver_state.cpp
     src/spot_document.h

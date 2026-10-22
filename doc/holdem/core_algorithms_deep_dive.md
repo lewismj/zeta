@@ -28,7 +28,7 @@ That decomposition is the shared input for both evaluation paths:
 
 ### 1.2 Flush path
 
-`find_flush_suit(...)` detects whether any suit has at least 5 bits set:
+`evaluate(...)` checks each suit's rank mask in turn for at least 5 bits set:
 
 ```text
 popcount(suit_mask) >= 5

@@ -35,36 +35,6 @@ namespace zeta::holdem {
         };
     }
 
-    [[nodiscard]] inline_always bool find_flush_suit(const hand_masks& masks, suit& suit_out) noexcept {
-        if (ops::popcount(masks.spades) >= 5) {
-            suit_out = suit::spades;
-            return true;
-        }
-        if (ops::popcount(masks.hearts) >= 5) {
-            suit_out = suit::hearts;
-            return true;
-        }
-        if (ops::popcount(masks.diamonds) >= 5) {
-            suit_out = suit::diamonds;
-            return true;
-        }
-        if (ops::popcount(masks.clubs) >= 5) {
-            suit_out = suit::clubs;
-            return true;
-        }
-        return false;
-    }
-
-    [[nodiscard]] inline_always uint32_t flush_index(const hand_masks& masks, const suit flush) noexcept {
-        switch (flush) {
-            case suit::spades: return masks.spades;
-            case suit::hearts: return masks.hearts;
-            case suit::diamonds: return masks.diamonds;
-            case suit::clubs: return masks.clubs;
-        }
-        std::unreachable();
-    }
-
     [[nodiscard]] inline_always rank_count_layers make_rank_count_layers(const hand_masks& masks) noexcept {
         const auto s0 = masks.spades;
         const auto s1 = masks.hearts;
@@ -90,15 +60,6 @@ namespace zeta::holdem {
             .threes = threes,
             .fours = fours
         };
-    }
-
-    [[nodiscard]] inline_always uint64_t non_flush_key(const hand_masks& masks) noexcept {
-        const auto layers = make_rank_count_layers(masks);
-
-        return static_cast<uint64_t>(layers.ones)
-            | (static_cast<uint64_t>(layers.twos) << 13)
-            | (static_cast<uint64_t>(layers.threes) << 26)
-            | (static_cast<uint64_t>(layers.fours) << 39);
     }
 
     [[nodiscard]] inline_always std::size_t non_flush_quinary_index(const hand_masks& masks) noexcept {

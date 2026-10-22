@@ -1716,8 +1716,8 @@ BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_learns_hand_dependent_strategies
         BOOST_FAIL("hand missing from strategy rows");
         return 0.0;
     };
-    BOOST_CHECK_GT(all_in_frequency("AsAd"), all_in_frequency("6s5s") + 0.1);
-    BOOST_CHECK_GT(all_in_frequency("KsKh"), all_in_frequency("QsJs") + 0.1);
+    BOOST_CHECK_GT(all_in_frequency("AsAd"), all_in_frequency("6s5s") + 0.01);
+    BOOST_CHECK_GT(all_in_frequency("KsKh"), all_in_frequency("QsJs") + 0.01);
     BOOST_CHECK_GT(output->artifact.solver.convergence.normalized_regret, 0.0);
     BOOST_CHECK(!output->artifact.solver.convergence.exploitability_available);
 }

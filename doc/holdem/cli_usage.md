@@ -72,6 +72,21 @@ Prints a fixed-width strategy table.
 
 The solver accepts either the `bet_fraction` single-bet field or the richer `betting_policy` object. If the policy object is omitted, the default is a single-size policy with `fixed_pot_fractions: [0.75]` and `max_raises: 1`.
 
+### Betting rules
+
+- `contributions` are each seat's chips in the pot so far. Equal contributions open the
+  street with no bet to call, so the first wager is a bet (`bet_75`). Unequal
+  contributions are read as a live bet: in `[40, 60]` the first seat has 20 to call. A
+  seat already all-in for less than the others faces nothing.
+- `max_raises` counts raises on a street, not the opening bet: `max_raises: 1` allows a
+  bet and one raise. Pot fractions and `raise_multiples` size the bet on the current
+  street, not the chips put in on earlier streets.
+- All-in is a bet or raise like any other: it needs a raise left under `max_raises`, the
+  right to raise again (a player who has acted and not been re-raised may only call or
+  fold), and an opponent with chips left to call it. When a whole stack only covers the
+  call, it is offered once, as `call`.
+- A call for less than the bet never lowers the amount the other players must match.
+
 ### Fields
 
 | Field               | Type     | Default         | Notes                                                                   |

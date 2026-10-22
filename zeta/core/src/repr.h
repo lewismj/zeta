@@ -195,14 +195,6 @@ namespace zeta {
         }
 
         /**
-         * Checks if the input mask contains any cards of the specified suit.
-         */
-        template<typename Variant>
-        [[nodiscard]] constexpr bool has_suit(const card_mask m, const suit s) {
-            return !is_empty(cards_in_suit<Variant>(m, s));
-        }
-
-        /**
          * Extract the rank pattern for a given suit from a hand.
          * With PEXT this is a single instruction; otherwise shift+mask.
          * Result: bit 0 = has the lowest rank, ...
@@ -227,36 +219,6 @@ namespace zeta {
             return _pdep_u64(ranks, suit_masks<Variant>[static_cast<int>(s)]);
 #else
             return (static_cast<card_mask>(ranks) & rank_mask<Variant>()) << (static_cast<int>(s) * deck_traits<Variant>::num_ranks);
-#endif
-        }
-
-        /** Highest card in the given suit within mask, or 0 if none. */
-        template<typename Variant>
-        [[nodiscard]] constexpr card_mask highest_in_suit(const card_mask m, const suit s) {
-            const card_mask suited = cards_in_suit<Variant>(m, s);
-            if (suited == 0) return 0;
-            return 1ull << msb_index(suited);
-        }
-
-        /** Lowest card in the given suit within mask, or 0 if none. */
-        template<typename Variant>
-        [[nodiscard]] constexpr card_mask lowest_in_suit(const card_mask m, const suit s) {
-            const card_mask suited = cards_in_suit<Variant>(m, s);
-            if (suited == 0) return 0;
-            return lsb(suited);
-        }
-
-        /**
-         * Return a mask containing only the n-th (0-based) set bit of m.
-         * With PDEP this is a single instruction; otherwise shift+pop_lsb loop.
-         */
-        [[nodiscard]] inline_always card_mask nth_set_bit(card_mask m, int n) {
-            assert(n >= 0 && n < popcount(m));
-#ifdef USE_PEXT
-            return _pdep_u64(card_mask{1} << n, m);
-#else
-            for (int i = 0; i < n; ++i) auto _ = pop_lsb(m);
-            return lsb(m);
 #endif
         }
 

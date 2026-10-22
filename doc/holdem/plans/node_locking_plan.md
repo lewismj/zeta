@@ -1251,8 +1251,8 @@ every downstream view and export.
   node action table, matrix cells, hand table, and detail inspector, so a user can
   always tell locked from solved frequencies
 - Carry `lock_state` from `solver/solution_store.{h,cpp}` into
-  `solution_table_state` / the node model so the CSV export and the compare helpers
-  in `study/study_workflow.cpp` reflect which frequencies were locked. (The
+  `solution_table_state` / the node model so any export or compare tooling built
+  on it can tell which frequencies were locked. (The
   locked-vs-unlocked *compare mode* itself is roadmap item 7 and is not built here;
   this phase only ensures the data it will need is present and labeled.)
 - The UI must **never infer lock state from displayed strategy frequencies**: it

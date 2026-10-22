@@ -764,52 +764,6 @@ namespace zeta::holdem::cfr {
     }
 
     /**
-     * Build uniform enumerated outcomes for every graph chance node.
-     */
-    [[nodiscard]] inline chance_event_table make_uniform_chance_event_table(const game_graph& graph)
-    {
-        chance_event_table table;
-        table.event_id_by_node.assign(graph.node_count, INVALID_CHANCE_EVENT);
-
-        for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
-            if (graph.node_types[node_id] != node_kind::chance) {
-                continue;
-            }
-
-            const auto edges = graph.out_edges(node_id);
-            const auto first_outcome = static_cast<uint32_t>(table.outcomes.size());
-            const auto event_id = static_cast<uint32_t>(table.events.size());
-            table.event_id_by_node[node_id] = event_id;
-            table.events.push_back(chance_event{
-                .node_id = node_id,
-                .first_outcome = first_outcome,
-                .outcome_count = static_cast<uint32_t>(edges.size())
-            });
-
-            const auto probability = edges.empty() ? 0.0f : 1.0f / static_cast<float>(edges.size());
-            for (const auto& child_edge : edges) {
-                table.outcomes.push_back(chance_outcome{
-                    .child_node = child_edge.child_node,
-                    .action_index = child_edge.action_index,
-                    .probability = probability,
-                    .board_partition_id = child_edge.action_index,
-                    .outcome_id = static_cast<chance_outcome_id>(table.outcomes.size())
-                });
-            }
-        }
-
-        return table;
-    }
-
-    struct public_card_chance_event_config {
-        uint32_t node_id = game_graph::INVALID_NODE;
-        public_chance_event_kind kind = public_chance_event_kind::none;
-        card_mask board_cards = 0;
-        card_mask dead_cards = 0;
-        uint32_t board_partition_base = 0;
-    };
-
-    /**
      * Enumerate blocker-safe public-card outcomes with equal probabilities.
      */
     [[nodiscard]] inline std::vector<chance_outcome> enumerate_public_card_outcomes(
@@ -878,36 +832,6 @@ namespace zeta::holdem::cfr {
             });
         }
         return outcomes;
-    }
-
-    [[nodiscard]] inline std::vector<chance_outcome> enumerate_public_card_outcomes(
-        const public_chance_event_kind kind,
-        const card_mask board_cards,
-        const card_mask dead_cards)
-    {
-        const auto cards_to_deal = public_chance_cards_to_deal(kind);
-        return cards_to_deal == 0u
-            ? std::vector<chance_outcome>{}
-            : enumerate_public_card_outcomes(board_cards, dead_cards, cards_to_deal);
-    }
-
-    [[nodiscard]] inline std::vector<chance_outcome> enumerate_flop_outcomes(const card_mask dead_cards)
-    {
-        return enumerate_public_card_outcomes(0, dead_cards, 3);
-    }
-
-    [[nodiscard]] inline std::vector<chance_outcome> enumerate_turn_outcomes(
-        const card_mask flop_cards,
-        const card_mask dead_cards)
-    {
-        return enumerate_public_card_outcomes(flop_cards, dead_cards, 1);
-    }
-
-    [[nodiscard]] inline std::vector<chance_outcome> enumerate_river_outcomes(
-        const card_mask turn_board_cards,
-        const card_mask dead_cards)
-    {
-        return enumerate_public_card_outcomes(turn_board_cards, dead_cards, 1);
     }
 
     /**
@@ -1102,74 +1026,6 @@ namespace zeta::holdem::cfr {
             }
         }
         return canonical;
-    }
-
-    [[nodiscard]] inline std::expected<chance_event_table, chance_table_error> make_public_card_chance_event_table(
-        const game_graph& graph,
-        const std::span<const public_card_chance_event_config> configs)
-    {
-        chance_event_table table;
-        table.event_id_by_node.assign(graph.node_count, INVALID_CHANCE_EVENT);
-
-        for (const auto& config : configs) {
-            if (config.node_id >= graph.node_count
-                || graph.node_types[config.node_id] != node_kind::chance
-                || config.kind == public_chance_event_kind::none) {
-                return std::unexpected(chance_table_error{
-                    chance_table_error_kind::invalid_event_node,
-                    config.node_id
-                });
-            }
-            if (table.event_id_by_node[config.node_id] != INVALID_CHANCE_EVENT) {
-                return std::unexpected(chance_table_error{
-                    chance_table_error_kind::unexpected_chance_event,
-                    config.node_id,
-                    table.event_id_by_node[config.node_id]
-                });
-            }
-            if ((config.board_cards & config.dead_cards) != 0u) {
-                return std::unexpected(chance_table_error{
-                    chance_table_error_kind::dead_card_collision,
-                    config.node_id
-                });
-            }
-
-            auto outcomes = enumerate_public_card_outcomes(config.kind, config.board_cards, config.dead_cards);
-            const auto edges = graph.out_edges(config.node_id);
-            if (outcomes.size() != edges.size()) {
-                return std::unexpected(chance_table_error{
-                    chance_table_error_kind::outcome_count_mismatch,
-                    config.node_id
-                });
-            }
-
-            const auto event_id = static_cast<uint32_t>(table.events.size());
-            const auto first_outcome = static_cast<uint32_t>(table.outcomes.size());
-            table.event_id_by_node[config.node_id] = event_id;
-            table.events.push_back(chance_event{
-                .node_id = config.node_id,
-                .first_outcome = first_outcome,
-                .outcome_count = static_cast<uint32_t>(outcomes.size()),
-                .kind = config.kind,
-                .board_cards = config.board_cards,
-                .dead_cards = config.dead_cards
-            });
-
-            for (uint32_t local_index = 0; local_index < static_cast<uint32_t>(outcomes.size()); ++local_index) {
-                auto& outcome = outcomes[local_index];
-                outcome.child_node = edges[local_index].child_node;
-                outcome.action_index = edges[local_index].action_index;
-                outcome.board_partition_id += config.board_partition_base;
-                outcome.outcome_id = first_outcome + local_index;
-                outcome.dead_cards = config.dead_cards;
-                table.outcomes.push_back(outcome);
-            }
-        }
-
-        if (auto result = validate_chance_event_table(graph, table); !result) {
-            return std::unexpected(result.error());
-        }
-        return table;
     }
 
 }

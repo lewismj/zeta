@@ -110,13 +110,36 @@ namespace {
     };
 
     [[nodiscard]] quinary_layers layers_from_masks(const zeta::holdem::hand_masks& masks) {
-        const auto key = zeta::holdem::non_flush_key(masks);
+        const auto layers = zeta::holdem::make_rank_count_layers(masks);
         return quinary_layers{
-            .ones = static_cast<uint16_t>(key),
-            .twos = static_cast<uint16_t>(key >> 13),
-            .threes = static_cast<uint16_t>(key >> 26),
-            .fours = static_cast<uint16_t>(key >> 39)
+            .ones = layers.ones,
+            .twos = layers.twos,
+            .threes = layers.threes,
+            .fours = layers.fours
         };
+    }
+
+    // The flush stage of evaluate(), split out so it can be timed on its own.
+    [[nodiscard]] bool find_flush_suit(const zeta::holdem::hand_masks& masks, zeta::suit& suit_out) noexcept {
+        for (const auto [ranks, s] : {
+                 std::pair{masks.spades, zeta::suit::spades}, std::pair{masks.hearts, zeta::suit::hearts},
+                 std::pair{masks.diamonds, zeta::suit::diamonds}, std::pair{masks.clubs, zeta::suit::clubs}}) {
+            if (zeta::ops::popcount(ranks) >= 5) {
+                suit_out = s;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] uint32_t flush_index(const zeta::holdem::hand_masks& masks, const zeta::suit flush) noexcept {
+        switch (flush) {
+            case zeta::suit::spades: return masks.spades;
+            case zeta::suit::hearts: return masks.hearts;
+            case zeta::suit::diamonds: return masks.diamonds;
+            case zeta::suit::clubs: return masks.clubs;
+        }
+        std::unreachable();
     }
 
     struct holdem_benchmark_data {
@@ -160,7 +183,7 @@ namespace {
             for (const auto hand : random_hands) {
                 const auto masks = zeta::holdem::suit_rank_masks(hand);
                 zeta::suit flush = zeta::suit::spades;
-                if (!zeta::holdem::find_flush_suit(masks, flush)) {
+                if (!find_flush_suit(masks, flush)) {
                     non_flush_masks.push_back(masks);
                 }
             }
@@ -287,8 +310,8 @@ namespace {
             for (const auto hand : d.random_hands) {
                 const auto masks = zeta::holdem::suit_rank_masks(hand);
                 zeta::suit flush = zeta::suit::spades;
-                if (zeta::holdem::find_flush_suit(masks, flush)) {
-                    benchmark::DoNotOptimize(sink += zeta::holdem::flush_index(masks, flush));
+                if (find_flush_suit(masks, flush)) {
+                    benchmark::DoNotOptimize(sink += flush_index(masks, flush));
                 } else {
                     benchmark::DoNotOptimize(sink += static_cast<std::uint64_t>(masks.spades ^ masks.hearts ^ masks.diamonds ^ masks.clubs));
                 }
@@ -305,8 +328,8 @@ namespace {
             for (const auto hand : d.random_hands) {
                 const auto masks = zeta::holdem::suit_rank_masks(hand);
                 zeta::suit flush = zeta::suit::spades;
-                if (zeta::holdem::find_flush_suit(masks, flush)) {
-                    benchmark::DoNotOptimize(sink += zeta::holdem::flush_index(masks, flush));
+                if (find_flush_suit(masks, flush)) {
+                    benchmark::DoNotOptimize(sink += flush_index(masks, flush));
                 } else {
                     benchmark::DoNotOptimize(sink += zeta::holdem::non_flush_quinary_index(masks));
                 }
@@ -502,8 +525,8 @@ namespace {
             for (const auto hand : d.random_hands) {
                 const auto masks = zeta::holdem::suit_rank_masks(hand);
                 zeta::suit flush = zeta::suit::spades;
-                if (zeta::holdem::find_flush_suit(masks, flush)) {
-                    benchmark::DoNotOptimize(sink += zeta::holdem::flush_index(masks, flush));
+                if (find_flush_suit(masks, flush)) {
+                    benchmark::DoNotOptimize(sink += flush_index(masks, flush));
                 } else {
                     benchmark::DoNotOptimize(sink += static_cast<std::uint64_t>(masks.spades ^ masks.hearts ^ masks.diamonds ^ masks.clubs));
                 }
@@ -513,8 +536,8 @@ namespace {
             for (const auto hand : d.random_hands) {
                 const auto masks = zeta::holdem::suit_rank_masks(hand);
                 zeta::suit flush = zeta::suit::spades;
-                if (zeta::holdem::find_flush_suit(masks, flush)) {
-                    benchmark::DoNotOptimize(sink += zeta::holdem::flush_index(masks, flush));
+                if (find_flush_suit(masks, flush)) {
+                    benchmark::DoNotOptimize(sink += flush_index(masks, flush));
                 } else {
                     benchmark::DoNotOptimize(sink += zeta::holdem::non_flush_quinary_index(masks));
                 }

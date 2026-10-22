@@ -54,15 +54,6 @@ namespace zeta::holdem {
             mask |= m;
         }
 
-        constexpr void remove(const card_mask m) {
-            assert((mask & m) == m);  /**< Cards must be present. */
-            mask &= ~m;
-        }
-
-    };
-
-    struct combination {
-        card_mask mask;
     };
 
     /**
