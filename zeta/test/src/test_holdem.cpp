@@ -2025,6 +2025,12 @@ BOOST_AUTO_TEST_CASE(holdem_range_parser_reports_expected_error_codes) {
     BOOST_CHECK(zeta::holdem::parse_range("AsKh+").error.code == invalid_plus);
     BOOST_CHECK(zeta::holdem::parse_range("A5s-A9o").error.code == invalid_range);
     BOOST_CHECK(zeta::holdem::parse_range("AA:").error.code == invalid_weight);
+    BOOST_CHECK(zeta::holdem::parse_range("AA:7").error.code == invalid_weight);
+    BOOST_CHECK(zeta::holdem::parse_range("KK,AA:1.01").error.code == invalid_weight);
+    BOOST_CHECK_EQUAL(zeta::holdem::parse_range("KK,AA:1.01").error.position, 6u);
+    BOOST_CHECK(zeta::holdem::parse_range("AA:1").ok());
+    BOOST_CHECK(zeta::holdem::parse_range("AA:1.0").ok());
+    BOOST_CHECK(zeta::holdem::parse_range("AA:0").ok());
 }
 
 BOOST_AUTO_TEST_CASE(non_flush_rank_classes_exhaustively_match_dense_table_and_evaluator) {

@@ -241,18 +241,7 @@ namespace zeta::holdem::ui::viewmodels {
 
     std::string range_parse_error_message(const range_parse_error_code code)
     {
-        switch (code) {
-            case range_parse_error_code::none: return "No error.";
-            case range_parse_error_code::expected_rank: return "Expected a card rank.";
-            case range_parse_error_code::expected_suit: return "Expected a card suit.";
-            case range_parse_error_code::expected_term: return "Expected a range term.";
-            case range_parse_error_code::expected_comma: return "Expected a comma between range terms.";
-            case range_parse_error_code::invalid_exact_combo: return "Exact combo cannot use the same card twice.";
-            case range_parse_error_code::invalid_plus: return "Plus syntax is not valid for exact combos.";
-            case range_parse_error_code::invalid_range: return "Range endpoints must describe compatible hand classes.";
-            case range_parse_error_code::invalid_weight: return "Weight must be a non-negative decimal number.";
-        }
-        return "Invalid range.";
+        return range_parse_error_text(code);
     }
 
     range_analysis analyze_range(const std::string_view text, const std::vector<std::string>& board)

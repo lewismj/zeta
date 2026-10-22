@@ -355,6 +355,84 @@ BOOST_AUTO_TEST_CASE(holdem_cli_parses_spot_json) {
     BOOST_CHECK_EQUAL(spot->public_state_id, 7u);
 }
 
+BOOST_AUTO_TEST_CASE(holdem_cli_rejects_contributions_that_disagree_with_the_pot) {
+    // Review case: contributions 200/200 against a pot of 100 used to solve and report EV 611.
+    constexpr const char* overfull = R"({
+  "street": "river",
+  "board": ["As", "Kd", "7c", "4h", "2s"],
+  "ranges": ["AA", "KK"],
+  "gross_pot": 100.0,
+  "contributions": [200.0, 200.0]
+})";
+    auto rejected = zeta::holdem::cli::parse_spot_json(overfull);
+    BOOST_REQUIRE(!rejected.has_value());
+    BOOST_CHECK(rejected.error().kind == zeta::holdem::cli::cli_error_kind::invalid_spot);
+    BOOST_CHECK(rejected.error().message.find("gross_pot - rake") != std::string::npos);
+
+    // Dead money the solver would ignore is rejected too: 50 + 50 against 160 after rake.
+    constexpr const char* dead_money = R"({
+  "street": "river",
+  "board": ["As", "Kd", "7c", "4h", "2s"],
+  "ranges": ["AA", "KK"],
+  "gross_pot": 200.0,
+  "rake": 40.0,
+  "contributions": [50.0, 50.0]
+})";
+    BOOST_CHECK(!zeta::holdem::cli::parse_spot_json(dead_money).has_value());
+
+    // Rake taken out of the pot is fine when the contributions account for the rest.
+    constexpr const char* raked = R"({
+  "street": "river",
+  "board": ["As", "Kd", "7c", "4h", "2s"],
+  "ranges": ["AA", "KK"],
+  "gross_pot": 100.0,
+  "rake": 4.0,
+  "contributions": [48.0, 48.0]
+})";
+    BOOST_CHECK(zeta::holdem::cli::parse_spot_json(raked).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_solve_rejects_non_finite_amounts_in_spots_built_in_code) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot);
+    BOOST_REQUIRE(spot.has_value());
+    BOOST_REQUIRE(zeta::holdem::cli::validate_spot_amounts(*spot).empty());
+
+    const auto rejects = [](const struct zeta::holdem::cli::solve_spot& candidate, const std::string& field) {
+        const auto issues = zeta::holdem::cli::validate_spot_amounts(candidate);
+        const bool flagged = std::ranges::any_of(issues, [&](const auto& issue) { return issue.field == field; });
+        auto solved = zeta::holdem::cli::solve_spot(candidate, 1);
+        return flagged && !solved.has_value()
+            && solved.error().kind == zeta::holdem::cli::cli_error_kind::invalid_spot;
+    };
+
+    constexpr auto nan = std::numeric_limits<double>::quiet_NaN();
+    constexpr auto inf = std::numeric_limits<double>::infinity();
+    auto bad = *spot;
+    bad.stacks[0] = nan;
+    BOOST_CHECK(rejects(bad, "stacks"));
+    bad = *spot;
+    bad.contributions[1] = inf;
+    BOOST_CHECK(rejects(bad, "contributions"));
+    bad = *spot;
+    bad.gross_pot = nan;
+    BOOST_CHECK(rejects(bad, "gross_pot"));
+    bad = *spot;
+    bad.rake = nan;
+    BOOST_CHECK(rejects(bad, "rake"));
+    bad = *spot;
+    bad.contributions[0] += 1.0;
+    BOOST_CHECK(rejects(bad, "contributions"));
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_rejects_range_weights_above_one) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot);
+    BOOST_REQUIRE(spot.has_value());
+    spot->ranges[0] = "AA:7";
+    auto rejected = zeta::holdem::cli::solve_spot(*spot, 1);
+    BOOST_REQUIRE(!rejected.has_value());
+    BOOST_CHECK(rejected.error().message.find("from 0 to 1") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(holdem_cli_json_accepts_escaped_strings_and_reordered_fields) {
     constexpr const char* json = R"({
   "public_state_id": 3,
@@ -501,7 +579,7 @@ BOOST_AUTO_TEST_CASE(holdem_cli_spot_json_roundtrips_serialized_spot) {
     spot.ranges = {"AhKh", "QdJd"};
     spot.gross_pot = 123.5;
     spot.rake = 1.25;
-    spot.contributions = {45.0, 78.5};
+    spot.contributions = {45.0, 77.25};
     spot.stacks = {200.0, 180.0};
     spot.bet_fraction = 0.625;
     spot.max_history = 9;

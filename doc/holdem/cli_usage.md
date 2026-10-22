@@ -72,6 +72,12 @@ Prints a fixed-width strategy table.
 
 The solver accepts either the `bet_fraction` single-bet field or the richer `betting_policy` object. If the policy object is omitted, the default is a single-size policy with `fixed_pot_fractions: [0.75]` and `max_raises: 1`.
 
+Every number must be finite. The solver plays for exactly the chips in
+`contributions` plus what is bet during the hand, so `gross_pot - rake` must equal the
+sum of the contributions: dead money or rake beyond them is not modelled, and a spot
+that disagrees is rejected rather than solved as a different game. Rake is not taken
+from chips bet during the solve.
+
 ### Betting rules
 
 - `contributions` are each seat's chips in the pot so far. Equal contributions open the
@@ -94,11 +100,11 @@ The solver accepts either the `bet_fraction` single-bet field or the richer `bet
 | `players`           | string[] | `["BTN","BB"]`  | 2..7 player labels                                                      |
 | `street`            | string   | `"river"`       | One of `flop`, `turn`, `river`                                          |
 | `board`             | string[] | required        | Exactly 3 cards on flop, 4 on turn, 5 on river                          |
-| `ranges`            | string[] | `["AA","AA"]`   | Must match player count                                                 |
+| `ranges`            | string[] | `["AA","AA"]`   | Must match player count; weights (`AA:0.5`) must be from 0 to 1        |
 | `gross_pot`         | number   | `100.0`         | Must be positive                                                        |
 | `rake`              | number   | `0.0`           | Must be in `[0, gross_pot]`                                             |
-| `contributions`     | number[] | `[50.0,50.0]`   | Must match player count                                                 |
-| `stacks`            | number[] | `[100.0,100.0]` | Must match player count                                                 |
+| `contributions`     | number[] | `[50.0,50.0]`   | Must match player count, be non-negative, and add up to `gross_pot - rake` |
+| `stacks`            | number[] | `[100.0,100.0]` | Must match player count and be non-negative                             |
 | `bet_fraction`      | number   | `0.75`          | Single-size shorthand; mirrored from the first policy fraction           |
 | `betting_policy`    | object   | default single-size policy | `fixed_pot_fractions`, `max_raises`, `min_bet_increment`, `all_in_threshold` |
 | `max_history`       | integer  | `8`             | Betting history cap                                                     |

@@ -384,11 +384,8 @@ namespace zeta::holdem::cli {
             if (spot.hero_seat >= spot.players.size()) {
                 return std::unexpected(cli_error{cli_error_kind::invalid_spot, "hero_seat is out of range."});
             }
-            if (spot.gross_pot <= 0.0) {
-                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "gross_pot must be positive."});
-            }
-            if (spot.rake < 0.0 || spot.rake > spot.gross_pot) {
-                return std::unexpected(cli_error{cli_error_kind::invalid_spot, "rake must be in [0, gross_pot]."});
+            if (const auto issues = validate_spot_amounts(spot); !issues.empty()) {
+                return std::unexpected(cli_error{cli_error_kind::invalid_spot, issues.front().message});
             }
             if (spot.betting_policy.fixed_pot_fractions.empty()) {
                 spot.betting_policy.fixed_pot_fractions = {spot.bet_fraction > 0.0 ? spot.bet_fraction : 0.75};
@@ -401,14 +398,6 @@ namespace zeta::holdem::cli {
                 return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Invalid betting policy: " + std::string{cfr::to_string(policy_validation.error().kind)}});
             }
             spot.bet_fraction = spot.betting_policy.fixed_pot_fractions.front();
-            for (std::size_t seat = 0; seat < spot.players.size(); ++seat) {
-                if (spot.stacks[seat] < 0.0) {
-                    return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Stacks must be non-negative."});
-                }
-                if (spot.contributions[seat] < 0.0) {
-                    return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Contributions must be non-negative."});
-                }
-            }
 
             auto board_result = detail::board_from_cards(spot.board, *parsed_street);
             if (!board_result) {
@@ -912,6 +901,58 @@ namespace zeta::holdem::cli {
             return out;
         }
 
+    }
+
+    std::vector<spot_amount_issue> validate_spot_amounts(const struct solve_spot& spot)
+    {
+        std::vector<spot_amount_issue> issues;
+        const auto amount_text = [](const double value) {
+            std::ostringstream out;
+            out << value;
+            return out.str();
+        };
+
+        const bool pot_valid = std::isfinite(spot.gross_pot) && spot.gross_pot > 0.0;
+        if (!pot_valid) {
+            issues.push_back({"gross_pot", "gross_pot must be a positive finite number."});
+        }
+        const bool rake_valid = std::isfinite(spot.rake) && spot.rake >= 0.0 && (!pot_valid || spot.rake <= spot.gross_pot);
+        if (!rake_valid) {
+            issues.push_back({"rake", "rake must be a finite number in [0, gross_pot]."});
+        }
+        if (!std::isfinite(spot.bet_fraction)) {
+            issues.push_back({"bet_fraction", "bet_fraction must be a finite number."});
+        }
+
+        bool contributions_valid = true;
+        double contribution_total = 0.0;
+        for (std::size_t seat = 0; seat < spot.stacks.size(); ++seat) {
+            if (!std::isfinite(spot.stacks[seat]) || spot.stacks[seat] < 0.0) {
+                issues.push_back({"stacks", "Stacks must be non-negative finite numbers."});
+                break;
+            }
+        }
+        for (const auto contribution : spot.contributions) {
+            if (!std::isfinite(contribution) || contribution < 0.0) {
+                issues.push_back({"contributions", "Contributions must be non-negative finite numbers."});
+                contributions_valid = false;
+                break;
+            }
+            contribution_total += contribution;
+        }
+
+        // The pot the solver plays for is exactly the contributions, so the stated pot
+        // must agree with them; dead money or rake beyond them would be ignored.
+        if (pot_valid && rake_valid && contributions_valid) {
+            const auto distributed = spot.gross_pot - spot.rake;
+            const auto tolerance = 1e-6 * std::max(1.0, spot.gross_pot);
+            if (std::fabs(contribution_total - distributed) > tolerance) {
+                issues.push_back({"contributions",
+                    "Contributions must add up to gross_pot - rake (" + amount_text(distributed)
+                        + "); they add up to " + amount_text(contribution_total) + "."});
+            }
+        }
+        return issues;
     }
 
     std::expected<struct solve_spot, cli_error> parse_spot_json(const std::string_view json_text)

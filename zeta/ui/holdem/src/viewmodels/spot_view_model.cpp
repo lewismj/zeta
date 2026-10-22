@@ -237,11 +237,10 @@ namespace zeta::holdem::ui::viewmodels {
         if (source.hero_seat >= source.players.size()) {
             issues.push_back({"hero_seat", "Hero seat must refer to an existing player."});
         }
-        if (source.gross_pot <= 0.0) {
-            issues.push_back({"gross_pot", "Gross pot must be positive."});
-        }
-        if (source.rake < 0.0 || source.rake > source.gross_pot) {
-            issues.push_back({"rake", "Rake must be between 0 and gross pot."});
+        if (source.stacks.size() == source.players.size() && source.contributions.size() == source.players.size()) {
+            for (auto& issue : cli::validate_spot_amounts(source)) {
+                issues.push_back({std::move(issue.field), std::move(issue.message)});
+            }
         }
         if (source.bet_fraction <= 0.0) {
             issues.push_back({"bet_fraction", "Bet fraction must be positive."});
@@ -250,16 +249,9 @@ namespace zeta::holdem::ui::viewmodels {
             issues.push_back({"betting_policy", "Betting policy is invalid: " + std::string{cfr::to_string(policy_validation.error().kind)}});
         }
 
-        const auto per_seat_count = std::min({source.players.size(), source.stacks.size(), source.contributions.size()});
-        for (std::size_t seat = 0; seat < per_seat_count; ++seat) {
-            if (source.players[seat].empty()) {
+        for (const auto& player : source.players) {
+            if (player.empty()) {
                 issues.push_back({"players", "Seat labels cannot be empty."});
-            }
-            if (source.stacks[seat] < 0.0) {
-                issues.push_back({"stacks", "Stacks must be non-negative."});
-            }
-            if (source.contributions[seat] < 0.0) {
-                issues.push_back({"contributions", "Contributions must be non-negative."});
             }
         }
 

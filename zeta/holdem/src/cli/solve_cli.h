@@ -619,7 +619,8 @@ namespace zeta::holdem::cli {
             if (!parsed.ok()) {
                 return std::unexpected(cli_error{
                     cli_error_kind::invalid_spot,
-                    std::string{"Invalid "} + label + " range."
+                    std::string{"Invalid "} + label + " range at position " + std::to_string(parsed.error.position)
+                        + ": " + range_parse_error_text(parsed.error.code)
                 });
             }
             out = parsed.range;
@@ -701,6 +702,21 @@ namespace zeta::holdem::cli {
         }
         return {};
     }
+
+    /** A spot amount that cannot be solved as written; `field` names the spot JSON field. */
+    struct spot_amount_issue {
+        std::string field;
+        std::string message;
+    };
+
+    /**
+     * Checks the spot's chip amounts: every number finite, stacks and contributions
+     * non-negative, a positive pot, rake within it, and contributions adding up to
+     * gross_pot - rake. The solver pays out exactly the contributions plus what is bet
+     * in the tree, so a pot that disagrees with them would be solved as a different game.
+     * Expects the per-seat arrays to be the player count; check sizes first.
+     */
+    [[nodiscard]] std::vector<spot_amount_issue> validate_spot_amounts(const solve_spot& spot);
 
     [[nodiscard]] std::expected<solve_spot, cli_error> parse_spot_json(std::string_view json);
     [[nodiscard]] std::expected<solve_runtime_options, cli_error> parse_spot_runtime_options(std::string_view json);
@@ -3298,6 +3314,10 @@ namespace zeta::holdem::cli {
         }
         if (spot.hero_seat >= spot.players.size()) {
             return std::unexpected(cli_error{cli_error_kind::invalid_spot, "hero_seat is out of range."});
+        }
+        // Spots built in code skip parse_spot_json, so the amounts are checked here too.
+        if (const auto issues = validate_spot_amounts(spot); !issues.empty()) {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot, issues.front().message});
         }
         auto street = detail::parse_holdem_street(spot.street);
         if (!street) {

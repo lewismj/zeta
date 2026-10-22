@@ -21,6 +21,22 @@ namespace zeta::holdem {
         invalid_weight
     };
 
+    /** Human-readable description of a range parse error. */
+    [[nodiscard]] constexpr const char* range_parse_error_text(const range_parse_error_code code) noexcept {
+        switch (code) {
+            case range_parse_error_code::none: return "No error.";
+            case range_parse_error_code::expected_rank: return "Expected a card rank.";
+            case range_parse_error_code::expected_suit: return "Expected a card suit.";
+            case range_parse_error_code::expected_term: return "Expected a range term.";
+            case range_parse_error_code::expected_comma: return "Expected a comma between range terms.";
+            case range_parse_error_code::invalid_exact_combo: return "Exact combo cannot use the same card twice.";
+            case range_parse_error_code::invalid_plus: return "Plus syntax is not valid for exact combos.";
+            case range_parse_error_code::invalid_range: return "Range endpoints must describe compatible hand classes.";
+            case range_parse_error_code::invalid_weight: return "Weight must be a decimal number from 0 to 1.";
+        }
+        return "Invalid range.";
+    }
+
     struct range_parse_error {
         range_parse_error_code code = range_parse_error_code::none;
         std::size_t position = 0;
@@ -330,6 +346,11 @@ namespace zeta::holdem {
                 }
 
                 weight_out = integer + fractional;
+                if (weight_out > 1.0f) {
+                    pos_ = start;
+                    fail(result, range_parse_error_code::invalid_weight);
+                    return false;
+                }
                 skip_ws();
                 const char c = peek();
                 if (c != '\0' && c != ',') {

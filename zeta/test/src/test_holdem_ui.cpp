@@ -248,7 +248,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_json_roundtrip_preserves_phase1_fields) {
     spot.players = {"BTN", "BB", "CO"};
     spot.board = {"As", "Kd", "7c", "4h"};
     spot.ranges = {"AhKh", "QdJd", "TcTs"};
-    spot.gross_pot = 150.0;
+    spot.gross_pot = 152.5;
     spot.rake = 2.5;
     spot.contributions = {50.0, 50.0, 50.0};
     spot.stacks = {100.0, 120.0, 140.0};
@@ -267,7 +267,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_spot_json_roundtrip_preserves_phase1_fields) {
     BOOST_CHECK_EQUAL(parsed->players[2], "CO");
     BOOST_CHECK_EQUAL(parsed->board.size(), 4u);
     BOOST_CHECK_EQUAL(parsed->ranges[1], "QdJd");
-    BOOST_CHECK_EQUAL(parsed->gross_pot, 150.0);
+    BOOST_CHECK_EQUAL(parsed->gross_pot, 152.5);
     BOOST_CHECK_EQUAL(parsed->rake, 2.5);
     BOOST_CHECK_EQUAL(parsed->stacks[2], 140.0);
     BOOST_CHECK_EQUAL(parsed->root_actor, 2u);
@@ -633,6 +633,27 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_builder_resizes_player_arrays_saf
     BOOST_CHECK_EQUAL(shrunk.contributions.size(), 3u);
     BOOST_CHECK_EQUAL(shrunk.root_actor, 2u);
     BOOST_CHECK_EQUAL(shrunk.hero_seat, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_validation_reports_pot_and_non_finite_amounts) {
+    auto spot = zeta::holdem::ui::viewmodels::make_template_spot(
+        zeta::holdem::ui::viewmodels::spot_template_kind::three_way_river);
+    BOOST_REQUIRE(zeta::holdem::ui::viewmodels::validate_structured_spot(spot).empty());
+
+    auto mismatched = spot;
+    mismatched.gross_pot += 25.0;
+    BOOST_CHECK(has_issue(zeta::holdem::ui::viewmodels::validate_structured_spot(mismatched), "contributions"));
+
+    auto non_finite = spot;
+    non_finite.stacks[1] = std::numeric_limits<double>::quiet_NaN();
+    non_finite.rake = std::numeric_limits<double>::infinity();
+    const auto issues = zeta::holdem::ui::viewmodels::validate_structured_spot(non_finite);
+    BOOST_CHECK(has_issue(issues, "stacks"));
+    BOOST_CHECK(has_issue(issues, "rake"));
+
+    auto heavy = spot;
+    heavy.ranges[0] = "AA:2";
+    BOOST_CHECK(has_issue(zeta::holdem::ui::viewmodels::validate_structured_spot(heavy), "ranges"));
 }
 
 BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_validation_reports_board_actor_and_array_errors) {
