@@ -1702,8 +1702,22 @@ BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_learns_hand_dependent_strategies
     BOOST_REQUIRE(output.has_value());
     BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(output->artifact).has_value());
 
-    // Multiway solves used to copy one strategy to every hand and never learn.
-    BOOST_CHECK_GT(max_strategy_spread(output->artifact), 0.2);
+    // Multiway solves used to copy one strategy to every hand and never learn. The
+    // root spread itself is not a fixed target: BTN converges towards checking its
+    // whole range (sets trap behind the check), so the spread shrinks with iterations.
+    // What must hold throughout is that hands differ and the sets jam more than air.
+    BOOST_CHECK_GT(max_strategy_spread(output->artifact), 0.05);
+    const auto all_in_frequency = [&](const std::string_view hand) {
+        for (const auto& row : output->artifact.strategy) {
+            if (row.hand == hand) {
+                return row.strategy.back().frequency;
+            }
+        }
+        BOOST_FAIL("hand missing from strategy rows");
+        return 0.0;
+    };
+    BOOST_CHECK_GT(all_in_frequency("AsAd"), all_in_frequency("6s5s") + 0.1);
+    BOOST_CHECK_GT(all_in_frequency("KsKh"), all_in_frequency("QsJs") + 0.1);
     BOOST_CHECK_GT(output->artifact.solver.convergence.normalized_regret, 0.0);
     BOOST_CHECK(!output->artifact.solver.convergence.exploitability_available);
 }

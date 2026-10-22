@@ -1371,6 +1371,19 @@ namespace zeta::holdem::cli {
                 const auto& terminal_state = lowered.terminal_states[lowered.terminal_leaves[node_id].terminal_state_id];
                 // The updating player's leaf values must not depend on its own reach,
                 // so it keeps its root range; every other seat uses its reach here.
+                if constexpr (N == 2) {
+                    // Heads-up: pass the base index by reference to the two-index kernel
+                    // rather than copying it into a heap-allocated reach array per leaf.
+                    const auto opponent = static_cast<uint8_t>(1u - updating_player);
+                    const auto opponent_index = make_river_reach_index(cache, node_reach[node_id][opponent]);
+                    const auto values = updating_player == 0u
+                        ? engine.evaluate_terminal_values(cache, base_indices[0], opponent_index, terminal_state)
+                        : engine.evaluate_terminal_values(cache, opponent_index, base_indices[1], terminal_state);
+                    for (const auto combo : active_combos[updating_player]) {
+                        node_values[node_id][combo] = values[updating_player][combo];
+                    }
+                    return;
+                }
                 auto reach = std::make_unique<std::array<river_reach_index, N>>();
                 for (std::size_t seat = 0; seat < N; ++seat) {
                     (*reach)[seat] = seat == updating_player
@@ -1519,10 +1532,11 @@ namespace zeta::holdem::cli {
                 if (terminal_state.kind == terminal_state_kind::showdown) {
                     const auto* entry = terminal_table.find(state_id);
                     assert(entry != nullptr);
-                    auto reach = std::make_unique<std::array<river_reach_index, N>>();
-                    (*reach)[updating_player] = river_base_index_by_state[state_id][updating_player];
-                    (*reach)[opponent] = make_river_reach_index(entry->cache, node_reach[node_id][opponent]);
-                    const auto values = engine.evaluate_terminal_values(entry->cache, *reach, terminal_state);
+                    const auto& base_index = river_base_index_by_state[state_id][updating_player];
+                    const auto opponent_index = make_river_reach_index(entry->cache, node_reach[node_id][opponent]);
+                    const auto values = updating_player == 0u
+                        ? engine.evaluate_terminal_values(entry->cache, base_index, opponent_index, terminal_state)
+                        : engine.evaluate_terminal_values(entry->cache, opponent_index, base_index, terminal_state);
                     for (const auto combo : active_combos[updating_player]) {
                         node_values[node_id][combo] = values[updating_player][combo];
                     }

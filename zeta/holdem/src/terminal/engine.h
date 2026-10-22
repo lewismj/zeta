@@ -67,6 +67,31 @@ namespace zeta::holdem {
             return {};
         }
 
+        /**
+         * Heads-up terminal dispatch over two separately held reach indices, so callers
+         * can pass a long-lived index by reference instead of copying it into an array.
+         */
+        [[nodiscard]] terminal_values<N> evaluate_terminal_values(
+            const river_terminal_cache& cache,
+            const river_reach_index& oop_index,
+            const river_reach_index& ip_index,
+            const terminal_state<N>& state
+        ) const noexcept requires (N == 2) {
+            switch (state.kind) {
+                case terminal_state_kind::showdown:
+                    return ::zeta::holdem::evaluate_showdown_values(cache, oop_index, ip_index, state.context);
+                case terminal_state_kind::fold:
+                    return ::zeta::holdem::evaluate_fold_values(
+                        cache, oop_index, ip_index, state.context,
+                        state.folded.oop_folded ? heads_up_player::oop : heads_up_player::ip);
+                case terminal_state_kind::none:
+                    assert(false);
+                    return {};
+            }
+            assert(false);
+            return {};
+        }
+
         /** Fold dispatch: heads-up exact path for N == 2, exact N-way fold for N > 2. */
         [[nodiscard]] terminal_values<N> evaluate_fold_values(
             const river_terminal_cache& cache,

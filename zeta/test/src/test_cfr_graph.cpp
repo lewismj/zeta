@@ -820,6 +820,20 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(cfr_betting_generation)
 
+holdem_betting_graph_config<2> tiny_river_betting_config()
+{
+    holdem_betting_graph_config<2> config{};
+    config.street = holdem_street::river;
+    config.initial_stacks = {99.0, 98.0};
+    config.initial_committed = {1.0, 2.0};
+    config.root_actor = 0;
+    config.public_state_id = 77;
+    config.max_history = 8;
+    config.abstraction.fixed_pot_fractions = {0.5, 1.0};
+    config.abstraction.max_raises = 1;
+    return config;
+}
+
 BOOST_AUTO_TEST_CASE(opening_bet_sets_last_raise_increment_and_keeps_raise_count_zero) {
     holdem_betting_graph_config<2> config{};
     config.initial_stacks = {100.0, 100.0};
