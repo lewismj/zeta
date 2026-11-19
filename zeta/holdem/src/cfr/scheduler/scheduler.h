@@ -21,10 +21,16 @@ namespace zeta::holdem::cfr::scheduler {
      * scratch; tasks must not otherwise share mutable state. The first exception a
      * task throws stops the batch and is rethrown from run() once every worker has
      * finished.
+     *
+     * An optional stop condition is checked before each chunk. Once it returns true the
+     * pool stops handing out tasks, the batch returns with some tasks not run, and
+     * stopped() stays true: every later run() returns at once. A caller that sets a
+     * stop condition must check stopped() before using a batch's results.
      */
     class worker_pool {
     public:
         using task = std::function<void(uint32_t worker_id, uint64_t task_index)>;
+        using stop_condition = std::function<bool()>;
 
         explicit worker_pool(uint32_t worker_count);
         ~worker_pool();
@@ -34,12 +40,22 @@ namespace zeta::holdem::cfr::scheduler {
 
         [[nodiscard]] uint32_t worker_count() const noexcept;
 
-        /** Runs body(worker_id, i) for every i in [0, task_count) and returns when all have finished. */
+        /** Sets the stop condition. It is called from every worker thread, so it must be thread-safe. */
+        void set_stop_condition(stop_condition condition);
+
+        /** Whether the stop condition has fired. Once true, it stays true. */
+        [[nodiscard]] bool stopped() const noexcept;
+
+        /**
+         * Runs body(worker_id, i) for every i in [0, task_count) and returns when all
+         * have finished, or when the stop condition fires.
+         */
         void run(uint64_t task_count, const task& body, uint32_t chunk_size = 1);
 
     private:
         void worker_main(uint32_t worker_id);
         void drain(uint32_t worker_id) noexcept;
+        [[nodiscard]] bool should_stop();
 
         std::vector<std::thread> threads_;
         std::mutex mutex_;
@@ -54,6 +70,8 @@ namespace zeta::holdem::cfr::scheduler {
         std::exception_ptr error_;
         std::atomic<uint64_t> next_task_{0};
         std::atomic<bool> failed_{false};
+        stop_condition stop_condition_;
+        std::atomic<bool> stopped_{false};
     };
 
 }

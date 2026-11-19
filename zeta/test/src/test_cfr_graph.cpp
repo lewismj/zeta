@@ -1863,4 +1863,30 @@ BOOST_AUTO_TEST_CASE(worker_pool_rethrows_the_first_task_exception_and_stays_usa
     }
 }
 
+BOOST_AUTO_TEST_CASE(worker_pool_stops_handing_out_tasks_once_the_stop_condition_fires) {
+    for (const uint32_t workers : {1u, 4u}) {
+        zeta::holdem::cfr::scheduler::worker_pool pool{workers};
+        std::atomic<bool> stop{false};
+        pool.set_stop_condition([&] { return stop.load(); });
+        BOOST_CHECK(!pool.stopped());
+
+        std::atomic<uint64_t> ran{0};
+        pool.run(10000, [&](uint32_t, uint64_t) {
+            if (++ran == 10u) {
+                stop = true;
+            }
+        });
+        // Each worker may finish the task it had already taken, and no more.
+        BOOST_CHECK(pool.stopped());
+        BOOST_CHECK_LE(ran.load(), 10u + workers);
+
+        // The stop is sticky: later batches return at once even if the condition clears.
+        stop = false;
+        const auto before = ran.load();
+        pool.run(100, [&](uint32_t, uint64_t) { ++ran; });
+        BOOST_CHECK_EQUAL(ran.load(), before);
+        BOOST_CHECK(pool.stopped());
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

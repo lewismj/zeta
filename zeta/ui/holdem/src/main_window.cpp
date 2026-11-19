@@ -40,18 +40,28 @@ namespace zeta::holdem::ui {
     {
         finish_solver_if_ready();
         if (has_active_solve()) {
-            show_themed_message(
-                this,
-                dialog_kind::info,
-                tr("Solve in progress"),
-                tr("A solve is still running for %1. Close the window after the solve finishes.")
-                    .arg(active_solver_document_index_ >= 0 && active_solver_document_index_ < static_cast<int>(documents_.size())
-                        ? display_name(documents_[active_solver_document_index_])
-                        : tr("the active document")));
+            // Already cancelling for a close: the close resumes when the solve stops.
+            if (!close_after_solve_) {
+                const int choice = show_themed_dialog(
+                    this,
+                    dialog_kind::warning,
+                    tr("Solve in progress"),
+                    tr("A solve is still running for %1. Cancel it and close the window? The unfinished solve is discarded.")
+                        .arg(active_solver_document_index_ >= 0 && active_solver_document_index_ < static_cast<int>(documents_.size())
+                            ? display_name(documents_[active_solver_document_index_])
+                            : tr("the active document")),
+                    {{1, tr("Cancel solve and close")}, {0, tr("Keep solving")}},
+                    0);
+                if (choice == 1) {
+                    close_after_solve_ = true;
+                    cancel_solver();
+                }
+            }
             event->ignore();
             return;
         }
 
+        close_after_solve_ = false;
         for (int i = static_cast<int>(documents_.size()) - 1; i >= 0; --i) {
             if (!maybe_close_document(i)) {
                 event->ignore();

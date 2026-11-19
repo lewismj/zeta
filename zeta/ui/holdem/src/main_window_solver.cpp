@@ -76,16 +76,42 @@ namespace zeta::holdem::ui {
             return;
         }
         if (active_session_) {
-            active_session_->cancel_before_start();
+            active_session_->cancel();
         }
         if (solver_state_.state() == solver_state::running || solver_state_.state() == solver_state::starting) {
             (void) solver_state_.transition_to(solver_state::cancelling);
             if (active_solver_document_index_ >= 0 && active_solver_document_index_ < static_cast<int>(documents_.size())) {
-                append_solve_console(documents_[active_solver_document_index_], tr("Cancellation requested. The run stops only if solver work has not started."));
+                append_solve_console(documents_[active_solver_document_index_], tr("Cancellation requested. The solve stops at its next iteration or batch of terminal nodes."));
             }
-            status_label_->setText(tr("Cancellation requested."));
+            status_label_->setText(tr("Cancelling solve..."));
         }
         update_solver_controls();
+    }
+
+    void main_window::update_solver_progress()
+    {
+        if (!active_session_ || solver_state_.state() != solver_state::running) {
+            return;
+        }
+        const auto progress = active_session_->latest_progress();
+        if (!progress) {
+            return;
+        }
+        QString stage;
+        switch (progress->stage) {
+            case cli::solve_progress_stage::graph_build: stage = tr("building the game tree"); break;
+            case cli::solve_progress_stage::cfr: stage = tr("iteration %1 of %2")
+                .arg(static_cast<qulonglong>(progress->iterations_completed))
+                .arg(static_cast<qulonglong>(progress->total_iterations)); break;
+            case cli::solve_progress_stage::extraction: stage = tr("extracting strategies"); break;
+        }
+        const auto name = active_solver_document_index_ >= 0 && active_solver_document_index_ < static_cast<int>(documents_.size())
+            ? display_name(documents_[active_solver_document_index_])
+            : tr("the active document");
+        status_label_->setText(tr("Solving %1: %2 (%3 s).")
+            .arg(name)
+            .arg(stage)
+            .arg(progress->elapsed_ms / 1000.0, 0, 'f', 1));
     }
 
     void main_window::finish_solver_if_ready()
@@ -112,6 +138,9 @@ namespace zeta::holdem::ui {
                 ? solver_state::failed
                 : solver_state::completed);
             update_solver_controls();
+            if (close_after_solve_) {
+                QTimer::singleShot(0, this, [this] { close(); });
+            }
             return;
         }
 
@@ -147,15 +176,19 @@ namespace zeta::holdem::ui {
                 status_label_->setText(tr("Solve failed."));
                 break;
             case solver::solver_session_terminal_state::cancelled_before_start:
-                summary = tr("cancelled-before-start");
-                append_solve_console(entry, tr("Finished %1\nStatus: cancelled before start")
-                    .arg(QString::fromStdString(result.metadata.finished_utc)));
+            case solver::solver_session_terminal_state::cancelled: {
+                const bool before_start = result.terminal_state == solver::solver_session_terminal_state::cancelled_before_start;
+                summary = before_start ? tr("cancelled-before-start") : tr("cancelled");
+                append_solve_console(entry, tr("Finished %1\nStatus: %2")
+                    .arg(QString::fromStdString(result.metadata.finished_utc))
+                    .arg(before_start ? tr("cancelled before start") : tr("cancelled; no solution was stored")));
                 if (solver_state_.state() == solver_state::running || solver_state_.state() == solver_state::starting) {
                     (void) solver_state_.transition_to(solver_state::cancelling);
                 }
                 (void) solver_state_.transition_to(solver_state::idle);
-                status_label_->setText(tr("Solve cancelled before start."));
+                status_label_->setText(before_start ? tr("Solve cancelled before start.") : tr("Solve cancelled."));
                 break;
+            }
         }
 
         auto metadata = entry.document.metadata();
@@ -168,6 +201,10 @@ namespace zeta::holdem::ui {
         });
         refresh_document_tab(document_index);
         update_solver_controls();
+        if (close_after_solve_) {
+            // Resume the close that was waiting for the solve to stop.
+            QTimer::singleShot(0, this, [this] { close(); });
+        }
     }
 
     void main_window::update_solver_controls()

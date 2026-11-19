@@ -68,6 +68,7 @@ namespace zeta::holdem::ui {
         void cancel_solver();
         void show_configuration_settings();
         void finish_solver_if_ready();
+        void update_solver_progress();
         void finish_solver_session(solver::solver_session_result result);
         bool maybe_close_document(int index);
         bool maybe_close_active_solve(int index);
@@ -130,6 +131,8 @@ namespace zeta::holdem::ui {
         int pruning_reconsider_interval_ = 64;
         QList<int> workspace_splitter_sizes_;
         int active_solver_document_index_ = -1;
+        /** Set when the window was closed during a solve: close again once it has stopped. */
+        bool close_after_solve_ = false;
     };
 
 }

@@ -31,13 +31,38 @@ namespace zeta::holdem::cfr::scheduler {
         return static_cast<uint32_t>(threads_.size()) + 1u;
     }
 
+    void worker_pool::set_stop_condition(stop_condition condition)
+    {
+        stop_condition_ = std::move(condition);
+    }
+
+    bool worker_pool::stopped() const noexcept
+    {
+        return stopped_.load(std::memory_order_acquire);
+    }
+
+    bool worker_pool::should_stop()
+    {
+        if (stopped_.load(std::memory_order_acquire)) {
+            return true;
+        }
+        if (stop_condition_ && stop_condition_()) {
+            stopped_.store(true, std::memory_order_release);
+            return true;
+        }
+        return false;
+    }
+
     void worker_pool::run(const uint64_t task_count, const task& body, const uint32_t chunk_size)
     {
-        if (task_count == 0u) {
+        if (task_count == 0u || should_stop()) {
             return;
         }
         if (threads_.empty() || task_count == 1u) {
             for (uint64_t task_index = 0; task_index < task_count; ++task_index) {
+                if (task_index > 0u && should_stop()) {
+                    return;
+                }
                 body(0u, task_index);
             }
             return;
@@ -94,7 +119,7 @@ namespace zeta::holdem::cfr::scheduler {
     void worker_pool::drain(const uint32_t worker_id) noexcept
     {
         try {
-            while (!failed_.load(std::memory_order_relaxed)) {
+            while (!failed_.load(std::memory_order_relaxed) && !should_stop()) {
                 const auto begin = next_task_.fetch_add(chunk_size_, std::memory_order_relaxed);
                 if (begin >= task_count_) {
                     return;

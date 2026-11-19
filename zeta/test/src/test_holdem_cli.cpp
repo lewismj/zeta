@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <ranges>
 #include <string>
@@ -1798,6 +1799,30 @@ BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_learns_hand_dependent_strategies
     BOOST_CHECK_GT(all_in_frequency("KsKh"), all_in_frequency("QsJs") + 0.01);
     BOOST_CHECK_GT(output->artifact.solver.convergence.normalized_regret, 0.0);
     BOOST_CHECK(!output->artifact.solver.convergence.exploitability_available);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_cancellation_is_polled_between_terminal_batches) {
+    auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_three_way_river);
+    BOOST_REQUIRE(spot.has_value());
+
+    // Uncancelled, the callback is polled far more often than once per iteration,
+    // because the worker pool checks it before each chunk of terminal leaves.
+    constexpr uint64_t iterations = 2;
+    std::atomic<uint64_t> polls{0};
+    zeta::holdem::cli::solve_runtime_options runtime{};
+    runtime.cancellation_requested = [&] { ++polls; return false; };
+    BOOST_REQUIRE(zeta::holdem::cli::solve_spot(*spot, iterations, runtime).has_value());
+    BOOST_CHECK_GT(polls.load(), 4u * iterations);
+
+    // A request that arrives part-way through the first pass stops the solve.
+    for (const uint32_t workers : {1u, 4u}) {
+        std::atomic<uint64_t> calls{0};
+        runtime.worker_threads = workers;
+        runtime.cancellation_requested = [&] { return ++calls > 3u; };
+        auto cancelled = zeta::holdem::cli::solve_spot(*spot, 1000, runtime);
+        BOOST_REQUIRE(!cancelled.has_value());
+        BOOST_CHECK(cancelled.error().kind == zeta::holdem::cli::cli_error_kind::cancelled);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_checkdown_matches_brute_force_reference) {

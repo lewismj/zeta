@@ -14,9 +14,20 @@ namespace zeta::holdem::ui::solver {
         return request_;
     }
 
-    void solver_session::cancel_before_start() noexcept
+    void solver_session::cancel() noexcept
     {
-        cancel_before_start_.store(true, std::memory_order_relaxed);
+        cancel_requested_.store(true, std::memory_order_relaxed);
+    }
+
+    bool solver_session::cancel_requested() const noexcept
+    {
+        return cancel_requested_.load(std::memory_order_relaxed);
+    }
+
+    std::optional<cli::solve_progress_event> solver_session::latest_progress() const
+    {
+        const std::lock_guard lock{progress_mutex_};
+        return latest_progress_;
     }
 
     solver_session_result solver_session::run()
@@ -27,7 +38,7 @@ namespace zeta::holdem::ui::solver {
         result.metadata.started_utc = cli::detail::now_utc_iso8601();
         result.metadata.git_revision = request_.runtime.git_revision;
 
-        if (cancel_before_start_.load(std::memory_order_relaxed)) {
+        if (cancel_requested()) {
             result.terminal_state = solver_session_terminal_state::cancelled_before_start;
             result.metadata.finished_utc = cli::detail::now_utc_iso8601();
             return result;
@@ -37,12 +48,29 @@ namespace zeta::holdem::ui::solver {
         if (runtime.timestamp_utc.empty()) {
             runtime.timestamp_utc = result.metadata.started_utc;
         }
+        // The session's own cancel and progress hooks wrap any the request brought.
+        runtime.cancellation_requested = [this, requested = std::move(runtime.cancellation_requested)] {
+            return cancel_requested() || (requested && requested());
+        };
+        runtime.progress_callback = [this, forward = std::move(runtime.progress_callback)](const cli::solve_progress_event& event) {
+            {
+                const std::lock_guard lock{progress_mutex_};
+                latest_progress_ = event;
+            }
+            if (forward) {
+                forward(event);
+            }
+        };
 
         auto solved = cli::solve_spot(request_.spot_snapshot, request_.iterations, runtime);
         result.metadata.finished_utc = cli::detail::now_utc_iso8601();
         if (!solved) {
-            result.terminal_state = solver_session_terminal_state::failed;
-            result.error_message = solved.error().message;
+            result.terminal_state = solved.error().kind == cli::cli_error_kind::cancelled
+                ? solver_session_terminal_state::cancelled
+                : solver_session_terminal_state::failed;
+            if (result.terminal_state == solver_session_terminal_state::failed) {
+                result.error_message = solved.error().message;
+            }
             return result;
         }
 
@@ -58,6 +86,7 @@ namespace zeta::holdem::ui::solver {
             case solver_session_terminal_state::completed: return "completed";
             case solver_session_terminal_state::failed: return "failed";
             case solver_session_terminal_state::cancelled_before_start: return "cancelled-before-start";
+            case solver_session_terminal_state::cancelled: return "cancelled";
         }
         return "unknown";
     }

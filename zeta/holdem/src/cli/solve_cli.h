@@ -333,7 +333,12 @@ namespace zeta::holdem::cli {
         bool allow_lossy_card_isomorphism = false; /**< Permit isomorphism when ranges are not suit-symmetric. */
         dynamic_pruning_policy pruning;            /**< Opt-in approximate dynamic action pruning (default off). */
         convergence_options convergence;           /**< Opt-in convergence / exploitability reporting (default off). */
+        /** Called on the solving thread at iteration batches and stage changes. */
         solve_progress_callback progress_callback;
+        /**
+         * Polled once per iteration and before each batch of terminal leaves, from the
+         * solving thread and from worker threads, so it must be thread-safe.
+         */
         solve_cancellation_callback cancellation_requested;
     };
 
@@ -630,6 +635,24 @@ namespace zeta::holdem::cli {
         [[nodiscard]] inline bool solve_cancel_requested(const solve_runtime_options& runtime)
         {
             return runtime.cancellation_requested && runtime.cancellation_requested();
+        }
+
+        // A pool stopped by cancellation may have skipped terminal leaves, so its last
+        // batch is incomplete; checking it as well as the request keeps the stop sticky
+        // even if the callback's answer changes.
+        [[nodiscard]] inline bool solve_stopped(
+            const solve_runtime_options& runtime,
+            const cfr::scheduler::worker_pool& pool)
+        {
+            return pool.stopped() || solve_cancel_requested(runtime);
+        }
+
+        // Lets a long batch of terminal leaves stop between chunks once cancelled.
+        inline void stop_pool_on_cancel(cfr::scheduler::worker_pool& pool, const solve_runtime_options& runtime)
+        {
+            if (runtime.cancellation_requested) {
+                pool.set_stop_condition([&runtime] { return solve_cancel_requested(runtime); });
+            }
         }
 
         [[nodiscard]] inline cli_error solve_cancelled_error()
@@ -2587,6 +2610,7 @@ namespace zeta::holdem::cli {
                 const auto active_combos = active_combos_by_player(reach_vectors);
                 const auto terminal_nodes = terminal_node_ids(graph);
                 cfr::scheduler::worker_pool pool{resolve_worker_count(runtime)};
+                stop_pool_on_cancel(pool, runtime);
 
                 // Materialize one river terminal cache per distinct river board and, for
                 // each seat, the range-weighted reach index into that cache. These stay
@@ -2645,7 +2669,7 @@ namespace zeta::holdem::cli {
                 uint64_t completed_iterations = iterations;
                 bool reached_target = false;
                 for (uint64_t i = 0; i < iterations; ++i) {
-                    if (solve_cancel_requested(runtime)) {
+                    if (solve_stopped(runtime, pool)) {
                         return std::unexpected(solve_cancelled_error());
                     }
                     if (pruning_state && i > 0 && (i % pruning_state->reconsider_interval()) == 0) {
@@ -2733,7 +2757,7 @@ namespace zeta::holdem::cli {
                 output.timing.cfr_iterations_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - iter_begin).count();
 
-                if (solve_cancel_requested(runtime)) {
+                if (solve_stopped(runtime, pool)) {
                     return std::unexpected(solve_cancelled_error());
                 }
 
@@ -2765,6 +2789,9 @@ namespace zeta::holdem::cli {
                         node_values_by_seat[seat],
                         pool,
                         pruning);
+                }
+                if (solve_stopped(runtime, pool)) {
+                    return std::unexpected(solve_cancelled_error());
                 }
 
                 solve_artifact artifact{};
@@ -2875,6 +2902,7 @@ namespace zeta::holdem::cli {
             const auto active_combos = active_combos_by_player(reach_vectors);
             const auto terminal_nodes = terminal_node_ids(lowered.graph);
             cfr::scheduler::worker_pool pool{resolve_worker_count(runtime)};
+            stop_pool_on_cancel(pool, runtime);
             const auto cache = make_river_terminal_cache(public_board);
             std::array<river_reach_index, N> base_indices{};
             for (std::size_t seat = 0; seat < N; ++seat) {
@@ -2906,7 +2934,7 @@ namespace zeta::holdem::cli {
             uint64_t completed_iterations = iterations;
             bool reached_target = false;
             for (uint64_t i = 0; i < iterations; ++i) {
-                if (solve_cancel_requested(runtime)) {
+                if (solve_stopped(runtime, pool)) {
                     return std::unexpected(solve_cancelled_error());
                 }
                 for (uint8_t updating_player = 0; updating_player < N; ++updating_player) {
@@ -2988,7 +3016,7 @@ namespace zeta::holdem::cli {
             output.timing.cfr_iterations_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - iter_begin).count();
 
-            if (solve_cancel_requested(runtime)) {
+            if (solve_stopped(runtime, pool)) {
                 return std::unexpected(solve_cancelled_error());
             }
 
@@ -3019,6 +3047,9 @@ namespace zeta::holdem::cli {
                     seat,
                     node_values_by_seat[seat],
                     pool);
+            }
+            if (solve_stopped(runtime, pool)) {
+                return std::unexpected(solve_cancelled_error());
             }
 
             solve_artifact artifact{};

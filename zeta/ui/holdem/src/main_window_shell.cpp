@@ -141,6 +141,7 @@ namespace zeta::holdem::ui {
         solver_poll_timer_ = new QTimer{this};
         solver_poll_timer_->setInterval(100);
         connect(solver_poll_timer_, &QTimer::timeout, this, [this] {
+            update_solver_progress();
             finish_solver_if_ready();
         });
 

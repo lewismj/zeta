@@ -44,7 +44,10 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <chrono>
+#include <future>
 #include <set>
+#include <thread>
 #include <regex>
 #include <utility>
 
@@ -570,6 +573,37 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_completes_three_way_spot) {
     BOOST_CHECK(!result.artifact->strategy.empty());
 }
 
+BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_cancels_a_running_solve_and_reports_progress) {
+    zeta::holdem::ui::solver::solver_session session{
+        zeta::holdem::ui::solver::solver_session_request{
+            .spot_snapshot = sample_heads_up_spot(),
+            .iterations = 100000000
+        }
+    };
+    BOOST_CHECK(!session.latest_progress().has_value());
+
+    auto running = std::async(std::launch::async, [&session] { return session.run(); });
+    // Wait for the CFR loop to report progress, then cancel from this thread.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto progress = session.latest_progress();
+        if (progress && progress->stage == zeta::holdem::cli::solve_progress_stage::cfr && progress->iterations_completed > 0u) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    const auto progress = session.latest_progress();
+    BOOST_REQUIRE(progress.has_value());
+    BOOST_CHECK(progress->total_iterations == 100000000u);
+    session.cancel();
+    BOOST_REQUIRE(running.wait_for(std::chrono::seconds{30}) == std::future_status::ready);
+
+    const auto result = running.get();
+    BOOST_CHECK(result.terminal_state == zeta::holdem::ui::solver::solver_session_terminal_state::cancelled);
+    BOOST_CHECK(!result.artifact.has_value());
+    BOOST_CHECK(result.error_message.empty());
+}
+
 BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_reports_failed_and_cancelled_before_start_states) {
     auto invalid_spot = sample_heads_up_spot();
     invalid_spot.root_actor = 9;
@@ -591,7 +625,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_solver_session_reports_failed_and_cancelled_befor
             .iterations = 1
         }
     };
-    cancelled_session.cancel_before_start();
+    cancelled_session.cancel();
     const auto cancelled = cancelled_session.run();
 
     BOOST_CHECK(cancelled.terminal_state == zeta::holdem::ui::solver::solver_session_terminal_state::cancelled_before_start);
