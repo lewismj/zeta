@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 
+#include "cli/combo_cfr.h"
 #include "cli/solve_cli.h"
 
 #include "check_helpers.h"

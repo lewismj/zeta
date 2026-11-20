@@ -28,6 +28,8 @@ add_library(zeta-holdem STATIC
     src/cfr/scheduler/scheduler.cpp
     src/cli/solve_cli.h
     src/cli/solve_cli.cpp
+    src/cli/combo_cfr.h
+    src/cli/combo_cfr.cpp
 )
 add_library(zeta_holdem ALIAS zeta-holdem)
 

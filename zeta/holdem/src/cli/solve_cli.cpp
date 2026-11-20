@@ -1849,4 +1849,106 @@ namespace zeta::holdem::cli {
         return json::serialize(out);
     }
 
+    std::optional<std::vector<std::string>> node_lock_path(
+        const solve_artifact& artifact,
+        const uint32_t node_id)
+    {
+        const auto find_node = [&artifact](const uint32_t id) -> const solved_node* {
+            const auto found = std::ranges::find_if(artifact.solved_nodes, [id](const solved_node& node) {
+                return node.node_id == id;
+            });
+            return found == artifact.solved_nodes.end() ? nullptr : &*found;
+        };
+        const auto* current = find_node(node_id);
+        if (current == nullptr) {
+            return std::nullopt;
+        }
+        std::vector<std::string> reversed;
+        while (current->parent_node_id != cfr::game_graph::INVALID_NODE) {
+            const auto* parent = find_node(current->parent_node_id);
+            if (parent == nullptr) {
+                return std::nullopt;
+            }
+            const auto action = std::ranges::find_if(parent->actions, [&](const solved_node_action& candidate) {
+                return candidate.child_node_id == current->node_id;
+            });
+            if (action == parent->actions.end()) {
+                return std::nullopt;
+            }
+            if (parent->kind == "chance") {
+                std::string cards;
+                for (const auto& card : action->dealt_cards) {
+                    cards += card;
+                }
+                reversed.push_back(std::move(cards));
+            } else {
+                reversed.push_back(action->action);
+            }
+            current = parent;
+        }
+        std::ranges::reverse(reversed);
+        return reversed;
+    }
+
+    std::string format_dump(const solve_artifact& artifact)
+    {
+        std::vector<std::string> actions;
+        const auto* header_strategy = !artifact.root_strategy.empty()
+            ? &artifact.root_strategy
+            : (artifact.strategy.empty() ? nullptr : &artifact.strategy.front().strategy);
+        if (header_strategy != nullptr) {
+            actions.reserve(header_strategy->size());
+            for (const auto& action : *header_strategy) {
+                actions.push_back(action.action);
+            }
+        }
+
+        if (!artifact.root_strategy.empty()) {
+            std::ostringstream os;
+            os << "Root Strategy\n";
+            os << "------------\n";
+            for (const auto& action : artifact.root_strategy) {
+                const auto pct = static_cast<int>(std::llround(action.frequency * 100.0));
+                os << std::left << std::setw(12) << action.action << (std::to_string(pct) + "%") << "\n";
+            }
+            os << "\n";
+            os << std::left << std::setw(8) << "Hand" << std::setw(10) << "EV" << "\n";
+            os << std::string(18, '-') << "\n";
+            for (const auto& row : artifact.strategy) {
+                os << std::left << std::setw(8) << row.hand
+                   << std::showpos << std::fixed << std::setprecision(2) << std::setw(10) << row.ev
+                   << std::noshowpos << "\n";
+            }
+            return os.str();
+        }
+
+        const int hand_width = 8;
+        const int action_width = 10;
+        const int ev_width = 10;
+        std::ostringstream os;
+        os << std::left << std::setw(hand_width) << "Hand";
+        for (const auto& action : actions) {
+            os << std::setw(action_width) << action;
+        }
+        os << std::setw(ev_width) << "EV" << "\n";
+        os << std::string(hand_width + static_cast<int>(actions.size()) * action_width + ev_width, '-') << "\n";
+
+        for (const auto& row : artifact.strategy) {
+            os << std::left << std::setw(hand_width) << row.hand;
+            for (const auto& action_name : actions) {
+                double frequency = 0.0;
+                for (const auto& action : row.strategy) {
+                    if (action.action == action_name) {
+                        frequency = action.frequency;
+                        break;
+                    }
+                }
+                const auto pct = static_cast<int>(std::llround(frequency * 100.0));
+                os << std::setw(action_width) << (std::to_string(pct) + "%");
+            }
+            os << std::showpos << std::fixed << std::setprecision(2) << std::setw(ev_width) << row.ev << std::noshowpos << "\n";
+        }
+        return os.str();
+    }
+
 }
