@@ -9,8 +9,10 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <ranges>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -2042,4 +2044,435 @@ BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_checkdown_matches_brute_force_re
     ZETA_CHECK_REPORT(report);
     ZETA_CHECK_REPORT(mass_report);
     ZETA_CHECK_REPORT(ev_report);
+}
+
+namespace {
+
+    // A heads-up river where the only bet is all-in, so the whole game is small enough
+    // to write down as a matrix game and solve exactly by linear programming. Hero
+    // (seat 0) checks or shoves; after a check the villain checks or shoves; a shove is
+    // folded or called. Hero holds two sets and two air hands, the villain two top
+    // pairs and a weaker pair; QsJs blocks AdQs. Equilibrium play mixes bluffs and
+    // bluff-catches, so the value depends on the betting, not only on the showdown.
+    constexpr const char* sample_spot_river_all_in_game = R"({
+  "street": "river",
+  "players": ["BTN", "BB"],
+  "board": ["Ah", "Kd", "7c", "4s", "2h"],
+  "ranges": ["KhKs,7h7s,QsJs,QcJc", "AsQh,AdQs,8d8h"],
+  "gross_pot": 100.0,
+  "rake": 0.0,
+  "contributions": [50.0, 50.0],
+  "stacks": [50.0, 50.0],
+  "betting_policy": {"fixed_pot_fractions": [0.5], "max_raises": 1},
+  "max_history": 6,
+  "root_actor": "BTN",
+  "hero_seat": "BTN"
+})";
+
+    /** What one hero hand does at its two decision points. */
+    enum class hero_plan : uint8_t { check_fold, check_call, shove };
+    /** What one villain hand does facing a check, then facing a shove. */
+    enum class villain_plan : uint8_t { check_fold, check_call, shove_fold, shove_call };
+    constexpr std::size_t hero_plan_count = 3u;
+    constexpr std::size_t villain_plan_count = 4u;
+
+    /**
+     * The all-in river game in normal form. A pure strategy picks one plan per hand, so
+     * hero has 3^H of them and the villain 4^V. Entry [s][t] is hero's chip result
+     * summed over every (hero hand, villain hand) pair that fits with the board and with
+     * each other, weighted by both range weights. Dividing by matchup_mass gives hero's
+     * range EV in chips, the quantity the solver reports at the root.
+     */
+    struct all_in_river_game {
+        std::vector<zeta::holdem::combination_index> hero_hands;
+        std::vector<zeta::holdem::combination_index> villain_hands;
+        std::vector<std::vector<double>> payoff;
+        double matchup_mass = 0.0;
+    };
+
+    /** The plan that pure strategy @p pure gives hand number @p hand (its base-@p plans digit). */
+    std::size_t plan_of(std::size_t pure, const std::size_t hand, const std::size_t plans)
+    {
+        for (std::size_t digit = 0; digit < hand; ++digit) {
+            pure /= plans;
+        }
+        return pure % plans;
+    }
+
+    /**
+     * Hero's chip result for one hand pair. Both seats have @p contribution in and
+     * @p shove behind, there is no rake, and @p showdown is +1, 0 or -1 for a hero win,
+     * tie or loss.
+     */
+    double all_in_payoff(const hero_plan hero, const villain_plan villain, const int showdown,
+        const double contribution, const double shove)
+    {
+        const bool shoves_after_check = villain == villain_plan::shove_fold || villain == villain_plan::shove_call;
+        const bool calls_shove = villain == villain_plan::check_call || villain == villain_plan::shove_call;
+        if (hero == hero_plan::shove) {
+            return calls_shove ? showdown * (contribution + shove) : contribution;
+        }
+        if (!shoves_after_check) {
+            return showdown * contribution;
+        }
+        return hero == hero_plan::check_fold ? -contribution : showdown * (contribution + shove);
+    }
+
+    all_in_river_game build_all_in_river_game(const struct zeta::holdem::cli::solve_spot& spot)
+    {
+        using namespace zeta::holdem;
+        BOOST_REQUIRE_EQUAL(spot.ranges.size(), 2u);
+        BOOST_REQUIRE_EQUAL(spot.rake, 0.0);
+        BOOST_REQUIRE_EQUAL(spot.contributions[0], spot.contributions[1]);
+        BOOST_REQUIRE_EQUAL(spot.stacks[0], spot.stacks[1]);
+        BOOST_REQUIRE_EQUAL(spot.gross_pot, spot.contributions[0] + spot.contributions[1]);
+        const double contribution = spot.contributions[0];
+        const double shove = spot.stacks[0];
+
+        zeta::card_mask board_mask = 0;
+        for (const auto& text : spot.board) {
+            const auto parsed = cli::detail::parse_card_text(text);
+            BOOST_REQUIRE(parsed.has_value());
+            board_mask |= zeta::card_mask{1} << *parsed;
+        }
+        const auto hero = parse_range(spot.ranges[0]);
+        const auto villain = parse_range(spot.ranges[1]);
+        BOOST_REQUIRE(hero.ok());
+        BOOST_REQUIRE(villain.ok());
+
+        all_in_river_game game;
+        for (combination_index combo = 0; combo < combination_count; ++combo) {
+            if ((combination_mask(combo) & board_mask) != 0) {
+                continue;
+            }
+            if (hero.range[combo] > 0.0f) {
+                game.hero_hands.push_back(combo);
+            }
+            if (villain.range[combo] > 0.0f) {
+                game.villain_hands.push_back(combo);
+            }
+        }
+
+        std::size_t hero_pure = 1u;
+        for (std::size_t hand = 0; hand < game.hero_hands.size(); ++hand) {
+            hero_pure *= hero_plan_count;
+        }
+        std::size_t villain_pure = 1u;
+        for (std::size_t hand = 0; hand < game.villain_hands.size(); ++hand) {
+            villain_pure *= villain_plan_count;
+        }
+        game.payoff.assign(hero_pure, std::vector<double>(villain_pure, 0.0));
+
+        for (std::size_t h = 0; h < game.hero_hands.size(); ++h) {
+            const auto hero_mask = combination_mask(game.hero_hands[h]);
+            const auto hero_rank = evaluate(board_mask | hero_mask);
+            for (std::size_t o = 0; o < game.villain_hands.size(); ++o) {
+                const auto villain_mask = combination_mask(game.villain_hands[o]);
+                if ((hero_mask & villain_mask) != 0) {
+                    continue;
+                }
+                const auto villain_rank = evaluate(board_mask | villain_mask);
+                const int showdown = hero_rank > villain_rank ? 1 : hero_rank < villain_rank ? -1 : 0;
+                const double weight = static_cast<double>(hero.range[game.hero_hands[h]])
+                    * static_cast<double>(villain.range[game.villain_hands[o]]);
+                game.matchup_mass += weight;
+                for (std::size_t s = 0; s < hero_pure; ++s) {
+                    const auto hero_choice = static_cast<hero_plan>(plan_of(s, h, hero_plan_count));
+                    for (std::size_t t = 0; t < villain_pure; ++t) {
+                        const auto villain_choice = static_cast<villain_plan>(plan_of(t, o, villain_plan_count));
+                        game.payoff[s][t] += weight * all_in_payoff(hero_choice, villain_choice, showdown, contribution, shove);
+                    }
+                }
+            }
+        }
+        return game;
+    }
+
+    struct matrix_game_solution {
+        double value = 0.0;
+        std::vector<double> row_strategy;
+        std::vector<double> column_strategy;
+    };
+
+    /**
+     * Solves a zero-sum matrix game (the row player maximises) with the simplex method.
+     * The payoffs are shifted to be positive, then the LP "maximise sum z subject to
+     * A z <= 1, z >= 0" is solved from the slack basis. The game value is 1 / sum z less
+     * the shift; the column strategy is z normalised and the row strategy is the dual
+     * solution (the objective row under the slack columns) normalised the same way.
+     * Bland's rule keeps the pivoting from cycling.
+     */
+    matrix_game_solution solve_matrix_game(const std::vector<std::vector<double>>& payoff)
+    {
+        const std::size_t rows = payoff.size();
+        BOOST_REQUIRE_GT(rows, 0u);
+        const std::size_t columns = payoff.front().size();
+        double minimum = std::numeric_limits<double>::infinity();
+        for (const auto& row : payoff) {
+            minimum = std::min(minimum, std::ranges::min(row));
+        }
+        const double shift = 1.0 - minimum;
+
+        const std::size_t rhs = columns + rows;
+        std::vector<std::vector<double>> tableau(rows + 1u, std::vector<double>(rhs + 1u, 0.0));
+        std::vector<std::size_t> basis(rows);
+        for (std::size_t r = 0; r < rows; ++r) {
+            for (std::size_t c = 0; c < columns; ++c) {
+                tableau[r][c] = payoff[r][c] + shift;
+            }
+            tableau[r][columns + r] = 1.0;
+            tableau[r][rhs] = 1.0;
+            basis[r] = columns + r;
+        }
+        auto& objective = tableau[rows];
+        for (std::size_t c = 0; c < columns; ++c) {
+            objective[c] = -1.0;
+        }
+
+        constexpr double epsilon = 1e-12;
+        for (;;) {
+            std::size_t entering = 0;
+            while (entering < rhs && objective[entering] >= -epsilon) {
+                ++entering;
+            }
+            if (entering == rhs) {
+                break;
+            }
+            std::size_t leaving = rows;
+            for (std::size_t r = 0; r < rows; ++r) {
+                if (tableau[r][entering] <= epsilon) {
+                    continue;
+                }
+                if (leaving == rows) {
+                    leaving = r;
+                    continue;
+                }
+                const double ratio = tableau[r][rhs] / tableau[r][entering];
+                const double best = tableau[leaving][rhs] / tableau[leaving][entering];
+                if (ratio < best - epsilon || (ratio <= best + epsilon && basis[r] < basis[leaving])) {
+                    leaving = r;
+                }
+            }
+            BOOST_REQUIRE_MESSAGE(leaving < rows, "matrix game LP is unbounded");
+
+            const double pivot = tableau[leaving][entering];
+            for (auto& entry : tableau[leaving]) {
+                entry /= pivot;
+            }
+            for (std::size_t r = 0; r <= rows; ++r) {
+                const double factor = tableau[r][entering];
+                if (r == leaving || factor == 0.0) {
+                    continue;
+                }
+                for (std::size_t c = 0; c <= rhs; ++c) {
+                    tableau[r][c] -= factor * tableau[leaving][c];
+                }
+            }
+            basis[leaving] = entering;
+        }
+
+        const double total = objective[rhs];
+        BOOST_REQUIRE_GT(total, 0.0);
+        matrix_game_solution solution;
+        solution.value = 1.0 / total - shift;
+        solution.column_strategy.assign(columns, 0.0);
+        for (std::size_t r = 0; r < rows; ++r) {
+            if (basis[r] < columns) {
+                solution.column_strategy[basis[r]] = tableau[r][rhs] / total;
+            }
+        }
+        solution.row_strategy.resize(rows);
+        for (std::size_t r = 0; r < rows; ++r) {
+            solution.row_strategy[r] = objective[columns + r] / total;
+        }
+        return solution;
+    }
+
+    /** Hero's payoff in each column against the mixed row strategy @p rows. */
+    std::vector<double> column_payoffs(const std::vector<std::vector<double>>& payoff, const std::vector<double>& rows)
+    {
+        std::vector<double> values(payoff.front().size(), 0.0);
+        for (std::size_t s = 0; s < payoff.size(); ++s) {
+            for (std::size_t t = 0; t < values.size(); ++t) {
+                values[t] += rows[s] * payoff[s][t];
+            }
+        }
+        return values;
+    }
+
+    /** Hero's payoff in each row against the mixed column strategy @p columns. */
+    std::vector<double> row_payoffs(const std::vector<std::vector<double>>& payoff, const std::vector<double>& columns)
+    {
+        std::vector<double> values(payoff.size(), 0.0);
+        for (std::size_t s = 0; s < payoff.size(); ++s) {
+            for (std::size_t t = 0; t < columns.size(); ++t) {
+                values[s] += payoff[s][t] * columns[t];
+            }
+        }
+        return values;
+    }
+
+    const zeta::holdem::cli::solved_node& solved_node_by_id(const zeta::holdem::cli::solve_artifact& artifact,
+        const uint32_t node_id)
+    {
+        const auto node = std::ranges::find(artifact.solved_nodes, node_id, &zeta::holdem::cli::solved_node::node_id);
+        BOOST_REQUIRE(node != artifact.solved_nodes.end());
+        return *node;
+    }
+
+    const zeta::holdem::cli::solved_node& solved_child(const zeta::holdem::cli::solve_artifact& artifact,
+        const zeta::holdem::cli::solved_node& node, const std::string_view action)
+    {
+        const auto edge = std::ranges::find(node.actions, action, &zeta::holdem::cli::solved_node_action::action);
+        BOOST_REQUIRE_MESSAGE(edge != node.actions.end(), "node " << node.node_id << " has no action " << action);
+        return solved_node_by_id(artifact, edge->child_node_id);
+    }
+
+    double hand_frequency(const zeta::holdem::cli::solved_node& node, const zeta::holdem::combination_index hand,
+        const std::string_view action)
+    {
+        const auto row = std::ranges::find(node.strategy_rows, hand, &zeta::holdem::cli::hand_strategy::combination_index);
+        BOOST_REQUIRE_MESSAGE(row != node.strategy_rows.end(), "node " << node.node_id << " has no row for combo " << hand);
+        const auto entry = std::ranges::find(row->strategy, action, &zeta::holdem::cli::action_strategy::action);
+        BOOST_REQUIRE_MESSAGE(entry != row->strategy.end(), "node " << node.node_id << " row has no action " << action);
+        return entry->frequency;
+    }
+
+    /**
+     * The solver's average strategies as mixed strategies of the matrix game: a hand's
+     * plan probability is the product of its frequencies along the plan, and a pure
+     * strategy's probability is the product over hands, which play independently.
+     */
+    std::pair<std::vector<double>, std::vector<double>> solver_mixed_strategies(
+        const zeta::holdem::cli::solve_artifact& artifact, const all_in_river_game& game)
+    {
+        const auto& root = solved_node_by_id(artifact, artifact.root_node_id);
+        BOOST_REQUIRE_EQUAL(root.acting_seat, 0u);
+        BOOST_REQUIRE_EQUAL(root.actions.size(), 2u);
+        const auto& villain_facing_check = solved_child(artifact, root, "check");
+        const auto& villain_facing_shove = solved_child(artifact, root, "all_in");
+        const auto& hero_facing_shove = solved_child(artifact, villain_facing_check, "all_in");
+        BOOST_REQUIRE_EQUAL(villain_facing_check.actions.size(), 2u);
+        BOOST_REQUIRE_EQUAL(villain_facing_shove.actions.size(), 2u);
+        BOOST_REQUIRE_EQUAL(hero_facing_shove.actions.size(), 2u);
+
+        std::vector<std::array<double, hero_plan_count>> hero_plans;
+        for (const auto hand : game.hero_hands) {
+            const double check = hand_frequency(root, hand, "check");
+            hero_plans.push_back({
+                check * hand_frequency(hero_facing_shove, hand, "fold"),
+                check * hand_frequency(hero_facing_shove, hand, "call"),
+                hand_frequency(root, hand, "all_in")
+            });
+        }
+        std::vector<std::array<double, villain_plan_count>> villain_plans;
+        for (const auto hand : game.villain_hands) {
+            const double check = hand_frequency(villain_facing_check, hand, "check");
+            const double shove = hand_frequency(villain_facing_check, hand, "all_in");
+            const double fold = hand_frequency(villain_facing_shove, hand, "fold");
+            const double call = hand_frequency(villain_facing_shove, hand, "call");
+            villain_plans.push_back({check * fold, check * call, shove * fold, shove * call});
+        }
+
+        std::vector<double> hero(game.payoff.size(), 1.0);
+        for (std::size_t s = 0; s < hero.size(); ++s) {
+            for (std::size_t h = 0; h < hero_plans.size(); ++h) {
+                hero[s] *= hero_plans[h][plan_of(s, h, hero_plan_count)];
+            }
+        }
+        std::vector<double> villain(game.payoff.front().size(), 1.0);
+        for (std::size_t t = 0; t < villain.size(); ++t) {
+            for (std::size_t o = 0; o < villain_plans.size(); ++o) {
+                villain[t] *= villain_plans[o][plan_of(t, o, villain_plan_count)];
+            }
+        }
+        return {hero, villain};
+    }
+
+    struct all_in_reference {
+        zeta::holdem::cli::solve_output output;
+        all_in_river_game game;
+        matrix_game_solution solution;
+    };
+
+    /** Solves the all-in spot with the solver and by LP, and checks the LP's optimality certificate. */
+    all_in_reference solve_all_in_reference(const uint64_t iterations)
+    {
+        auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_river_all_in_game);
+        BOOST_REQUIRE(spot.has_value());
+        auto output = zeta::holdem::cli::solve_spot(*spot, iterations,
+            {.convergence = {.measure_exploitability = true}});
+        BOOST_REQUIRE(output.has_value());
+        BOOST_REQUIRE(output->artifact.solver.convergence.exploitability_available);
+
+        auto game = build_all_in_river_game(*spot);
+        BOOST_REQUIRE_EQUAL(game.hero_hands.size(), 4u);
+        BOOST_REQUIRE_EQUAL(game.villain_hands.size(), 3u);
+        auto solution = solve_matrix_game(game.payoff);
+
+        // Hero's LP strategy wins at least the value against every villain pure
+        // strategy, and the villain's holds hero to at most it: the value is exact.
+        const double tolerance = 1e-9 * game.matchup_mass;
+        BOOST_REQUIRE_GE(std::ranges::min(column_payoffs(game.payoff, solution.row_strategy)), solution.value - tolerance);
+        BOOST_REQUIRE_LE(std::ranges::max(row_payoffs(game.payoff, solution.column_strategy)), solution.value + tolerance);
+        return {std::move(*output), std::move(game), std::move(solution)};
+    }
+
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_river_betting_value_matches_linear_programming_reference) {
+    const auto reference = solve_all_in_reference(2000);
+    const auto& artifact = reference.output.artifact;
+    const auto& convergence = artifact.solver.convergence;
+    const double lp_value = reference.solution.value / reference.game.matchup_mass;
+    BOOST_TEST_MESSAGE("LP game value " << lp_value << " chips, solver NashConv " << convergence.nash_conv);
+
+    const auto& root = solved_node_by_id(artifact, artifact.root_node_id);
+    const auto hero_value = std::ranges::find(root.seat_values, uint8_t{0}, &zeta::holdem::cli::solved_node_seat_value::seat);
+    BOOST_REQUIRE(hero_value != root.seat_values.end());
+    BOOST_CHECK_CLOSE(hero_value->matchup_reach_mass, reference.game.matchup_mass, 1e-6);
+
+    // A profile with NashConv e is worth within e of the game value.
+    BOOST_CHECK_LT(convergence.exploitability_pot_fraction, 1e-3);
+    BOOST_CHECK_MESSAGE(std::fabs(hero_value->conditional_range_ev - lp_value) <= convergence.nash_conv + 1e-6,
+        "solver root EV " << hero_value->conditional_range_ev << " vs LP value " << lp_value
+            << " (NashConv " << convergence.nash_conv << ")");
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_river_betting_strategies_are_unexploitable_against_linear_programming_reference) {
+    const auto reference = solve_all_in_reference(2000);
+    const auto& artifact = reference.output.artifact;
+    const auto& convergence = artifact.solver.convergence;
+    const auto& game = reference.game;
+    const double lp_value = reference.solution.value / game.matchup_mass;
+
+    // Replay the solver's strategies in the matrix game, independently of its tree
+    // walk: their value, and each seat's best response against them.
+    const auto [hero, villain] = solver_mixed_strategies(artifact, game);
+    const auto hero_rows = row_payoffs(game.payoff, villain);
+    double profile_value = 0.0;
+    for (std::size_t s = 0; s < hero.size(); ++s) {
+        profile_value += hero[s] * hero_rows[s];
+    }
+    profile_value /= game.matchup_mass;
+    const double hero_best_response = std::ranges::max(hero_rows) / game.matchup_mass;
+    const double villain_best_response = std::ranges::min(column_payoffs(game.payoff, hero)) / game.matchup_mass;
+    BOOST_TEST_MESSAGE("profile " << profile_value << ", hero BR " << hero_best_response
+        << ", villain BR " << villain_best_response << ", LP value " << lp_value);
+
+    const auto& root = solved_node_by_id(artifact, artifact.root_node_id);
+    const auto hero_value = std::ranges::find(root.seat_values, uint8_t{0}, &zeta::holdem::cli::solved_node_seat_value::seat);
+    BOOST_REQUIRE(hero_value != root.seat_values.end());
+    BOOST_CHECK_SMALL(hero_value->conditional_range_ev - profile_value, 1e-3);
+
+    // The best responses bracket the game value, and their gaps are the solver's
+    // per-seat best-response gaps.
+    BOOST_CHECK_LE(villain_best_response, lp_value + 1e-9);
+    BOOST_CHECK_GE(hero_best_response, lp_value - 1e-9);
+    BOOST_REQUIRE_EQUAL(convergence.best_response_gap.size(), 2u);
+    BOOST_CHECK_SMALL(convergence.best_response_gap[0] - (hero_best_response - profile_value), 1e-3);
+    BOOST_CHECK_SMALL(convergence.best_response_gap[1] - (profile_value - villain_best_response), 1e-3);
+    BOOST_CHECK_SMALL(convergence.nash_conv - (hero_best_response - villain_best_response), 1e-3);
+    // NashConv under 0.1% of the 100-chip pot.
+    BOOST_CHECK_LT(hero_best_response - villain_best_response, 0.1);
 }
