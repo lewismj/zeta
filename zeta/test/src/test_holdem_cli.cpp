@@ -357,7 +357,7 @@ BOOST_AUTO_TEST_CASE(holdem_cli_parses_spot_json) {
     BOOST_CHECK_EQUAL(spot->public_state_id, 7u);
 }
 
-BOOST_AUTO_TEST_CASE(holdem_cli_rejects_contributions_that_disagree_with_the_pot) {
+BOOST_AUTO_TEST_CASE(holdem_cli_rejects_contributions_above_the_pot) {
     // Review case: contributions 200/200 against a pot of 100 used to solve and report EV 611.
     constexpr const char* overfull = R"({
   "street": "river",
@@ -369,9 +369,9 @@ BOOST_AUTO_TEST_CASE(holdem_cli_rejects_contributions_that_disagree_with_the_pot
     auto rejected = zeta::holdem::cli::parse_spot_json(overfull);
     BOOST_REQUIRE(!rejected.has_value());
     BOOST_CHECK(rejected.error().kind == zeta::holdem::cli::cli_error_kind::invalid_spot);
-    BOOST_CHECK(rejected.error().message.find("gross_pot - rake") != std::string::npos);
+    BOOST_CHECK(rejected.error().message.find("more than gross_pot") != std::string::npos);
 
-    // Dead money the solver would ignore is rejected too: 50 + 50 against 160 after rake.
+    // A pot above the contributions holds dead money, which the winner takes.
     constexpr const char* dead_money = R"({
   "street": "river",
   "board": ["As", "Kd", "7c", "4h", "2s"],
@@ -380,9 +380,8 @@ BOOST_AUTO_TEST_CASE(holdem_cli_rejects_contributions_that_disagree_with_the_pot
   "rake": 40.0,
   "contributions": [50.0, 50.0]
 })";
-    BOOST_CHECK(!zeta::holdem::cli::parse_spot_json(dead_money).has_value());
+    BOOST_CHECK(zeta::holdem::cli::parse_spot_json(dead_money).has_value());
 
-    // Rake taken out of the pot is fine when the contributions account for the rest.
     constexpr const char* raked = R"({
   "street": "river",
   "board": ["As", "Kd", "7c", "4h", "2s"],
@@ -392,6 +391,70 @@ BOOST_AUTO_TEST_CASE(holdem_cli_rejects_contributions_that_disagree_with_the_pot
   "contributions": [48.0, 48.0]
 })";
     BOOST_CHECK(zeta::holdem::cli::parse_spot_json(raked).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_winner_takes_dead_money_less_rake) {
+    // A forced check-down (no chips behind) where AA's set of aces beats KK's set of
+    // kings, so hero's EV is the pot it wins less its own contribution.
+    const auto hero_ev = [](const double gross_pot, const double rake, const double contribution) {
+        const auto json = std::string{R"({"street": "river", "board": ["As", "Kd", "7c", "4h", "2s"],
+            "ranges": ["AA", "KK"], "stacks": [0.0, 0.0], "gross_pot": )"} + std::to_string(gross_pot)
+            + R"(, "rake": )" + std::to_string(rake) + R"(, "contributions": [)" + std::to_string(contribution)
+            + ", " + std::to_string(contribution) + "]}";
+        auto spot = zeta::holdem::cli::parse_spot_json(json);
+        BOOST_REQUIRE_MESSAGE(spot.has_value(), (spot ? std::string{} : spot.error().message));
+        auto output = zeta::holdem::cli::solve_spot(*spot, 2);
+        BOOST_REQUIRE(output.has_value());
+        double weighted = 0.0;
+        double weight = 0.0;
+        for (const auto& row : output->artifact.strategy) {
+            weighted += row.range_weight * row.ev;
+            weight += row.range_weight;
+        }
+        return weighted / weight;
+    };
+    // No dead money, no rake: hero wins the other 50.
+    BOOST_CHECK_CLOSE(hero_ev(100.0, 0.0, 50.0), 50.0, 1e-6);
+    // The review's case: pot 200 with 100 dead and 40 rake. Hero wins 200 - 40, less its 50.
+    BOOST_CHECK_CLOSE(hero_ev(200.0, 40.0, 50.0), 110.0, 1e-6);
+    // Rake equal to the dead money cancels it, as every spot valid before did.
+    BOOST_CHECK_CLOSE(hero_ev(100.0, 4.0, 48.0), 48.0, 1e-6);
+    // Rake with no dead money comes out of the winner's share.
+    BOOST_CHECK_CLOSE(hero_ev(100.0, 10.0, 50.0), 40.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_heads_up_showdown_returns_chips_the_winner_did_not_cover) {
+    // AA beats KK. One seat starts all-in for 40, the other has 60 in and chips behind,
+    // so only 40 each is contested: the winner nets 40 and the extra 20 goes back.
+    const auto evs = [](const char* first_range, const char* second_range, const char* stacks) {
+        const auto json = std::string{R"({"street": "river", "board": ["As", "Kd", "7c", "4h", "2s"], "ranges": [")"}
+            + first_range + R"(", ")" + second_range + R"("], "gross_pot": 100.0, "contributions": [40.0, 60.0], "stacks": )"
+            + stacks + "}";
+        auto spot = zeta::holdem::cli::parse_spot_json(json);
+        BOOST_REQUIRE_MESSAGE(spot.has_value(), (spot ? std::string{} : spot.error().message));
+        std::array<double, 2> out{};
+        for (uint8_t seat = 0; seat < 2; ++seat) {
+            spot->hero_seat = seat;
+            auto output = zeta::holdem::cli::solve_spot(*spot, 4);
+            BOOST_REQUIRE_MESSAGE(output.has_value(), (output ? std::string{} : output.error().message));
+            double weighted = 0.0;
+            double weight = 0.0;
+            for (const auto& row : output->artifact.strategy) {
+                weighted += row.range_weight * row.ev;
+                weight += row.range_weight;
+            }
+            out[seat] = weighted / weight;
+        }
+        return out;
+    };
+    // The short seat (40, all-in) wins.
+    const auto short_wins = evs("AA", "KK", "[0.0, 100.0]");
+    BOOST_CHECK_CLOSE(short_wins[0], 40.0, 1e-6);
+    BOOST_CHECK_CLOSE(short_wins[1], -40.0, 1e-6);
+    // The deep seat (60 in) wins: it takes the 40 and keeps its own 20.
+    const auto deep_wins = evs("KK", "AA", "[0.0, 100.0]");
+    BOOST_CHECK_CLOSE(deep_wins[0], -40.0, 1e-6);
+    BOOST_CHECK_CLOSE(deep_wins[1], 40.0, 1e-6);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_solve_rejects_non_finite_amounts_in_spots_built_in_code) {
@@ -1778,7 +1841,11 @@ BOOST_AUTO_TEST_CASE(holdem_cli_river_solve_supports_a_hero_other_than_the_root_
 BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_learns_hand_dependent_strategies) {
     auto spot = zeta::holdem::cli::parse_spot_json(sample_spot_three_way_river);
     BOOST_REQUIRE(spot.has_value());
-    auto output = zeta::holdem::cli::solve_spot(*spot, 60, {.worker_threads = 4});
+    // Uniform averaging: linear averaging converges fast enough that the transient
+    // spread checked below has mostly gone by 60 iterations.
+    zeta::holdem::cli::solve_runtime_options runtime{.worker_threads = 4};
+    runtime.strategy_averaging = zeta::holdem::cli::strategy_averaging_mode::uniform;
+    auto output = zeta::holdem::cli::solve_spot(*spot, 60, runtime);
     BOOST_REQUIRE(output.has_value());
     BOOST_REQUIRE(zeta::holdem::cli::validate_artifact(output->artifact).has_value());
 
@@ -1800,6 +1867,39 @@ BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_learns_hand_dependent_strategies
     BOOST_CHECK_GT(all_in_frequency("KsKh"), all_in_frequency("QsJs") + 0.01);
     BOOST_CHECK_GT(output->artifact.solver.convergence.normalized_regret, 0.0);
     BOOST_CHECK(!output->artifact.solver.convergence.exploitability_available);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_linear_averaging_converges_faster_than_uniform) {
+    namespace cli = zeta::holdem::cli;
+    auto spot = cli::parse_spot_json(sample_spot_river_wide);
+    BOOST_REQUIRE(spot.has_value());
+    cli::solve_runtime_options runtime{};
+    runtime.convergence.measure_exploitability = true;
+    BOOST_CHECK(runtime.strategy_averaging == cli::strategy_averaging_mode::linear);  // the default
+
+    auto linear = cli::solve_spot(*spot, 200, runtime);
+    runtime.strategy_averaging = cli::strategy_averaging_mode::uniform;
+    auto uniform = cli::solve_spot(*spot, 200, runtime);
+    BOOST_REQUIRE(linear.has_value() && uniform.has_value());
+    // On this spot linear averaging is about ten times closer to equilibrium after 200
+    // iterations; a factor of three leaves room for spot-to-spot variation.
+    BOOST_CHECK_LT(linear->artifact.solver.convergence.exploitability * 3.0,
+        uniform->artifact.solver.convergence.exploitability);
+
+    // Only linear averaging is hashed, so a uniform solve keeps its earlier hash.
+    BOOST_CHECK_NE(linear->artifact.solver.hashes.solver_config_hash, uniform->artifact.solver.hashes.solver_config_hash);
+}
+
+BOOST_AUTO_TEST_CASE(holdem_cli_parses_strategy_averaging_runtime_option) {
+    namespace cli = zeta::holdem::cli;
+    const auto runtime_for = [](const std::string& averaging) {
+        return cli::parse_spot_runtime_options(R"({"runtime": {"strategy_averaging": ")" + averaging + R"("}})");
+    };
+    BOOST_REQUIRE(runtime_for("uniform").has_value());
+    BOOST_CHECK(runtime_for("uniform")->strategy_averaging == cli::strategy_averaging_mode::uniform);
+    BOOST_CHECK(runtime_for("linear")->strategy_averaging == cli::strategy_averaging_mode::linear);
+    BOOST_CHECK(!runtime_for("quadratic").has_value());
+    BOOST_CHECK(cli::parse_spot_runtime_options("{}")->strategy_averaging == cli::strategy_averaging_mode::linear);
 }
 
 BOOST_AUTO_TEST_CASE(holdem_cli_cancellation_is_polled_between_terminal_batches) {
@@ -1905,10 +2005,13 @@ BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_checkdown_matches_brute_force_re
     // Brute force over every pair of opponent hands that fits with the hero hand and
     // the board: winners split the 150 pot, everyone has 50 in.
     zeta::test::mismatch_report report{"three-way check-down counterfactual values"};
+    zeta::test::mismatch_report mass_report{"three-way opponent reach mass (every non-colliding pair)"};
+    zeta::test::mismatch_report ev_report{"three-way EV = counterfactual value / opponent mass"};
     for (const auto& row : output->artifact.strategy) {
         const auto hero_mask = combination_mask(row.combination_index);
         const auto hero_rank = evaluate(board_mask | hero_mask);
         double expected = 0.0;
+        double expected_mass = 0.0;
         for (combination_index o1 = 0; o1 < combination_count; ++o1) {
             const auto m1 = combination_mask(o1);
             if (ranges[1][o1] <= 0.0f || (m1 & (board_mask | hero_mask)) != 0) {
@@ -1925,10 +2028,18 @@ BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_checkdown_matches_brute_force_re
                 const int winners = (hero_rank == best) + (r1 == best) + (r2 == best);
                 const double payoff = hero_rank == best ? 150.0 / winners - 50.0 : -50.0;
                 expected += static_cast<double>(ranges[1][o1]) * ranges[2][o2] * payoff;
+                expected_mass += static_cast<double>(ranges[1][o1]) * ranges[2][o2];
             }
         }
         report.expect_small(row.counterfactual_value - expected, 1e-3 * std::max(1.0, std::fabs(expected)),
             row.hand, row.combination_index);
+        mass_report.expect_small(row.opponent_reach_mass - expected_mass, 1e-6 * std::max(1.0, expected_mass),
+            row.hand, row.combination_index);
+        if (expected_mass > 0.0) {
+            ev_report.expect_small(row.ev - expected / expected_mass, 1e-3, row.hand, row.combination_index);
+        }
     }
     ZETA_CHECK_REPORT(report);
+    ZETA_CHECK_REPORT(mass_report);
+    ZETA_CHECK_REPORT(ev_report);
 }

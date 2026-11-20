@@ -45,7 +45,7 @@ namespace zeta::holdem {
             switch (state.kind) {
                 case terminal_state_kind::showdown:
                     if constexpr (N == 2) {
-                        return evaluate_showdown_values(cache, reach, state.context);
+                        return ::zeta::holdem::evaluate_showdown_values(cache, reach[0], reach[1], state);
                     } else {
                         return ::zeta::holdem::evaluate_showdown_values_exact(cache, reach, state);
                     }
@@ -75,7 +75,7 @@ namespace zeta::holdem {
         ) const noexcept requires (N == 2) {
             switch (state.kind) {
                 case terminal_state_kind::showdown:
-                    return ::zeta::holdem::evaluate_showdown_values(cache, oop_index, ip_index, state.context);
+                    return ::zeta::holdem::evaluate_showdown_values(cache, oop_index, ip_index, state);
                 case terminal_state_kind::fold:
                     return ::zeta::holdem::evaluate_fold_values(
                         cache, oop_index, ip_index, state.context,

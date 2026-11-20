@@ -6,7 +6,6 @@
 #include "cfr/solver/metadata.h"
 #include "terminal/terminal_types.h"
 
-#include <boost/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -205,6 +204,8 @@ namespace zeta::holdem::cfr {
         betting_abstraction_policy abstraction{};
         uint16_t max_history = 16;
         uint32_t public_state_id = 0;
+        utility dead_money = 0.0;  /**< Chips in the pot that belong to no seat; the winner takes them. */
+        utility rake = 0.0;        /**< Taken from the pot when it is awarded. */
     };
 
     template <std::size_t N>
@@ -227,6 +228,8 @@ namespace zeta::holdem::cfr {
         uint16_t max_history = 8;
         uint32_t public_state_id = 0;
         public_card_isomorphism_mode isomorphism = public_card_isomorphism_mode::exact;
+        utility dead_money = 0.0;  /**< Chips in the pot that belong to no seat; the winner takes them. */
+        utility rake = 0.0;        /**< Taken from the pot when it is awarded. */
     };
 
     template <std::size_t N>
@@ -242,23 +245,9 @@ namespace zeta::holdem::cfr {
 
     namespace detail {
 
-        [[nodiscard]] inline bool checked_add(uint64_t& total, const uint64_t value) noexcept
-        {
-            if (value > std::numeric_limits<uint64_t>::max() - total) {
-                return false;
-            }
-            total += value;
-            return true;
-        }
+        [[nodiscard]] bool checked_add(uint64_t& total, const uint64_t value) noexcept;
 
-        [[nodiscard]] inline bool checked_mul(const uint64_t lhs, const uint64_t rhs, uint64_t& result) noexcept
-        {
-            if (lhs != 0u && rhs > std::numeric_limits<uint64_t>::max() / lhs) {
-                return false;
-            }
-            result = lhs * rhs;
-            return true;
-        }
+        [[nodiscard]] bool checked_mul(const uint64_t lhs, const uint64_t rhs, uint64_t& result) noexcept;
 
         template <std::size_t N>
         [[nodiscard]] uint8_t next_actor(const betting_state<N>& state) noexcept
@@ -337,20 +326,40 @@ namespace zeta::holdem::cfr {
         }
 
         template <std::size_t N>
-        [[nodiscard]] terminal_state<N> make_terminal_state_from_betting(const betting_state<N>& state)
+        [[nodiscard]] terminal_state<N> make_terminal_state_from_betting(
+            const betting_state<N>& state,
+            const utility dead_money = 0.0,
+            const utility rake = 0.0)
         {
             terminal_context<N> context{};
             for (std::size_t seat = 0; seat < N; ++seat) {
                 context.contribution[seat] = state.committed[seat];
                 context.gross_pot += state.committed[seat];
             }
+            context.gross_pot += dead_money;
+            context.rake = rake;
 
             terminal_state<N> terminal{};
             terminal.kind = state.terminal_kind;
             terminal.context = context;
             terminal.folded = state.folded;
             terminal.all_in_eligible_mask = state.all_in;
-            terminal.pot_layers = make_pot_layers(state);
+            // Dead money is its own layer that every seat still in the hand can win, so a
+            // seat that has put nothing in yet can still take it. The kernels take rake
+            // from the layers in proportion to their size.
+            if (dead_money > 0.0) {
+                pot_layer<N> dead{};
+                dead.amount = dead_money;
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    if (!state.folded[seat]) {
+                        dead.eligible_mask.set(seat);
+                    }
+                }
+                terminal.pot_layers.push_back(dead);
+            }
+            for (auto& layer : make_pot_layers(state)) {
+                terminal.pot_layers.push_back(std::move(layer));
+            }
             for (std::size_t seat = 0; seat < N; ++seat) {
                 if (!state.folded[seat]) {
                     terminal.active_eligible_mask.set(seat);
@@ -435,49 +444,20 @@ namespace zeta::holdem::cfr {
             return state;
         }
 
-        [[nodiscard]] inline bool contains_action_kind(
+        [[nodiscard]] bool contains_action_kind(
             const std::span<const betting_action> actions,
             const betting_action_kind kind,
-            const utility target_bet) noexcept
-        {
-            return std::ranges::any_of(actions, [kind, target_bet](const betting_action& action) {
-                return action.kind == kind && action.target_bet == target_bet;
-            });
-        }
+            const utility target_bet) noexcept;
 
-        [[nodiscard]] inline std::expected<void, betting_policy_error> validate_fraction_values(
+        [[nodiscard]] std::expected<void, betting_policy_error> validate_fraction_values(
             const std::vector<double>& values,
             const uint8_t street,
-            const uint8_t actor) noexcept
-        {
-            for (const auto value : values) {
-                if (!std::isfinite(value) || value < 0.0) {
-                    return std::unexpected(betting_policy_error{
-                        betting_policy_error_kind::negative_fraction,
-                        street,
-                        actor
-                    });
-                }
-            }
-            return {};
-        }
+            const uint8_t actor) noexcept;
 
-        [[nodiscard]] inline std::expected<void, betting_policy_error> validate_raise_multiple_values(
+        [[nodiscard]] std::expected<void, betting_policy_error> validate_raise_multiple_values(
             const std::vector<double>& values,
             const uint8_t street,
-            const uint8_t actor) noexcept
-        {
-            for (const auto value : values) {
-                if (!std::isfinite(value) || value <= 1.0) {
-                    return std::unexpected(betting_policy_error{
-                        betting_policy_error_kind::raise_multiple_too_small,
-                        street,
-                        actor
-                    });
-                }
-            }
-            return {};
-        }
+            const uint8_t actor) noexcept;
 
         template <std::size_t N>
         /** Full-raise minimum: previous full increment, or the opening minimum. */
@@ -555,6 +535,23 @@ namespace zeta::holdem::cfr {
             return false;
         }
 
+        /**
+         * The most any opponent still in the hand can have in on this street: its street
+         * bet plus its remaining stack. Chips bet above this can never be called, so it
+         * is the effective stack the actor bets into.
+         */
+        template <std::size_t N>
+        [[nodiscard]] utility opponent_street_cover(const betting_state<N>& state, const uint8_t actor) noexcept
+        {
+            utility cover = 0.0;
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                if (seat != actor && !state.folded[seat]) {
+                    cover = std::max(cover, state.street_committed[seat] + state.stacks[seat]);
+                }
+            }
+            return cover;
+        }
+
         template <std::size_t N>
         [[nodiscard]] utility live_pot(const betting_state<N>& state) noexcept
         {
@@ -566,384 +563,13 @@ namespace zeta::holdem::cfr {
         }
     }
 
-    [[nodiscard]] inline std::expected<void, betting_policy_error> validate_betting_abstraction_policy(
-        const betting_abstraction_policy& policy) noexcept
-    {
-        if (!std::isfinite(policy.min_bet_increment) || policy.min_bet_increment <= 0.0) {
-            return std::unexpected(betting_policy_error{
-                betting_policy_error_kind::invalid_min_bet_increment
-            });
-        }
+    [[nodiscard]] std::expected<void, betting_policy_error> validate_betting_abstraction_policy(
+        const betting_abstraction_policy& policy) noexcept;
 
-        if (policy.max_raises == 0u) {
-            return std::unexpected(betting_policy_error{
-                betting_policy_error_kind::zero_max_raises
-            });
-        }
+    [[nodiscard]] std::string serialize_betting_abstraction_policy(const betting_abstraction_policy& policy);
 
-        if (!std::isfinite(policy.all_in_threshold) || policy.all_in_threshold <= 0.0 || policy.all_in_threshold > 1.0) {
-            return std::unexpected(betting_policy_error{
-                betting_policy_error_kind::invalid_all_in_threshold
-            });
-        }
-
-        for (std::size_t street = 0; street < policy.max_raises_by_street.size(); ++street) {
-            if (policy.max_raises_by_street[street].has_value() && *policy.max_raises_by_street[street] == 0u) {
-                return std::unexpected(betting_policy_error{
-                    betting_policy_error_kind::zero_max_raises,
-                    static_cast<uint8_t>(street)
-                });
-            }
-        }
-
-        for (std::size_t street = 0; street < policy.all_in_threshold_by_street.size(); ++street) {
-            if (!policy.all_in_threshold_by_street[street].has_value()) {
-                continue;
-            }
-            const auto threshold = *policy.all_in_threshold_by_street[street];
-            if (!std::isfinite(threshold) || threshold <= 0.0 || threshold > 1.0) {
-                return std::unexpected(betting_policy_error{
-                    betting_policy_error_kind::invalid_all_in_threshold,
-                    static_cast<uint8_t>(street)
-                });
-            }
-        }
-
-        if (auto result = detail::validate_fraction_values(policy.fixed_pot_fractions, 0, 0); !result) {
-            return result;
-        }
-
-        for (std::size_t street = 0; street < policy.street_actor_sizes.size(); ++street) {
-            const auto& actor_sizes = policy.street_actor_sizes[street];
-            for (std::size_t actor = 0; actor < actor_sizes.size(); ++actor) {
-                if (auto result = detail::validate_fraction_values(
-                        actor_sizes[actor].fractions,
-                        static_cast<uint8_t>(street),
-                        static_cast<uint8_t>(actor)); !result) {
-                    return result;
-                }
-                if (auto result = detail::validate_raise_multiple_values(
-                        actor_sizes[actor].raise_multiples,
-                        static_cast<uint8_t>(street),
-                        static_cast<uint8_t>(actor)); !result) {
-                    return result;
-                }
-            }
-        }
-
-        return {};
-    }
-
-    namespace {
-        namespace json = boost::json;
-
-        [[nodiscard]] inline std::expected<double, std::string> parse_json_number(
-            const json::value& value,
-            const char* key)
-        {
-            if (value.is_double()) {
-                const auto number = value.as_double();
-                if (!std::isfinite(number)) {
-                    return std::unexpected(std::string("Invalid finite numeric value for '") + key + "'.");
-                }
-                return number;
-            }
-            if (value.is_int64()) {
-                return static_cast<double>(value.as_int64());
-            }
-            if (value.is_uint64()) {
-                return static_cast<double>(value.as_uint64());
-            }
-            return std::unexpected(std::string("Field '") + key + "' must be numeric.");
-        }
-
-        [[nodiscard]] inline std::expected<std::vector<double>, std::string> parse_json_double_array(
-            const json::value& value,
-            const char* key)
-        {
-            if (!value.is_array()) {
-                return std::unexpected(std::string("Field '") + key + "' must be an array.");
-            }
-            std::vector<double> numbers;
-            numbers.reserve(value.as_array().size());
-            for (const auto& item : value.as_array()) {
-                auto parsed = parse_json_number(item, key);
-                if (!parsed) {
-                    return std::unexpected(parsed.error());
-                }
-                numbers.push_back(*parsed);
-            }
-            return numbers;
-        }
-
-        [[nodiscard]] inline std::expected<uint16_t, std::string> parse_json_u16(
-            const json::value& value,
-            const char* key)
-        {
-            if (value.is_uint64()) {
-                const auto parsed = value.as_uint64();
-                if (parsed > static_cast<uint64_t>(std::numeric_limits<uint16_t>::max())) {
-                    return std::unexpected(std::string("Field '") + key + "' is out of range.");
-                }
-                return static_cast<uint16_t>(parsed);
-            }
-            if (value.is_int64()) {
-                const auto parsed = value.as_int64();
-                if (parsed < 0 || parsed > static_cast<int64_t>(std::numeric_limits<uint16_t>::max())) {
-                    return std::unexpected(std::string("Field '") + key + "' is out of range.");
-                }
-                return static_cast<uint16_t>(parsed);
-            }
-            return std::unexpected(std::string("Field '") + key + "' must be an unsigned integer.");
-        }
-
-        [[nodiscard]] inline json::value to_json(const std::vector<double>& values)
-        {
-            json::array array;
-            array.reserve(values.size());
-            for (const auto value : values) {
-                array.emplace_back(value);
-            }
-            return json::value{std::move(array)};
-        }
-
-        [[nodiscard]] inline json::value to_json(const actor_size_set& sizes)
-        {
-            json::object object;
-            object["fractions"] = to_json(sizes.fractions);
-            object["raise_multiples"] = to_json(sizes.raise_multiples);
-            return json::value{std::move(object)};
-        }
-
-        [[nodiscard]] inline std::expected<actor_size_set, std::string> parse_actor_size_set(
-            const json::object& object,
-            const char* key)
-        {
-            actor_size_set sizes{};
-            const auto* fractions = object.if_contains("fractions");
-            if (fractions != nullptr) {
-                auto parsed = parse_json_double_array(*fractions, key);
-                if (!parsed) {
-                    return std::unexpected(parsed.error());
-                }
-                sizes.fractions = std::move(*parsed);
-            }
-            const auto* raise_multiples = object.if_contains("raise_multiples");
-            if (raise_multiples != nullptr) {
-                auto parsed = parse_json_double_array(*raise_multiples, key);
-                if (!parsed) {
-                    return std::unexpected(parsed.error());
-                }
-                sizes.raise_multiples = std::move(*parsed);
-            }
-            return sizes;
-        }
-
-        [[nodiscard]] inline const char* street_key_for_index(const std::size_t index) noexcept
-        {
-            switch (index) {
-                case 1: return "preflop";
-                case 2: return "flop";
-                case 3: return "turn";
-                case 4: return "river";
-                default: return nullptr;
-            }
-        }
-
-        [[nodiscard]] inline std::size_t street_index_for_key(const std::string_view key) noexcept
-        {
-            if (key == "preflop") {
-                return 1u;
-            }
-            if (key == "flop") {
-                return 2u;
-            }
-            if (key == "turn") {
-                return 3u;
-            }
-            if (key == "river") {
-                return 4u;
-            }
-            return 0u;
-        }
-
-        [[nodiscard]] inline json::value to_json(const betting_abstraction_policy& policy)
-        {
-            json::object root;
-            root["schema_version"] = 1;
-            root["min_bet_increment"] = policy.min_bet_increment;
-            root["max_raises"] = static_cast<int64_t>(policy.max_raises);
-            root["all_in_threshold"] = policy.all_in_threshold;
-
-            json::object max_raises_by_street;
-            for (std::size_t street = 1; street < policy.max_raises_by_street.size(); ++street) {
-                if (!policy.max_raises_by_street[street].has_value()) {
-                    continue;
-                }
-                const auto* key = street_key_for_index(street);
-                if (key != nullptr) {
-                    max_raises_by_street[key] = static_cast<int64_t>(*policy.max_raises_by_street[street]);
-                }
-            }
-            if (!max_raises_by_street.empty()) {
-                root["max_raises_by_street"] = std::move(max_raises_by_street);
-            }
-
-            json::object all_in_threshold_by_street;
-            for (std::size_t street = 1; street < policy.all_in_threshold_by_street.size(); ++street) {
-                if (!policy.all_in_threshold_by_street[street].has_value()) {
-                    continue;
-                }
-                const auto* key = street_key_for_index(street);
-                if (key != nullptr) {
-                    all_in_threshold_by_street[key] = *policy.all_in_threshold_by_street[street];
-                }
-            }
-            if (!all_in_threshold_by_street.empty()) {
-                root["all_in_threshold_by_street"] = std::move(all_in_threshold_by_street);
-            }
-
-            json::object street_actor_sizes;
-            for (std::size_t street = 1; street < policy.street_actor_sizes.size(); ++street) {
-                const auto* key = street_key_for_index(street);
-                if (key == nullptr || policy.street_actor_sizes[street].empty()) {
-                    continue;
-                }
-                json::array actors;
-                actors.reserve(policy.street_actor_sizes[street].size());
-                for (const auto& actor_sizes : policy.street_actor_sizes[street]) {
-                    actors.emplace_back(to_json(actor_sizes));
-                }
-                street_actor_sizes[key] = std::move(actors);
-            }
-            if (!street_actor_sizes.empty()) {
-                root["street_actor_sizes"] = std::move(street_actor_sizes);
-            }
-
-            root["fixed_pot_fractions"] = to_json(policy.fixed_pot_fractions);
-            return json::value{std::move(root)};
-        }
-    }
-
-    [[nodiscard]] inline std::string serialize_betting_abstraction_policy(const betting_abstraction_policy& policy)
-    {
-        return boost::json::serialize(to_json(policy));
-    }
-
-    [[nodiscard]] inline std::expected<betting_abstraction_policy, std::string> deserialize_betting_abstraction_policy(
-        std::string_view json_text)
-    {
-        boost::system::error_code ec;
-        const auto value = boost::json::parse(json_text, ec);
-        if (ec) {
-            return std::unexpected(std::string{"Invalid betting abstraction policy JSON: "} + ec.message());
-        }
-        if (!value.is_object()) {
-            return std::unexpected("betting abstraction policy JSON must be an object.");
-        }
-
-        const auto& object = value.as_object();
-        betting_abstraction_policy policy{};
-
-        if (const auto* min_value = object.if_contains("min_bet_increment")) {
-            auto parsed = parse_json_number(*min_value, "min_bet_increment");
-            if (!parsed) {
-                return std::unexpected(parsed.error());
-            }
-            policy.min_bet_increment = *parsed;
-        }
-
-        if (const auto* max_value = object.if_contains("max_raises")) {
-            auto parsed = parse_json_u16(*max_value, "max_raises");
-            if (!parsed) {
-                return std::unexpected(parsed.error());
-            }
-            policy.max_raises = *parsed;
-        }
-
-        if (const auto* threshold_value = object.if_contains("all_in_threshold")) {
-            auto parsed = parse_json_number(*threshold_value, "all_in_threshold");
-            if (!parsed) {
-                return std::unexpected(parsed.error());
-            }
-            policy.all_in_threshold = *parsed;
-        }
-
-        if (const auto* max_by_street = object.if_contains("max_raises_by_street"); max_by_street != nullptr) {
-            if (!max_by_street->is_object()) {
-                return std::unexpected("Field 'max_raises_by_street' must be an object.");
-            }
-            for (const auto& [key, street_value] : max_by_street->as_object()) {
-                const auto street = street_index_for_key(key);
-                if (street == 0u) {
-                    continue;
-                }
-                auto parsed = parse_json_u16(street_value, "max_raises_by_street");
-                if (!parsed) {
-                    return std::unexpected(parsed.error());
-                }
-                policy.max_raises_by_street[street] = *parsed;
-            }
-        }
-
-        if (const auto* threshold_by_street = object.if_contains("all_in_threshold_by_street"); threshold_by_street != nullptr) {
-            if (!threshold_by_street->is_object()) {
-                return std::unexpected("Field 'all_in_threshold_by_street' must be an object.");
-            }
-            for (const auto& [key, street_value] : threshold_by_street->as_object()) {
-                const auto street = street_index_for_key(key);
-                if (street == 0u) {
-                    continue;
-                }
-                auto parsed = parse_json_number(street_value, "all_in_threshold_by_street");
-                if (!parsed) {
-                    return std::unexpected(parsed.error());
-                }
-                policy.all_in_threshold_by_street[street] = *parsed;
-            }
-        }
-
-        if (const auto* actor_sizes = object.if_contains("street_actor_sizes"); actor_sizes != nullptr) {
-            if (!actor_sizes->is_object()) {
-                return std::unexpected("Field 'street_actor_sizes' must be an object.");
-            }
-            for (const auto& [key, street_value] : actor_sizes->as_object()) {
-                const auto street = street_index_for_key(key);
-                if (street == 0u) {
-                    continue;
-                }
-                if (!street_value.is_array()) {
-                    return std::unexpected("Field 'street_actor_sizes' entries must be arrays.");
-                }
-                std::vector<actor_size_set> sets;
-                sets.reserve(street_value.as_array().size());
-                for (const auto& actor_value : street_value.as_array()) {
-                    if (!actor_value.is_object()) {
-                        return std::unexpected("Each actor size entry must be an object.");
-                    }
-                    auto parsed = parse_actor_size_set(actor_value.as_object(), key.data());
-                    if (!parsed) {
-                        return std::unexpected(parsed.error());
-                    }
-                    sets.push_back(std::move(*parsed));
-                }
-                policy.street_actor_sizes[street] = std::move(sets);
-            }
-        }
-
-        if (const auto* fractions = object.if_contains("fixed_pot_fractions"); fractions != nullptr) {
-            auto parsed = parse_json_double_array(*fractions, "fixed_pot_fractions");
-            if (!parsed) {
-                return std::unexpected(parsed.error());
-            }
-            policy.fixed_pot_fractions = std::move(*parsed);
-        }
-
-        if (auto result = validate_betting_abstraction_policy(policy); !result) {
-            return std::unexpected(std::string{"Invalid betting abstraction policy: "} + std::string{to_string(result.error().kind)});
-        }
-        return policy;
-    }
+    [[nodiscard]] std::expected<betting_abstraction_policy, std::string> deserialize_betting_abstraction_policy(
+        std::string_view json_text);
 
     [[nodiscard]] inline std::expected<betting_abstraction_policy, betting_policy_error>
     make_single_size_policy(const double fraction = 0.75, const uint16_t max_raises = 2)
@@ -1099,17 +725,30 @@ namespace zeta::holdem::cfr {
         // Every bigger action, the all-in included, is a bet or raise: it needs the
         // right to raise (raise cap and reopen rule) and an opponent with chips left
         // to answer it. Against players who are all-in, the extra chips can't be called.
+        //
+        // A bet can only be called up to the opponents' effective stack (the most any of
+        // them can have in on this street). When the actor covers every opponent, all
+        // sizes at or above that stack are the same bet, so they collapse into one bet or
+        // raise to exactly that amount, which replaces the all-in; the actor is not all-in
+        // and keeps the rest of its stack.
+        const auto cover = detail::opponent_street_cover(state, actor);
         const auto can_aggress = detail::can_raise(state, actor, policy)
-            && detail::has_opponent_who_can_respond(state, actor);
+            && detail::has_opponent_who_can_respond(state, actor)
+            && cover > state.current_bet;
         if (can_aggress) {
             const auto pot = detail::live_pot(state);
             const auto required_increment = detail::required_raise_increment(state, policy);
             const auto& sizes = policy.sizes_for_actor(state.street, actor);
             const auto all_in_target = street_bet + stack;
-            const auto all_in_snap_target = all_in_target * static_cast<utility>(policy.all_in_threshold_for_street(state.street));
+            const bool covers_opponents = cover < all_in_target;
+            const auto max_target = covers_opponents ? cover : all_in_target;
+            const auto max_kind = covers_opponents
+                ? (state.current_bet == 0.0 ? betting_action_kind::bet : betting_action_kind::raise)
+                : betting_action_kind::all_in;
+            const auto all_in_snap_target = max_target * static_cast<utility>(policy.all_in_threshold_for_street(state.street));
 
             auto add_target_action = [&](const utility raw_target) {
-                auto target = std::min(raw_target, all_in_target);
+                auto target = std::min(raw_target, max_target);
                 if (state.current_bet == 0.0) {
                     target = std::max(target, policy.min_bet_increment);
                 }
@@ -1126,9 +765,9 @@ namespace zeta::holdem::cfr {
                 }
 
                 const auto kind = snaps_to_all_in
-                    ? betting_action_kind::all_in
+                    ? max_kind
                     : (state.current_bet == 0.0 ? betting_action_kind::bet : betting_action_kind::raise);
-                const auto final_target = snaps_to_all_in ? all_in_target : target;
+                const auto final_target = snaps_to_all_in ? max_target : target;
                 if (!detail::contains_action_kind(actions, kind, final_target)) {
                     actions.push_back(betting_action{
                         .kind = kind,
@@ -1151,13 +790,14 @@ namespace zeta::holdem::cfr {
                 add_target_action(state.current_bet * static_cast<utility>(multiple));
             }
 
-            // can_raise guarantees the stack covers more than the call, so this all-in
-            // is always above the current bet and never duplicates the call.
-            if (!detail::contains_action_kind(actions, betting_action_kind::all_in, all_in_target)) {
+            // The largest action: the all-in, or the bet to the opponents' effective stack
+            // when the actor covers them. can_raise guarantees the stack covers more than
+            // the call and the cover exceeds the current bet, so it never duplicates the call.
+            if (!detail::contains_action_kind(actions, max_kind, max_target)) {
                 actions.push_back(betting_action{
-                    .kind = betting_action_kind::all_in,
-                    .amount = stack,
-                    .target_bet = all_in_target
+                    .kind = max_kind,
+                    .amount = max_target - street_bet,
+                    .target_bet = max_target
                 });
             }
         }
@@ -1271,51 +911,8 @@ namespace zeta::holdem::cfr {
         return node_count;
     }
 
-    [[nodiscard]] inline uint64_t hash_betting_abstraction_policy(
-        const betting_abstraction_policy& policy) noexcept
-    {
-        solver::compatibility_hasher hash;
-        hash.add_u64(policy.fixed_pot_fractions.size());
-        for (const auto fraction : policy.fixed_pot_fractions) {
-            hash.add_u64(std::bit_cast<uint64_t>(fraction));
-        }
-        hash.add_u64(std::bit_cast<uint64_t>(policy.all_in_threshold));
-        hash.add_u64(policy.max_raises);
-        hash.add_u64(std::bit_cast<uint64_t>(policy.min_bet_increment));
-
-        for (std::size_t street = 0; street < policy.max_raises_by_street.size(); ++street) {
-            const auto& value = policy.max_raises_by_street[street];
-            hash.add_u64(value.has_value() ? 1u : 0u);
-            if (value.has_value()) {
-                hash.add_u64(*value);
-            }
-        }
-
-        for (std::size_t street = 0; street < policy.all_in_threshold_by_street.size(); ++street) {
-            const auto& value = policy.all_in_threshold_by_street[street];
-            hash.add_u64(value.has_value() ? 1u : 0u);
-            if (value.has_value()) {
-                hash.add_u64(std::bit_cast<uint64_t>(*value));
-            }
-        }
-
-        for (std::size_t street = 0; street < policy.street_actor_sizes.size(); ++street) {
-            const auto& actor_sizes = policy.street_actor_sizes[street];
-            hash.add_u64(actor_sizes.size());
-            for (const auto& actor_size : actor_sizes) {
-                hash.add_u64(actor_size.fractions.size());
-                for (const auto fraction : actor_size.fractions) {
-                    hash.add_u64(std::bit_cast<uint64_t>(fraction));
-                }
-                hash.add_u64(actor_size.raise_multiples.size());
-                for (const auto multiple : actor_size.raise_multiples) {
-                    hash.add_u64(std::bit_cast<uint64_t>(multiple));
-                }
-            }
-        }
-
-        return hash.value;
-    }
+    [[nodiscard]] uint64_t hash_betting_abstraction_policy(
+        const betting_abstraction_policy& policy) noexcept;
 
     /**
      * Exact structural shape of a multi-street public game.
@@ -1765,7 +1362,7 @@ namespace zeta::holdem::cfr {
                         const auto node = new_node(node_kind::terminal);
                         ps_by_builder[node] = ps;
                         street_by_builder[node] = state.street;
-                        terminal_by_builder[node] = detail::make_terminal_state_from_betting(state);
+                        terminal_by_builder[node] = detail::make_terminal_state_from_betting(state, config.dead_money, config.rake);
                         return node;
                     }
 
@@ -2034,7 +1631,7 @@ namespace zeta::holdem::cfr {
                 actor_by_infoset.push_back(state.actor);
                 ++next_infoset_id;
             } else {
-                terminal_states_in_leaf_order.push_back(detail::make_terminal_state_from_betting(state));
+                terminal_states_in_leaf_order.push_back(detail::make_terminal_state_from_betting(state, config.dead_money, config.rake));
             }
             return old_node;
         };

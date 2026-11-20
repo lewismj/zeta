@@ -1075,15 +1075,14 @@ namespace zeta::holdem::cli {
             contribution_total += contribution;
         }
 
-        // The pot the solver plays for is exactly the contributions, so the stated pot
-        // must agree with them; dead money or rake beyond them would be ignored.
-        if (pot_valid && rake_valid && contributions_valid) {
-            const auto distributed = spot.gross_pot - spot.rake;
+        // gross_pot is everything in the pot: the contributions plus any dead money,
+        // which the winner takes. It can't be less than the contributions.
+        if (pot_valid && contributions_valid) {
             const auto tolerance = 1e-6 * std::max(1.0, spot.gross_pot);
-            if (std::fabs(contribution_total - distributed) > tolerance) {
+            if (contribution_total > spot.gross_pot + tolerance) {
                 issues.push_back({"contributions",
-                    "Contributions must add up to gross_pot - rake (" + amount_text(distributed)
-                        + "); they add up to " + amount_text(contribution_total) + "."});
+                    "Contributions add up to " + amount_text(contribution_total)
+                        + ", more than gross_pot (" + amount_text(spot.gross_pot) + ")."});
             }
         }
         return issues;
@@ -1266,6 +1265,19 @@ namespace zeta::holdem::cli {
         runtime.memory_budget_bytes = *memory_budget;
         runtime.enable_card_isomorphism = *card_isomorphism;
         runtime.allow_lossy_card_isomorphism = *allow_lossy;
+
+        auto averaging = optional_string(runtime_object, "strategy_averaging", "linear");
+        if (!averaging) {
+            return std::unexpected(averaging.error());
+        }
+        if (*averaging == "linear") {
+            runtime.strategy_averaging = strategy_averaging_mode::linear;
+        } else if (*averaging == "uniform") {
+            runtime.strategy_averaging = strategy_averaging_mode::uniform;
+        } else {
+            return std::unexpected(cli_error{cli_error_kind::invalid_spot,
+                "runtime.strategy_averaging must be \"linear\" or \"uniform\"."});
+        }
 
         if (const auto* pruning_value = find_value(runtime_object, "dynamic_pruning"); pruning_value != nullptr) {
             if (!pruning_value->is_object()) {

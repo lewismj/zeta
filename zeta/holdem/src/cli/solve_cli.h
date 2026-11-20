@@ -350,6 +350,16 @@ namespace zeta::holdem::cli {
         uint32_t max_curve_samples = 128;    /**< Cap on retained convergence-curve samples. */
     };
 
+    /**
+     * How the average strategy weights iterations. Linear weights iteration t by t,
+     * which is how CFR+ is usually run and converges much faster; uniform weights every
+     * iteration equally, as solves before linear averaging did.
+     */
+    enum class strategy_averaging_mode : uint8_t {
+        linear,
+        uniform
+    };
+
     struct solve_runtime_options {
         std::string timestamp_utc;
         std::string git_revision = "unknown";
@@ -360,6 +370,7 @@ namespace zeta::holdem::cli {
         bool allow_lossy_card_isomorphism = false; /**< Permit isomorphism when ranges are not suit-symmetric. */
         dynamic_pruning_policy pruning;            /**< Opt-in approximate dynamic action pruning (default off). */
         convergence_options convergence;           /**< Opt-in convergence / exploitability reporting (default off). */
+        strategy_averaging_mode strategy_averaging = strategy_averaging_mode::linear;
         /** Called on the solving thread at iteration batches and stage changes. */
         solve_progress_callback progress_callback;
         /**
@@ -768,9 +779,9 @@ namespace zeta::holdem::cli {
 
     /**
      * Checks the spot's chip amounts: every number finite, stacks and contributions
-     * non-negative, a positive pot, rake within it, and contributions adding up to
-     * gross_pot - rake. The solver pays out exactly the contributions plus what is bet
-     * in the tree, so a pot that disagrees with them would be solved as a different game.
+     * non-negative, a positive pot, rake within it, and contributions no more than
+     * gross_pot. The winner takes the contributions, what is bet in the tree and the dead
+     * money (gross_pot minus the contributions), less the rake.
      * Expects the per-seat arrays to be the player count; check sizes first.
      */
     [[nodiscard]] std::vector<spot_amount_issue> validate_spot_amounts(const solve_spot& spot);

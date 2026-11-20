@@ -467,9 +467,12 @@ M_-i(n, h) = Σ_{h_-i compatible with h and B(n)} Π_{j != i} w0_j(h_j) * pi_j(n
 MM_i(n)    = Σ_{h in H_i(n)} range_reach_weight_i(n, h) * M_-i(n, h)
 ```
 
-Heads-up, `M_-i` is exact (blocker inclusion-exclusion). Multiway, the solver
-uses the product of each opponent's compatible mass, which ignores card
-collisions between opponents.
+`M_-i` is exact for any player count. Heads-up it is blocker inclusion-exclusion over
+the opponent's per-card masses. Multiway (`joint_opponent_mass`) every opponent but the
+last is enumerated over hands that share no card with the hero, the board or the
+hands already chosen, and the last opponent's mass avoiding all those cards is taken
+in closed form by inclusion-exclusion; this counts exactly the opponent hand
+combinations the multiway terminal kernels sum over.
 
 ### 13.3 Local intervention operator and profile action values
 

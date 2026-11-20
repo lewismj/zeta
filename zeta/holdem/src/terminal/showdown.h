@@ -73,20 +73,41 @@ namespace zeta::holdem {
      * This is the hand-tuned fast path; the generic evaluate_showdown<N> dispatches
      * here for N == 2. reach[0] == oop, reach[1] == ip.
      */
+    /** The three heads-up showdown outcomes' payoffs: oop wins, ip wins, a tie. */
+    struct heads_up_showdown_payoffs {
+        terminal_payoff oop_win{};
+        terminal_payoff ip_win{};
+        terminal_payoff tie{};
+    };
+
+    /**
+     * Payoffs from the pot alone, for callers that have no pot layers: they assume both
+     * seats put in the same amount, so the whole pot (less rake) is contested.
+     */
+    [[nodiscard]] constexpr heads_up_showdown_payoffs heads_up_showdown_payoffs_from_pot(
+        const terminal_context<2>& context) noexcept
+    {
+        const auto pot = heads_up_pot(context);
+        return heads_up_showdown_payoffs{
+            .oop_win = payoff_for_oop_win(pot),
+            .ip_win = payoff_for_ip_win(pot),
+            .tie = payoff_for_tie(pot)
+        };
+    }
+
     [[nodiscard]] inline_always terminal_result<2> evaluate_showdown_heads_up(
         const river_terminal_cache& cache,
         const river_reach_index& oop_index,
         const river_reach_index& ip_index,
-        const terminal_context<2>& context
+        const heads_up_showdown_payoffs& payoffs
     ) noexcept {
         assert(cache.board_hash == oop_index.board_hash);
         assert(cache.board_hash == ip_index.board_hash);
 
         terminal_result<2> result{};
-        const auto pot = heads_up_pot(context);
-        const auto oop_win = payoff_for_oop_win(pot);
-        const auto ip_win = payoff_for_ip_win(pot);
-        const auto tie = payoff_for_tie(pot);
+        const auto oop_win = payoffs.oop_win;
+        const auto ip_win = payoffs.ip_win;
+        const auto tie = payoffs.tie;
 
         std::size_t oop_bucket_idx = 0;
         std::size_t ip_bucket_idx = 0;
@@ -164,6 +185,15 @@ namespace zeta::holdem {
         const std::array<river_reach_index, N>& reach,
         const terminal_state<N>& state
     ) noexcept;
+
+    [[nodiscard]] inline_always terminal_result<2> evaluate_showdown_heads_up(
+        const river_terminal_cache& cache,
+        const river_reach_index& oop_index,
+        const river_reach_index& ip_index,
+        const terminal_context<2>& context
+    ) noexcept {
+        return evaluate_showdown_heads_up(cache, oop_index, ip_index, heads_up_showdown_payoffs_from_pot(context));
+    }
 
     /**
      * Generic entry point: player count is a compile-time constant.
@@ -337,6 +367,37 @@ namespace zeta::holdem {
         }
 
         return values;
+    }
+
+    /**
+     * Heads-up showdown payoffs from a terminal state's pot layers, so chips one seat put
+     * in that the other could not match go back to it, and dead money and rake follow
+     * the layers. Each outcome is the multiway layer payoff with the two seats ranked.
+     */
+    [[nodiscard]] inline heads_up_showdown_payoffs heads_up_showdown_payoffs_from_state(
+        const terminal_state<2>& state) noexcept
+    {
+        const auto as_payoff = [](const std::array<utility, 2>& values) {
+            return terminal_payoff{.oop = values[0], .ip = values[1]};
+        };
+        return heads_up_showdown_payoffs{
+            .oop_win = as_payoff(detail::showdown_payoff_for_sample<2>({2, 1}, state)),
+            .ip_win = as_payoff(detail::showdown_payoff_for_sample<2>({1, 2}, state)),
+            .tie = as_payoff(detail::showdown_payoff_for_sample<2>({1, 1}, state))
+        };
+    }
+
+    /** Heads-up showdown values for a terminal state, paid from its pot layers. */
+    [[nodiscard]] inline terminal_values<2> evaluate_showdown_values(
+        const river_terminal_cache& cache,
+        const river_reach_index& oop_index,
+        const river_reach_index& ip_index,
+        const terminal_state<2>& state
+    ) noexcept {
+        if (state.pot_layers.empty()) {
+            return evaluate_showdown_heads_up(cache, oop_index, ip_index, state.context).values;
+        }
+        return evaluate_showdown_heads_up(cache, oop_index, ip_index, heads_up_showdown_payoffs_from_state(state)).values;
     }
 
     /**

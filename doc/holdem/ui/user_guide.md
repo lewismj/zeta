@@ -124,8 +124,8 @@ a multiway flop or turn spot.
 | **Players** | Number of seats, from 2 to 7. Resizing also resizes ranges, stacks, and commitments. |
 | **Root actor** | Seat that acts at the root of the solve tree. |
 | **Hero** | Seat used for hero-centered artifact metadata and EV display. |
-| **Gross pot** | Total pot before rake. Must be positive. |
-| **Rake** | Rake removed from the pot. Must be between zero and gross pot. |
+| **Gross pot** | Everything in the pot at the start: the committed chips plus any dead money, which the winner takes. Must be positive and at least the total committed. |
+| **Rake** | Fixed amount taken from the pot when it is awarded. Must be between zero and gross pot. |
 | **Bet size** | Single-size pot-fraction shorthand. Mirrors the first configured betting fraction. |
 | **Max history** | Betting-history cap used when building the game tree. |
 | **Public state** | User-defined public-state identifier stored with the spot. |
@@ -248,7 +248,7 @@ Click **Validate** before solving. Validation checks:
 8. Rake is not negative and does not exceed the gross pot.
 9. Bet fraction is positive.
 10. Seat labels are non-empty.
-11. Stacks and commitments are non-negative.
+11. Stacks and commitments are non-negative, and the commitments add up to no more than the gross pot.
 12. Every seat range parses and has at least one live combo after blockers.
 13. Betting policy configuration is valid (fractions, raise limits, min increment, and thresholds).
 

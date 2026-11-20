@@ -72,11 +72,12 @@ Prints a fixed-width strategy table.
 
 The solver accepts either the `bet_fraction` single-bet field or the richer `betting_policy` object. If the policy object is omitted, the default is a single-size policy with `fixed_pot_fractions: [0.75]` and `max_raises: 1`.
 
-Every number must be finite. The solver plays for exactly the chips in
-`contributions` plus what is bet during the hand, so `gross_pot - rake` must equal the
-sum of the contributions: dead money or rake beyond them is not modelled, and a spot
-that disagrees is rejected rather than solved as a different game. Rake is not taken
-from chips bet during the solve.
+Every number must be finite. `gross_pot` is everything in the pot at the start: the
+`contributions` plus any dead money (chips that belong to no seat still in the hand,
+such as blinds from players who folded), so the contributions can't add up to more
+than it. The winner takes the contributions, what is bet during the hand and the dead
+money, less `rake`, a fixed amount taken when the pot is awarded. With side pots the
+rake comes out of each pot in proportion to its size.
 
 ### Betting rules
 
@@ -92,6 +93,12 @@ from chips bet during the solve.
   fold), and an opponent with chips left to call it. When a whole stack only covers the
   call, it is offered once, as `call`.
 - A call for less than the bet never lowers the amount the other players must match.
+- Bets are capped at the opponents' effective stack: the most any opponent still in the
+  hand can have in on this street. A player who covers every opponent gets one bet or
+  raise to exactly that amount (labelled by its size, e.g. `bet_20`) in place of all
+  larger sizes and the all-in, and keeps the rest of the stack. The all-in threshold
+  applies to that effective stack. If no opponent can put in more than the current bet,
+  no raise is offered.
 
 ### Fields
 
@@ -101,9 +108,9 @@ from chips bet during the solve.
 | `street`            | string   | `"river"`       | One of `flop`, `turn`, `river`                                          |
 | `board`             | string[] | required        | Exactly 3 cards on flop, 4 on turn, 5 on river                          |
 | `ranges`            | string[] | `["AA","AA"]`   | Must match player count; weights (`AA:0.5`) must be from 0 to 1        |
-| `gross_pot`         | number   | `100.0`         | Must be positive                                                        |
-| `rake`              | number   | `0.0`           | Must be in `[0, gross_pot]`                                             |
-| `contributions`     | number[] | `[50.0,50.0]`   | Must match player count, be non-negative, and add up to `gross_pot - rake` |
+| `gross_pot`         | number   | `100.0`         | Everything in the pot at the start, contributions plus dead money; positive |
+| `rake`              | number   | `0.0`           | Fixed amount taken from the pot when it is awarded; in `[0, gross_pot]` |
+| `contributions`     | number[] | `[50.0,50.0]`   | Must match player count, be non-negative, and add up to at most `gross_pot`; the rest is dead money |
 | `stacks`            | number[] | `[100.0,100.0]` | Must match player count and be non-negative                             |
 | `bet_fraction`      | number   | `0.75`          | Single-size shorthand; mirrored from the first policy fraction           |
 | `betting_policy`    | object   | default single-size policy | `fixed_pot_fractions`, `max_raises`, `min_bet_increment`, `all_in_threshold` |
@@ -160,6 +167,7 @@ auto-derived memory budget.
 | Field                                    | Type    | Default        | Notes                                                                                     |
 | ---------------------------------------- | ------- | -------------- | ----------------------------------------------------------------------------------------- |
 | `worker_threads`                         | integer | `1`            | Threads the solve runs on (clamped to `1..64`): terminal leaves, the per-hand passes, setup and extraction; results are bit-identical for any value |
+| `strategy_averaging`                     | string  | `"linear"`     | How the average strategy weights iterations: `"linear"` weights iteration t by t (CFR+ as usually run; far fewer iterations for the same accuracy), `"uniform"` weights them equally, as solves did before |
 | `memory_budget_bytes`                    | integer | `0`            | Pre-build footprint cap; `0` derives `0.8 x` detected available memory (fallback 4 GiB)   |
 | `card_isomorphism`                       | boolean | `false`        | Collapse suit-isomorphic turn/river boards (lossless only for suit-symmetric ranges)      |
 | `allow_lossy_card_isomorphism`           | boolean | `false`        | Permit isomorphism even when ranges are not suit-symmetric (approximate)                  |
@@ -311,8 +319,9 @@ Value fields (schema 7):
   path reach times its opponent reach mass, and `conditional_range_ev` is the
   seat's range EV in chips: `reach_weighted_value / matchup_reach_mass`. The
   category summaries' `average_ev` is normalised the same way.
-- Heads-up these are exact. Multiway, the opponent mass is the product of each
-  opponent's compatible mass, which ignores card collisions between opponents.
+- The opponent mass is exact for any player count: multiway it counts only
+  combinations of opponent hands that share no card with each other, the hand or the
+  board.
 
 Lock fields (schema 7):
 

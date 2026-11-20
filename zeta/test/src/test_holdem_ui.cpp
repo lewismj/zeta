@@ -675,7 +675,7 @@ BOOST_AUTO_TEST_CASE(holdem_ui_structured_spot_validation_reports_pot_and_non_fi
     BOOST_REQUIRE(zeta::holdem::ui::viewmodels::validate_structured_spot(spot).empty());
 
     auto mismatched = spot;
-    mismatched.gross_pot += 25.0;
+    mismatched.gross_pot -= 25.0;  // less than the contributions
     BOOST_CHECK(has_issue(zeta::holdem::ui::viewmodels::validate_structured_spot(mismatched), "contributions"));
 
     auto non_finite = spot;

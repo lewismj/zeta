@@ -1041,7 +1041,8 @@ BOOST_AUTO_TEST_CASE(snapped_size_targets_become_all_in_and_deduplicate) {
     betting_state<3> state{};
     state.street = holdem_street::river;
     state.actor = 0;
-    state.stacks = {100.0, 100.0, 100.0};
+    // Opponents deep enough to call the actor's all-in, so the all-in is a real action.
+    state.stacks = {100.0, 300.0, 300.0};
     state.committed = {100.0, 0.0, 0.0};
     state.street_committed = {100.0, 0.0, 0.0};
     state.current_bet = 100.0;
@@ -1063,6 +1064,50 @@ BOOST_AUTO_TEST_CASE(snapped_size_targets_become_all_in_and_deduplicate) {
     }));
     BOOST_CHECK(std::ranges::any_of(actions, [](const betting_action& action) {
         return action.kind == betting_action_kind::all_in && action.target_bet == 200.0;
+    }));
+}
+
+BOOST_AUTO_TEST_CASE(bets_above_the_opponents_effective_stack_collapse_into_one_covering_bet) {
+    // River, pot 100, BTN 100 behind against BB with 20: every size of 20 or more puts
+    // BB all-in for 20, so they are one action, a bet of exactly 20, and no all-in.
+    betting_state<2> state{};
+    state.street = holdem_street::river;
+    state.actor = 0;
+    state.stacks = {100.0, 20.0};
+    state.committed = {50.0, 50.0};
+
+    betting_abstraction_policy policy{};
+    policy.fixed_pot_fractions = {0.1, 0.75, 1.5};
+    policy.max_raises = 2;
+
+    const auto actions = legal_betting_actions(state, policy);
+    BOOST_REQUIRE_EQUAL(actions.size(), 3u);
+    BOOST_CHECK(actions[0].kind == betting_action_kind::check);
+    BOOST_CHECK(actions[1].kind == betting_action_kind::bet);
+    BOOST_CHECK_CLOSE(actions[1].target_bet, 10.0, 1e-9);
+    BOOST_CHECK(actions[2].kind == betting_action_kind::bet);
+    BOOST_CHECK_CLOSE(actions[2].target_bet, 20.0, 1e-9);
+
+    // The covering bet leaves BTN with chips, not all-in; BB can only fold or call.
+    auto after = apply_betting_action(state, actions[2], policy);
+    BOOST_REQUIRE(after.has_value());
+    BOOST_CHECK_CLOSE(after->stacks[0], 80.0, 1e-9);
+    BOOST_CHECK(!after->all_in[0]);
+    const auto responses = legal_betting_actions(*after, policy);
+    BOOST_REQUIRE_EQUAL(responses.size(), 2u);
+    BOOST_CHECK(responses[0].kind == betting_action_kind::fold);
+    BOOST_CHECK(responses[1].kind == betting_action_kind::call);
+
+    // Facing a bet BB cannot raise past, nothing above the call is offered.
+    betting_state<2> facing = state;
+    facing.actor = 0;
+    facing.street_committed = {0.0, 20.0};
+    facing.stacks = {100.0, 0.0};
+    facing.all_in.set(1);
+    facing.current_bet = 20.0;
+    const auto facing_actions = legal_betting_actions(facing, policy);
+    BOOST_CHECK(std::ranges::none_of(facing_actions, [](const betting_action& action) {
+        return action.kind == betting_action_kind::raise || action.kind == betting_action_kind::all_in;
     }));
 }
 

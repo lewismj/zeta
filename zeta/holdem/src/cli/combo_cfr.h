@@ -38,6 +38,18 @@ namespace zeta::holdem::cli {
             return pool.stopped() || solve_cancel_requested(runtime);
         }
 
+        // Weight of 0-based iteration `iteration` in the average strategy: t = iteration + 1
+        // for linear averaging (CFR+ as usually run; early iterations count for less),
+        // 1 for uniform averaging.
+        [[nodiscard]] inline float strategy_averaging_weight(
+            const solve_runtime_options& runtime,
+            const uint64_t iteration) noexcept
+        {
+            return runtime.strategy_averaging == strategy_averaging_mode::linear
+                ? static_cast<float>(iteration + 1u)
+                : 1.0f;
+        }
+
         // Lets a long batch of terminal leaves stop between chunks once cancelled.
         inline void stop_pool_on_cancel(cfr::scheduler::worker_pool& pool, const solve_runtime_options& runtime)
         {
@@ -1159,12 +1171,97 @@ namespace zeta::holdem::cli {
 
         using combo_mass_array = std::array<double, combination_count>;
 
+        // Combo index of every unordered pair of distinct cards, for inclusion-exclusion.
+        [[nodiscard]] inline const std::array<std::array<combination_index, 52>, 52>& combo_by_card_pair()
+        {
+            static const auto table = [] {
+                std::array<std::array<combination_index, 52>, 52> out{};
+                for (combination_index combo = 0; combo < combination_count; ++combo) {
+                    const auto [first, second] = extract_combo_cards(combination_mask(combo));
+                    out[first][second] = combo;
+                    out[second][first] = combo;
+                }
+                return out;
+            }();
+            return table;
+        }
+
+        // Reach mass of one seat's hands that avoid every card in `used`, by inclusion-
+        // exclusion over the seat's per-card masses: total - (mass touching each used
+        // card) + (mass of hands made of two used cards, subtracted twice).
+        [[nodiscard]] inline double mass_avoiding_cards(
+            const fold_opponent_aggregate& aggregate,
+            const reach_vector& reach,
+            const card_mask board_mask,
+            const card_mask used)
+        {
+            std::array<uint8_t, 52> cards{};
+            std::size_t count = 0;
+            for (uint8_t card = 0; card < 52; ++card) {
+                if ((used & (card_mask{1} << card)) != 0) {
+                    cards[count++] = card;
+                }
+            }
+            const auto& pairs = combo_by_card_pair();
+            double mass = aggregate.total;
+            for (std::size_t first = 0; first < count; ++first) {
+                mass -= aggregate.mass_by_card[cards[first]];
+                for (std::size_t second = first + 1; second < count; ++second) {
+                    const auto combo = pairs[cards[first]][cards[second]];
+                    if ((combination_mask(combo) & board_mask) == 0) {
+                        mass += static_cast<double>(std::max(0.0f, reach[combo]));
+                    }
+                }
+            }
+            return clamp_compatible_mass(mass);
+        }
+
+        // Joint reach mass of the opponents' hands, from `opponent` onwards, that share no
+        // card with each other, with `used` (the board, the seat's hand and the hands
+        // already chosen) or with the board. Every opponent but the last is enumerated;
+        // the last is summed in closed form.
+        template <std::size_t N>
+        [[nodiscard]] inline double joint_opponent_mass(
+            const std::array<reach_vector, N>& reach,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const std::array<fold_opponent_aggregate, N>& aggregates,
+            const card_mask board_mask,
+            const uint8_t seat,
+            const uint8_t opponent,
+            const card_mask used)
+        {
+            uint8_t next = opponent;
+            while (next < N && next == seat) {
+                ++next;
+            }
+            if (next >= N) {
+                return 1.0;
+            }
+            uint8_t after = static_cast<uint8_t>(next + 1u);
+            while (after < N && after == seat) {
+                ++after;
+            }
+            if (after >= N) {
+                return mass_avoiding_cards(aggregates[next], reach[next], board_mask, used & ~board_mask);
+            }
+            double mass = 0.0;
+            for (const auto combo : active_combos[next]) {
+                const auto weight = reach[next][combo];
+                const auto mask = combination_mask(combo);
+                if (weight <= 0.0f || (mask & used) != 0) {
+                    continue;
+                }
+                mass += static_cast<double>(weight)
+                    * joint_opponent_mass<N>(reach, active_combos, aggregates, board_mask, seat, after, used | mask);
+            }
+            return mass;
+        }
+
         // Reach mass of opponent hands compatible with each of `seat`'s hands at a node
         // whose public board is `board_mask`: the normaliser that turns a counterfactual
-        // value into an EV in chips. Heads-up this is exact, using the same blocker
-        // inclusion-exclusion as the fold kernel. Multiway it is the product of each
-        // opponent's compatible mass, which ignores card collisions between opponents and
-        // so slightly overstates the joint mass when their ranges share cards.
+        // value into an EV in chips. Exact for any player count: heads-up by the same
+        // blocker inclusion-exclusion as the fold kernel, multiway over every combination
+        // of opponent hands that share no card, as the multiway terminal kernels count them.
         template <std::size_t N>
         [[nodiscard]] inline combo_mass_array opponent_reach_masses(
             const std::array<reach_vector, N>& reach,
@@ -1173,15 +1270,13 @@ namespace zeta::holdem::cli {
             const uint8_t seat)
         {
             combo_mass_array masses{};
-            for (const auto combo : active_combos[seat]) {
-                if ((combination_mask(combo) & board_mask) == 0) {
-                    masses[combo] = 1.0;
+            if constexpr (N == 2) {
+                for (const auto combo : active_combos[seat]) {
+                    if ((combination_mask(combo) & board_mask) == 0) {
+                        masses[combo] = 1.0;
+                    }
                 }
-            }
-            for (uint8_t opponent = 0; opponent < N; ++opponent) {
-                if (opponent == seat) {
-                    continue;
-                }
+                const auto opponent = static_cast<uint8_t>(1u - seat);
                 const auto aggregate = accumulate_fold_opponent_mass(reach[opponent], active_combos[opponent], board_mask);
                 for (const auto combo : active_combos[seat]) {
                     if (masses[combo] == 0.0) {
@@ -1191,6 +1286,21 @@ namespace zeta::holdem::cli {
                     const auto self_weight = static_cast<double>(std::max(0.0f, reach[opponent][combo]));
                     masses[combo] *= clamp_compatible_mass(
                         aggregate.total - aggregate.mass_by_card[first] - aggregate.mass_by_card[second] + self_weight);
+                }
+            } else {
+                std::array<fold_opponent_aggregate, N> aggregates{};
+                for (uint8_t opponent = 0; opponent < N; ++opponent) {
+                    if (opponent != seat) {
+                        aggregates[opponent] = accumulate_fold_opponent_mass(reach[opponent], active_combos[opponent], board_mask);
+                    }
+                }
+                for (const auto combo : active_combos[seat]) {
+                    const auto mask = combination_mask(combo);
+                    if ((mask & board_mask) != 0) {
+                        continue;
+                    }
+                    masses[combo] = joint_opponent_mass<N>(
+                        reach, active_combos, aggregates, board_mask, seat, 0, mask | board_mask);
                 }
             }
             return masses;
@@ -1314,7 +1424,8 @@ namespace zeta::holdem::cli {
             combo_action_table& regrets,
             combo_action_table& strategy_sums,
             const pruning_runtime* pruning = nullptr,
-            const lock_runtime* locks = nullptr)
+            const lock_runtime* locks = nullptr,
+            const float averaging_weight = 1.0f)
         {
             for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
                 if (!graph.is_player_node(node_id)) {
@@ -1341,7 +1452,7 @@ namespace zeta::holdem::cli {
                         float free_value = 0.0f;
                         for (const auto& edge : edges) {
                             const auto action_probability = current_strategy.value(combo, infoset_id, edge.action_index);
-                            strategy_sums.value(combo, infoset_id, edge.action_index) += path_weight * action_probability;
+                            strategy_sums.value(combo, infoset_id, edge.action_index) += path_weight * action_probability * averaging_weight;
                             if (constraint->locked[edge.action_index] == 0u) {
                                 free_value += action_probability * node_values[edge.child_node][combo];
                             }
@@ -1364,7 +1475,7 @@ namespace zeta::holdem::cli {
                             continue;
                         }
                         const auto action_probability = current_strategy.value(combo, infoset_id, edge.action_index);
-                        strategy_sums.value(combo, infoset_id, edge.action_index) += path_weight * action_probability;
+                        strategy_sums.value(combo, infoset_id, edge.action_index) += path_weight * action_probability * averaging_weight;
                         regrets.value(combo, infoset_id, edge.action_index) = std::max(
                             0.0f,
                             regrets.value(combo, infoset_id, edge.action_index)
@@ -1386,12 +1497,13 @@ namespace zeta::holdem::cli {
             combo_action_table& regrets,
             combo_action_table& strategy_sums,
             const pruning_runtime* pruning = nullptr,
-            const lock_runtime* locks = nullptr)
+            const lock_runtime* locks = nullptr,
+            const float averaging_weight = 1.0f)
         {
             parallel.for_each_slice([&](const std::array<std::vector<combination_index>, N>& slice) {
                 update_combo_cfr_tables<N>(
                     graph, annotations, current_strategy, slice, updating_player, node_reach, node_values,
-                    regrets, strategy_sums, pruning, locks);
+                    regrets, strategy_sums, pruning, locks, averaging_weight);
             });
         }
 
@@ -1502,6 +1614,10 @@ namespace zeta::holdem::cli {
             hash.add_u64(std::bit_cast<uint64_t>(runtime.pruning.prune_threshold));
             hash.add_u64(runtime.pruning.minimum_active_actions);
             hash.add_u64(runtime.pruning.reconsider_interval);
+            // Only linear averaging is hashed, so a uniform solve keeps its earlier hash.
+            if (runtime.strategy_averaging == strategy_averaging_mode::linear) {
+                hash_add_string(hash, "linear-averaging");
+            }
             return hash.value;
         }
 
@@ -2507,7 +2623,8 @@ namespace zeta::holdem::cli {
                             regrets,
                             strategy_sums,
                             pruning,
-                            locks);
+                            locks,
+                            strategy_averaging_weight(runtime, i));
                     }
                     const uint64_t done = i + 1;
                     const bool at_final = done == iterations;
@@ -2784,7 +2901,8 @@ namespace zeta::holdem::cli {
                         regrets,
                         strategy_sums,
                         nullptr,
-                        locks);
+                        locks,
+                        strategy_averaging_weight(runtime, i));
                 }
                 const uint64_t done = i + 1;
                 const bool at_final = done == iterations;
@@ -3025,6 +3143,13 @@ namespace zeta::holdem::cli {
             config.abstraction = resolve_spot_betting_policy(spot);
             config.max_history = spot.max_history;
             config.public_state_id = spot.public_state_id;
+            // Dead money is the part of the pot no seat put in; the winner takes it, less rake.
+            utility contributed = 0.0;
+            for (std::size_t seat = 0; seat < N; ++seat) {
+                contributed += initial_committed[seat];
+            }
+            config.dead_money = std::max(0.0, spot.gross_pot - contributed);
+            config.rake = spot.rake;
 
             if (street != cfr::solver::holdem_street::river) {
                 const auto isomorphism_mode = runtime.enable_card_isomorphism
@@ -3041,6 +3166,8 @@ namespace zeta::holdem::cli {
                 public_config.abstraction = config.abstraction;
                 public_config.max_history = spot.max_history;
                 public_config.public_state_id = spot.public_state_id;
+                public_config.dead_money = config.dead_money;
+                public_config.rake = config.rake;
                 public_config.isomorphism = isomorphism_mode;
 
                 // Pre-build budget check: estimate the footprint from the graph shape
