@@ -11,7 +11,7 @@
 namespace zeta::holdem::ui::document {
 
     struct document_json_payload {
-        spot spot{};
+        ui::spot spot{};
         std::optional<solve_artifact> artifact{};
         std::optional<solver::solution_store> solution{};
         std::optional<spot_document_metadata> metadata{};

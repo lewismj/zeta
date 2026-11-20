@@ -29,7 +29,7 @@ namespace {
 
     constexpr zeta::card_mask hand7(std::initializer_list<std::pair<int, int>> cards) {
         zeta::card_mask m = 0;
-        for (const auto [s, r] : cards) {
+        for (const auto& [s, r] : cards) {
             m |= card(s, r);
         }
         return m;

@@ -215,6 +215,16 @@ namespace zeta::holdem::ui {
         update_strategy_staleness(document.is_strategy_stale());
     }
 
+    document_workspace_widget::~document_workspace_widget()
+    {
+        // QWidget's destructor deletes the children, and the raw editor and the tab
+        // widget emit textChanged / currentChanged as they go. Connections with this
+        // as context are only dropped in QObject's destructor, after callbacks_ and the
+        // other members are gone, so cut them while the object is still whole.
+        raw_editor_->disconnect(this);
+        left_tabs_->disconnect(this);
+    }
+
     void document_workspace_widget::update_strategy_staleness(const bool stale)
     {
         if (strategy_tab_ == nullptr || left_tabs_ == nullptr) {

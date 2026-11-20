@@ -28,15 +28,15 @@ jobs:
 
     steps:
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.tag }}
 
       - name: Set up MSBuild
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2.0.0
 
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: vcpkg-binary-cache
           key: windows-release-vcpkg-${{ hashFiles('.github/workflows/windows-release.yml') }}
@@ -48,7 +48,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path $env:VCPKG_BINARY_CACHE | Out-Null
-          C:\vcpkg\vcpkg.exe install boost-json:x64-windows qtbase:x64-windows qtsvg:x64-windows
+          C:\vcpkg\vcpkg.exe install boost-json:x64-windows boost-test:x64-windows qtbase:x64-windows qtsvg:x64-windows
 
       - name: Configure release build
         shell: pwsh
@@ -56,14 +56,32 @@ jobs:
           $ErrorActionPreference = 'Stop'
           cmake -S . -B build `
             -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
-            -DZETA_BUILD_TESTS=OFF `
-            -DZETA_BUILD_BENCHMARKS=OFF
+            -DZETA_BUILD_BENCHMARKS=OFF `
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
 
       - name: Build release targets
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cmake --build build --config Release --target zeta-ui-holdem zeta-solve --parallel
+          cmake --build build --config Release --target zeta-ui-holdem zeta-solve zeta_tests --parallel
+
+      # The tag is built and tested here, so nothing is published from a commit that
+      # fails its tests, whether or not a Windows Build run exists for it.
+      - name: Check generated lookup tables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake --build build --config Release --target zeta-check-holdem-tables
+          if ($LASTEXITCODE -ne 0) { throw "Lookup table check failed with exit code $LASTEXITCODE" }
+
+      - name: Test
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ctest --test-dir build\zeta\test -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Tests failed with exit code $LASTEXITCODE" }
 
       - name: Stage release bundle
         shell: pwsh
@@ -95,7 +113,7 @@ jobs:
           Compress-Archive -Path $root -DestinationPath "artifacts\$env:BUNDLE_NAME.zip" -Force
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: zeta-holdem-solver-windows-x64
           path: artifacts/zeta-holdem-solver-windows-x64.zip

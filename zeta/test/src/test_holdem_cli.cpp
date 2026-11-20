@@ -813,12 +813,15 @@ BOOST_AUTO_TEST_CASE(holdem_cli_phase3_roundtrips_node_surfaces) {
         report.expect_equal(rhs.terminal, lhs.terminal, "terminal", i);
         report.expect(rhs.board == lhs.board, [&] { return "board differs at node " + std::to_string(i); });
         report.expect_equal(rhs.category_summary_derivation_version, 1u, "category_summary_derivation_version", i);
-        const bool same_shape =
-            report.expect_equal(rhs.actions.size(), lhs.actions.size(), "actions.size", i)
-            & report.expect_equal(rhs.range_action_frequencies.size(), lhs.range_action_frequencies.size(), "range_action_frequencies.size", i)
-            & report.expect_equal(rhs.seat_values.size(), lhs.seat_values.size(), "seat_values.size", i)
-            & report.expect_equal(rhs.category_summaries.size(), lhs.category_summaries.size(), "category_summaries.size", i)
-            & report.expect_equal(rhs.strategy_rows.size(), lhs.strategy_rows.size(), "strategy_rows.size", i);
+        // Every size is checked, so one mismatch does not hide the others.
+        const bool same_actions = report.expect_equal(rhs.actions.size(), lhs.actions.size(), "actions.size", i);
+        const bool same_frequencies = report.expect_equal(rhs.range_action_frequencies.size(),
+            lhs.range_action_frequencies.size(), "range_action_frequencies.size", i);
+        const bool same_seat_values = report.expect_equal(rhs.seat_values.size(), lhs.seat_values.size(), "seat_values.size", i);
+        const bool same_categories = report.expect_equal(rhs.category_summaries.size(), lhs.category_summaries.size(),
+            "category_summaries.size", i);
+        const bool same_rows = report.expect_equal(rhs.strategy_rows.size(), lhs.strategy_rows.size(), "strategy_rows.size", i);
+        const bool same_shape = same_actions && same_frequencies && same_seat_values && same_categories && same_rows;
         if (!same_shape) {
             continue;
         }

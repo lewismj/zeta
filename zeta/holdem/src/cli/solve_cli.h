@@ -109,7 +109,7 @@ namespace zeta::holdem::cli {
         double frequency = 0.0;
         double range_weight = 0.0;
         double average_ev = 0.0;
-        std::vector<category_summary_action_frequency> action_frequencies;
+        std::vector<category_summary_action_frequency> action_frequencies{};
     };
 
     /**
@@ -168,8 +168,8 @@ namespace zeta::holdem::cli {
         std::string git_revision = "unknown";
         solve_hashes hashes{};
         convergence_report convergence{};
-        std::vector<std::string> warnings;
-        std::vector<node_lock> locks;     /**< Node locks the solve honoured; solved_node::lock_indices index this. */
+        std::vector<std::string> warnings{};
+        std::vector<node_lock> locks{};    /**< Node locks the solve honoured; solved_node::lock_indices index this. */
     };
 
     inline constexpr uint32_t current_artifact_schema_version = 7;
@@ -194,7 +194,7 @@ namespace zeta::holdem::cli {
         uint32_t chance_event_id = cfr::INVALID_CHANCE_EVENT;
         uint32_t board_partition_id = cfr::INVALID_BOARD_PARTITION;
         uint32_t chance_outcome_id = cfr::INVALID_CHANCE_OUTCOME_ID;
-        std::vector<std::string> dealt_cards;
+        std::vector<std::string> dealt_cards{};
     };
 
     struct solved_node {
@@ -204,14 +204,14 @@ namespace zeta::holdem::cli {
         uint32_t parent_node_id = cfr::game_graph::INVALID_NODE;
         uint8_t acting_seat = cfr::solver::INVALID_PLAYER;
         bool terminal = false;
-        std::vector<std::string> board;
-        std::vector<solved_node_action> actions;
-        std::vector<action_strategy> range_action_frequencies;
-        std::vector<solved_node_seat_value> seat_values;
+        std::vector<std::string> board{};
+        std::vector<solved_node_action> actions{};
+        std::vector<action_strategy> range_action_frequencies{};
+        std::vector<solved_node_seat_value> seat_values{};
         uint32_t category_summary_derivation_version = 1;
-        std::vector<category_summary_item> category_summaries;
-        std::vector<hand_strategy> strategy_rows;
-        std::vector<uint32_t> lock_indices;  /**< Indices into solver.locks of the locks applied at this node. */
+        std::vector<category_summary_item> category_summaries{};
+        std::vector<hand_strategy> strategy_rows{};
+        std::vector<uint32_t> lock_indices{};  /**< Indices into solver.locks of the locks applied at this node. */
     };
 
     struct solve_artifact_public_state {
@@ -229,8 +229,8 @@ namespace zeta::holdem::cli {
         uint32_t id = cfr::INVALID_CHANCE_EVENT;
         uint32_t node_id = cfr::game_graph::INVALID_NODE;
         std::string kind;
-        std::vector<std::string> board;
-        std::vector<solved_node_action> outcomes;
+        std::vector<std::string> board{};
+        std::vector<solved_node_action> outcomes{};
     };
 
     struct solve_artifact_runout {
@@ -361,23 +361,23 @@ namespace zeta::holdem::cli {
     };
 
     struct solve_runtime_options {
-        std::string timestamp_utc;
+        std::string timestamp_utc{};
         std::string git_revision = "unknown";
         uint64_t progress_batch_iterations = 1;
         uint32_t worker_threads = 1;
         uint64_t memory_budget_bytes = 0;          /**< 0 => derive from detected available system memory. */
         bool enable_card_isomorphism = false;      /**< Collapse suit-isomorphic turn/river boards. */
         bool allow_lossy_card_isomorphism = false; /**< Permit isomorphism when ranges are not suit-symmetric. */
-        dynamic_pruning_policy pruning;            /**< Opt-in approximate dynamic action pruning (default off). */
-        convergence_options convergence;           /**< Opt-in convergence / exploitability reporting (default off). */
+        dynamic_pruning_policy pruning{};          /**< Opt-in approximate dynamic action pruning (default off). */
+        convergence_options convergence{};         /**< Opt-in convergence / exploitability reporting (default off). */
         strategy_averaging_mode strategy_averaging = strategy_averaging_mode::linear;
         /** Called on the solving thread at iteration batches and stage changes. */
-        solve_progress_callback progress_callback;
+        solve_progress_callback progress_callback{};
         /**
          * Polled once per iteration and before each batch of terminal leaves, from the
          * solving thread and from worker threads, so it must be thread-safe.
          */
-        solve_cancellation_callback cancellation_requested;
+        solve_cancellation_callback cancellation_requested{};
     };
 
     struct solve_timing {
@@ -657,8 +657,10 @@ namespace zeta::holdem::cli {
                 case cfr::solver::holdem_street::flop: return "flop";
                 case cfr::solver::holdem_street::turn: return "turn";
                 case cfr::solver::holdem_street::river: return "river";
-                default: return "invalid";
+                case cfr::solver::holdem_street::invalid:
+                case cfr::solver::holdem_street::preflop: break;
             }
+            return "invalid";
         }
 
         [[nodiscard]] inline std::string chance_kind_text(const cfr::public_chance_event_kind kind)
@@ -667,8 +669,9 @@ namespace zeta::holdem::cli {
                 case cfr::public_chance_event_kind::flop: return "flop";
                 case cfr::public_chance_event_kind::turn: return "turn";
                 case cfr::public_chance_event_kind::river: return "river";
-                default: return "none";
+                case cfr::public_chance_event_kind::none: break;
             }
+            return "none";
         }
 
         [[nodiscard]] inline std::expected<void, cli_error> parse_range_checked(

@@ -1,0 +1,94 @@
+name: Linux Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Clang Release
+            cc: clang-19
+            cxx: clang++-19
+            build_type: Release
+            sanitize: ""
+          - name: GCC Release
+            cc: gcc
+            cxx: g++
+            build_type: Release
+            sanitize: ""
+          # Debug keeps the asserts in holdem/src; the sanitisers check memory and UB.
+          - name: Clang Debug ASan UBSan
+            cc: clang-19
+            cxx: clang++-19
+            build_type: Debug
+            sanitize: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+
+    env:
+      # Boost >= 1.88 is not packaged for Ubuntu 24.04, so it comes from vcpkg. The
+      # dynamic triplet matches BOOST_TEST_DYN_LINK in the test target.
+      VCPKG_TRIPLET: x64-linux-dynamic
+      VCPKG_BINARY_CACHE: ${{ github.workspace }}/vcpkg-binary-cache
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-binary-cache,readwrite
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build clang-19 qt6-base-dev qt6-svg-dev libgl-dev
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: vcpkg-binary-cache
+          key: linux-vcpkg-${{ env.VCPKG_TRIPLET }}-${{ hashFiles('.github/workflows/linux-build.yml') }}
+          restore-keys: |
+            linux-vcpkg-${{ env.VCPKG_TRIPLET }}-
+
+      - name: Install Boost
+        run: |
+          mkdir -p "$VCPKG_BINARY_CACHE"
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install boost-json boost-test --triplet "$VCPKG_TRIPLET"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DCMAKE_CXX_FLAGS="${{ matrix.sanitize }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.sanitize }}" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET="$VCPKG_TRIPLET" \
+            -DZETA_BUILD_BENCHMARKS=OFF \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+
+      - name: Build
+        run: |
+          cmake --build build --parallel
+
+      - name: Check generated lookup tables
+        run: |
+          cmake --build build --target zeta-check-holdem-tables
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/zeta/test/lsan.supp
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: |
+          ctest --test-dir build --output-on-failure --parallel 4

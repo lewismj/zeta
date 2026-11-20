@@ -1,0 +1,6 @@
+# LeakSanitizer suppressions for the sanitiser CI job (LSAN_OPTIONS=suppressions=...).
+#
+# Fontconfig keeps its configuration and font cache for the life of the process and
+# never frees them, so every test that lays out text reports them as a leak. They are
+# allocated inside libfontconfig, not by Zeta or Qt code paths we own.
+leak:libfontconfig.so

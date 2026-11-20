@@ -520,7 +520,7 @@ namespace {
                 case node_kind::player: ++players; break;
                 case node_kind::chance: ++chances; break;
                 case node_kind::terminal: ++terminals; break;
-                default: break;
+                case node_kind::player_chance: break;
             }
         }
 

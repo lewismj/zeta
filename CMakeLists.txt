@@ -109,6 +109,14 @@ if(MSVC)
     target_compile_options(zeta_warnings INTERFACE /W4 /wd4324)
 else()
     target_compile_options(zeta_warnings INTERFACE -Wall -Wextra -Wswitch-enum)
+    # Clang 19+ warns, under -Wextra, when a designated initializer leaves later fields
+    # to their default member initializers (e.g. {.convergence = {...}}). The code uses
+    # that idiom on purpose, and GCC and MSVC do not warn on it, so the check is off.
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag(-Wmissing-designated-field-initializers ZETA_HAS_WMISSING_DESIGNATED_FIELD_INITIALIZERS)
+    if(ZETA_HAS_WMISSING_DESIGNATED_FIELD_INITIALIZERS)
+        target_compile_options(zeta_warnings INTERFACE -Wno-missing-designated-field-initializers)
+    endif()
 endif()
 
 if(ZETA_BUILD_TESTS)

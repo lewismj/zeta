@@ -23,13 +23,13 @@ namespace zeta::holdem::ui {
     }
 
     struct document_workspace_callbacks {
-        std::function<void(spot)> on_spot_changed;
+        std::function<void(spot)> on_spot_changed{};
         /** The Strategy Explorer edited the locks; only the spot's locks change. */
-        std::function<void(std::vector<cli::node_lock>)> on_locks_changed;
-        std::function<void(const spot&)> on_duplicate_requested;
-        std::function<void()> on_raw_editor_dirty;
-        std::function<void(const QString&)> on_leaving_raw_editor;
-        std::function<void()> on_resolve_requested;
+        std::function<void(std::vector<cli::node_lock>)> on_locks_changed{};
+        std::function<void(const spot&)> on_duplicate_requested{};
+        std::function<void()> on_raw_editor_dirty{};
+        std::function<void(const QString&)> on_leaving_raw_editor{};
+        std::function<void()> on_resolve_requested{};
     };
 
     class document_workspace_widget final : public QWidget {
@@ -43,6 +43,7 @@ namespace zeta::holdem::ui {
             const QString& solve_console_text,
             document_workspace_callbacks callbacks,
             QWidget* parent = nullptr);
+        ~document_workspace_widget() override;
 
         [[nodiscard]] widgets::spot_json_editor* editor() const;
         [[nodiscard]] QPlainTextEdit* solve_console() const;

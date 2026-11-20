@@ -34,11 +34,11 @@ namespace zeta::holdem::ui {
     };
 
     struct spot_document_metadata {
-        std::string created_utc;
-        std::string updated_utc;
-        std::string last_solve_summary;
-        std::string study_notes;
-        std::vector<std::string> tags;
+        std::string created_utc{};
+        std::string updated_utc{};
+        std::string last_solve_summary{};
+        std::string study_notes{};
+        std::vector<std::string> tags{};
     };
 
     /**

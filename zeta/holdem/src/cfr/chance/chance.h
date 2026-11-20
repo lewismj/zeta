@@ -279,7 +279,7 @@ namespace zeta::holdem::cfr {
 
     struct runout_registry_error {
         runout_registry_error_kind kind{};
-        runout_id runout_id = INVALID_RUNOUT_ID;
+        cfr::runout_id runout_id = INVALID_RUNOUT_ID;
         public_state_id state_id = INVALID_PUBLIC_STATE_ID;
     };
 

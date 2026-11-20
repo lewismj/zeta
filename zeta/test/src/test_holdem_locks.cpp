@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <initializer_list>
 #include <numeric>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Node locking: authoring format, validation, the constrained CFR+ solve, and the
@@ -67,10 +69,16 @@ namespace {
         return std::move(output->artifact);
     }
 
-    const cli::solved_node& node_at(const cli::solve_artifact& artifact, const std::vector<std::string>& path)
+    // The path is taken by value: the returned node lives in the artifact, and GCC's
+    // -Wdangling-reference would otherwise suspect it of referring to the path temporary.
+    const cli::solved_node& node_at(const cli::solve_artifact& artifact, const std::initializer_list<std::string_view> path)
     {
         for (const auto& node : artifact.solved_nodes) {
-            if (node.kind == "player" && cli::node_lock_path(artifact, node.node_id) == path) {
+            if (node.kind != "player") {
+                continue;
+            }
+            if (const auto node_path = cli::node_lock_path(artifact, node.node_id);
+                node_path.has_value() && std::ranges::equal(*node_path, path)) {
                 return node;
             }
         }
