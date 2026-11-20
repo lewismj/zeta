@@ -67,7 +67,30 @@ namespace zeta::holdem::cli {
         double ev = 0.0;                    /**< Expected value in chips: counterfactual_value / opponent_reach_mass (0 when no opponent hand is compatible). */
         double counterfactual_value = 0.0;  /**< Sum over compatible opponent hands of their reach times the payoff. */
         double opponent_reach_mass = 0.0;   /**< Reach mass of opponent hands compatible with this hand and the board. */
+        bool locked = false;                /**< True when a node lock constrains this hand's play at the node. */
     };
+
+    /** One constrained action of a node lock. */
+    struct node_lock_action {
+        std::string action;      /**< Action label at the locked node, e.g. "check" or "bet_75". */
+        double frequency = 0.0;  /**< Fixed probability, rounded to node_lock_frequency_step. */
+    };
+
+    /**
+     * Fixes some of a seat's action frequencies at one decision point, or at one per
+     * runout when the path deals "*", and leaves the other actions free for the
+     * solver. See doc/holdem/plans/node_locking_plan.md.
+     */
+    struct node_lock {
+        std::vector<std::string> path;          /**< Action labels from the root; chance steps are a dealt card or "*". */
+        std::string hands;                      /**< Range text naming the locked hands; empty locks the whole range. */
+        std::vector<node_lock_action> actions;  /**< Constrained actions, sorted by label. */
+    };
+
+    /** Lock frequencies are rounded to this step, so the JSON text cannot change a solve. */
+    inline constexpr double node_lock_frequency_step = 1.0e-6;
+    /** Path step that matches every card a chance node deals. */
+    inline constexpr std::string_view node_lock_any_card = "*";
 
     struct solved_node_seat_value {
         uint8_t seat = 0;
@@ -136,7 +159,8 @@ namespace zeta::holdem::cli {
         uint64_t board_hash = 0;          /**< Public board cards. */
         uint64_t betting_policy_hash = 0; /**< Betting abstraction and stack/pot configuration. */
         uint64_t solver_config_hash = 0;  /**< Algorithm identity and solver knobs. */
-        uint64_t solve_hash = 0;          /**< Combined digest of all components. */
+        uint64_t locks_hash = 0;          /**< Canonical node locks; 0 when the solve has none. */
+        uint64_t solve_hash = 0;          /**< Combined digest of all components (locks only when present). */
     };
 
     struct solver_metadata {
@@ -147,9 +171,12 @@ namespace zeta::holdem::cli {
         solve_hashes hashes{};
         convergence_report convergence{};
         std::vector<std::string> warnings;
+        std::vector<node_lock> locks;     /**< Node locks the solve honoured; solved_node::lock_indices index this. */
     };
 
-    inline constexpr uint32_t current_artifact_schema_version = 6;
+    inline constexpr uint32_t current_artifact_schema_version = 7;
+    /** Oldest artifact schema still read; it predates node locks and loads with none. */
+    inline constexpr uint32_t oldest_readable_artifact_schema_version = 6;
 
     /** Opponent (or matchup) reach mass at or below which an EV is undefined and reported as 0. */
     inline constexpr double minimum_ev_reach_mass = 1.0e-12;
@@ -186,6 +213,7 @@ namespace zeta::holdem::cli {
         uint32_t category_summary_derivation_version = 1;
         std::vector<category_summary_item> category_summaries;
         std::vector<hand_strategy> strategy_rows;
+        std::vector<uint32_t> lock_indices;  /**< Indices into solver.locks of the locks applied at this node. */
     };
 
     struct solve_artifact_public_state {
@@ -251,6 +279,7 @@ namespace zeta::holdem::cli {
         uint32_t public_state_id = 0;
         uint8_t root_actor = 0;
         uint8_t hero_seat = 0;
+        std::vector<node_lock> locks;
     };
 
     [[nodiscard]] inline cfr::betting_abstraction_policy resolve_spot_betting_policy(const solve_spot& spot)
@@ -741,6 +770,14 @@ namespace zeta::holdem::cli {
      */
     [[nodiscard]] std::vector<spot_amount_issue> validate_spot_amounts(const solve_spot& spot);
 
+    /**
+     * Checks each lock's fields on their own (the tree is not needed) and puts it in
+     * canonical form: frequencies rounded to node_lock_frequency_step, actions sorted
+     * by label, chance-step cards in canonical text. Errors name the lock by its
+     * 1-based position. The path itself is checked against the tree when solving.
+     */
+    [[nodiscard]] std::expected<void, cli_error> normalize_node_locks(std::vector<node_lock>& locks);
+
     [[nodiscard]] std::expected<solve_spot, cli_error> parse_spot_json(std::string_view json);
     [[nodiscard]] std::expected<solve_runtime_options, cli_error> parse_spot_runtime_options(std::string_view json);
     [[nodiscard]] std::string serialize_spot_json(const solve_spot& spot);
@@ -772,6 +809,14 @@ namespace zeta::holdem::cli {
         if (artifact.schema_version != current_artifact_schema_version) {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
                 "Unsupported schema_version. Only version " + std::to_string(current_artifact_schema_version) + " is accepted."});
+        }
+        for (const auto& node : artifact.solved_nodes) {
+            for (const auto index : node.lock_indices) {
+                if (index >= artifact.solver.locks.size()) {
+                    return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
+                        "solved_nodes.lock_indices refers to a lock that solver.locks does not contain."});
+                }
+            }
         }
         if (artifact.extraction_version != current_extraction_version) {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
@@ -1078,6 +1123,462 @@ namespace zeta::holdem::cli {
             return out;
         }
 
+        // ---------------------------------------------------------------------
+        // Action labels.
+        //
+        // A player node's edges follow legal_betting_actions for its betting state, so
+        // replaying the betting from the root recovers every action. A bet or raise is
+        // labelled by the chips it adds as a percentage of the gross pot before it: the
+        // spot's gross_pot plus every chip committed since the root, which is the root's
+        // existing convention carried down the tree. Labels repeated at one node get a
+        // ".2", ".3", ... suffix so each is unique. Chance edges are labelled by the dealt
+        // card(s).
+        // ---------------------------------------------------------------------
+
+        inline void make_labels_unique(std::vector<std::string>& labels)
+        {
+            for (std::size_t index = 1; index < labels.size(); ++index) {
+                uint32_t occurrence = 1;
+                for (std::size_t earlier = 0; earlier < index; ++earlier) {
+                    if (labels[earlier] == labels[index]
+                        || labels[earlier].starts_with(labels[index] + ".")) {
+                        ++occurrence;
+                    }
+                }
+                if (occurrence > 1) {
+                    labels[index] += "." + std::to_string(occurrence);
+                }
+            }
+        }
+
+        [[nodiscard]] inline std::string dealt_cards_label(const card_mask cards)
+        {
+            std::string label;
+            for (const auto& text : card_texts_from_mask(cards)) {
+                label += text;
+            }
+            return label;
+        }
+
+        /**
+         * Labels of every edge, indexed [node][action_index]. Terminal nodes have none.
+         * A player node whose replayed actions do not match its edges (which would mean
+         * a lowering change) falls back to index labels rather than failing the solve.
+         */
+        template <std::size_t N>
+        [[nodiscard]] inline std::vector<std::vector<std::string>> make_edge_labels(
+            const cfr::game_graph& graph,
+            const cfr::holdem_betting_graph_config<N>& config,
+            const cfr::chance_event_table* chance_events,
+            const utility gross_pot)
+        {
+            std::vector<std::vector<std::string>> labels(graph.node_count);
+            utility initial_committed = 0.0;
+            for (const auto committed : config.initial_committed) {
+                initial_committed += committed;
+            }
+            struct pending {
+                uint32_t node_id;
+                cfr::betting_state<N> state;
+            };
+            std::vector<pending> stack;
+            stack.push_back(pending{graph.root_node, cfr::make_initial_betting_state(config)});
+            while (!stack.empty()) {
+                auto [node_id, state] = std::move(stack.back());
+                stack.pop_back();
+                const auto edges = graph.out_edges(node_id);
+                auto& node_labels = labels[node_id];
+                if (graph.node_types[node_id] == cfr::node_kind::chance) {
+                    const auto next_street = static_cast<cfr::solver::holdem_street>(static_cast<uint8_t>(state.street) + 1u);
+                    const auto* event = chance_events != nullptr ? chance_events->event_for_node(node_id) : nullptr;
+                    node_labels.assign(edges.size(), std::string{});
+                    for (const auto& edge : edges) {
+                        if (event != nullptr) {
+                            for (const auto& outcome : chance_events->event_outcomes(*event)) {
+                                if (outcome.action_index == edge.action_index) {
+                                    node_labels[edge.action_index] = dealt_cards_label(outcome.cards);
+                                    break;
+                                }
+                            }
+                        }
+                        stack.push_back(pending{
+                            edge.child_node,
+                            cfr::detail::make_next_street_state(state, next_street, config.root_actor)});
+                    }
+                    continue;
+                }
+                if (!graph.is_player_node(node_id)) {
+                    continue;
+                }
+                const auto actions = cfr::legal_betting_actions(state, config.abstraction);
+                node_labels.reserve(edges.size());
+                if (actions.size() != edges.size()) {
+                    for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
+                        node_labels.push_back(std::to_string(action_index));
+                    }
+                    continue;
+                }
+                utility committed = 0.0;
+                for (const auto chips : state.committed) {
+                    committed += chips;
+                }
+                const auto pot = gross_pot + (committed - initial_committed);
+                for (const auto& action : actions) {
+                    node_labels.push_back(action_label(action, pot));
+                }
+                make_labels_unique(node_labels);
+                for (const auto& edge : edges) {
+                    auto child = cfr::apply_betting_action(state, actions[edge.action_index], config.abstraction);
+                    if (child) {
+                        stack.push_back(pending{edge.child_node, std::move(*child)});
+                    }
+                }
+            }
+            return labels;
+        }
+
+        // ---------------------------------------------------------------------
+        // Node locks.
+        //
+        // A lock fixes some actions' probabilities at a player node and leaves the rest
+        // free. With locked mass S and residual r = 1 - S, the played strategy is p_a on
+        // locked actions and r * (regret matching over the free actions) on free ones.
+        // Free regrets are updated against the free-only value, scaled by r; locked
+        // regrets never change. See doc/holdem/plans/node_locking_plan.md.
+        // ---------------------------------------------------------------------
+
+        /** One lock's constraint at one node. */
+        struct lock_constraint {
+            std::vector<float> probability;  /**< Fixed probability per action (0 for free actions). */
+            std::vector<uint8_t> locked;     /**< 1 for locked actions. */
+            float residual = 1.0f;           /**< Probability left for the free actions. */
+            uint32_t free_count = 0;
+            uint32_t lock_index = 0;         /**< Position in solve_spot::locks. */
+            bool hand_scoped = false;        /**< True when the lock names hands. */
+        };
+
+        /** Immutable lock view the solver consults; a null pointer means no locks. */
+        struct lock_runtime {
+            static constexpr int32_t no_lock = -1;
+
+            std::vector<lock_constraint> constraints;
+            /** Per infoset: empty when unlocked, otherwise one constraint index per combo. */
+            std::vector<std::vector<int32_t>> by_infoset;
+            /** Per node: the lock indices applied there, ascending. */
+            std::vector<std::vector<uint32_t>> lock_indices_by_node;
+
+            [[nodiscard]] bool infoset_locked(const uint32_t infoset_id) const noexcept
+            {
+                return !by_infoset[infoset_id].empty();
+            }
+
+            [[nodiscard]] const lock_constraint* find(
+                const uint32_t infoset_id,
+                const combination_index combo) const noexcept
+            {
+                const auto& by_combo = by_infoset[infoset_id];
+                if (by_combo.empty() || by_combo[combo] == no_lock) {
+                    return nullptr;
+                }
+                return &constraints[static_cast<std::size_t>(by_combo[combo])];
+            }
+        };
+
+        /**
+         * Writes the constrained strategy for one hand: locked actions take their fixed
+         * probability and free actions share the residual in proportion to `weights`'
+         * positive parts, or uniformly when none is positive. `weights` may alias `out`.
+         */
+        inline void apply_lock_constraint(
+            const lock_constraint& constraint,
+            const std::span<const float> weights,
+            const std::span<float> out) noexcept
+        {
+            float free_positive = 0.0f;
+            for (std::size_t action_index = 0; action_index < weights.size(); ++action_index) {
+                if (constraint.locked[action_index] == 0u) {
+                    free_positive += std::max(weights[action_index], 0.0f);
+                }
+            }
+            const auto uniform = constraint.free_count == 0u
+                ? 0.0f
+                : constraint.residual / static_cast<float>(constraint.free_count);
+            for (std::size_t action_index = 0; action_index < out.size(); ++action_index) {
+                if (constraint.locked[action_index] != 0u) {
+                    out[action_index] = constraint.probability[action_index];
+                } else {
+                    out[action_index] = free_positive > 0.0f
+                        ? constraint.residual * (std::max(weights[action_index], 0.0f) / free_positive)
+                        : uniform;
+                }
+            }
+        }
+
+        [[nodiscard]] inline cli_error lock_error(const std::size_t lock_index, const std::string& message)
+        {
+            return cli_error{cli_error_kind::invalid_spot,
+                "Lock " + std::to_string(lock_index + 1u) + ": " + message};
+        }
+
+        [[nodiscard]] inline std::string join_labels(const std::vector<std::string>& labels)
+        {
+            std::string out;
+            for (const auto& label : labels) {
+                out += out.empty() ? label : ", " + label;
+            }
+            return out;
+        }
+
+        /** The player nodes a lock's path reaches, or an error naming the failing step. */
+        [[nodiscard]] inline std::expected<std::vector<uint32_t>, cli_error> resolve_lock_path(
+            const cfr::game_graph& graph,
+            const std::vector<std::vector<std::string>>& labels,
+            const node_lock& lock,
+            const std::size_t lock_index,
+            const bool card_isomorphism)
+        {
+            std::vector<uint32_t> frontier{graph.root_node};
+            for (std::size_t step = 0; step < lock.path.size(); ++step) {
+                const auto& token = lock.path[step];
+                const auto step_text = "path step " + std::to_string(step + 1u) + " ('" + token + "')";
+                std::vector<uint32_t> next;
+                for (const auto node_id : frontier) {
+                    const auto edges = graph.out_edges(node_id);
+                    if (graph.is_terminal(node_id)) {
+                        return std::unexpected(lock_error(lock_index, step_text + " goes past the end of the hand."));
+                    }
+                    const bool chance = graph.node_types[node_id] == cfr::node_kind::chance;
+                    if (chance && token == node_lock_any_card) {
+                        for (const auto& edge : edges) {
+                            next.push_back(edge.child_node);
+                        }
+                        continue;
+                    }
+                    if (!chance && token == node_lock_any_card) {
+                        return std::unexpected(lock_error(lock_index,
+                            step_text + " is a player decision; '*' only matches a dealt card. Actions here: "
+                                + join_labels(labels[node_id]) + "."));
+                    }
+                    const auto& node_labels = labels[node_id];
+                    const auto found = std::ranges::find(node_labels, token);
+                    if (found == node_labels.end()) {
+                        if (chance) {
+                            return std::unexpected(lock_error(lock_index, step_text + " is not a card dealt here"
+                                + std::string{card_isomorphism
+                                    ? " (with card isomorphism a card names its suit class; use the class's representative card or '*')."
+                                    : "; name the dealt card or use '*'."}));
+                        }
+                        return std::unexpected(lock_error(lock_index,
+                            step_text + " is not an action here. Actions: " + join_labels(node_labels) + "."));
+                    }
+                    const auto action_index = static_cast<uint32_t>(std::distance(node_labels.begin(), found));
+                    for (const auto& edge : edges) {
+                        if (edge.action_index == action_index) {
+                            next.push_back(edge.child_node);
+                            break;
+                        }
+                    }
+                }
+                frontier = std::move(next);
+            }
+            for (const auto node_id : frontier) {
+                if (graph.is_terminal(node_id)) {
+                    return std::unexpected(lock_error(lock_index, "the path ends at the end of the hand, not at a decision."));
+                }
+                if (graph.node_types[node_id] == cfr::node_kind::chance) {
+                    return std::unexpected(lock_error(lock_index,
+                        "the path ends where a card is dealt; add the card or '*' and the next decision."));
+                }
+            }
+            std::ranges::sort(frontier);
+            frontier.erase(std::unique(frontier.begin(), frontier.end()), frontier.end());
+            return frontier;
+        }
+
+        /**
+         * Resolves the spot's locks against the lowered tree. Returns no runtime when the
+         * spot has no locks, so the solver's no-lock path is unchanged.
+         */
+        template <std::size_t N>
+        [[nodiscard]] inline std::expected<std::optional<lock_runtime>, cli_error> resolve_node_locks(
+            const solve_spot& spot,
+            const cfr::game_graph& graph,
+            const cfr::solver::solver_graph_annotations& annotations,
+            const std::vector<std::vector<std::string>>& labels,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const bool card_isomorphism)
+        {
+            if (spot.locks.empty()) {
+                return std::optional<lock_runtime>{};
+            }
+            lock_runtime runtime{};
+            runtime.by_infoset.resize(graph.infoset_count);
+            runtime.lock_indices_by_node.resize(graph.node_count);
+            std::vector<uint8_t> range_locked(graph.infoset_count, 0u);
+
+            // Whole-range locks first, so a hand lock can override them whatever the order.
+            std::vector<std::size_t> order(spot.locks.size());
+            std::iota(order.begin(), order.end(), std::size_t{0});
+            std::ranges::stable_sort(order, [&](const std::size_t lhs, const std::size_t rhs) {
+                return spot.locks[lhs].hands.empty() && !spot.locks[rhs].hands.empty();
+            });
+
+            for (const auto lock_index : order) {
+                const auto& lock = spot.locks[lock_index];
+                const bool hand_scoped = !lock.hands.empty();
+                if (hand_scoped && card_isomorphism) {
+                    return std::unexpected(lock_error(lock_index,
+                        "a lock on specific hands breaks suit symmetry, so it cannot be solved with card isomorphism. "
+                        "Turn card isomorphism off or lock the whole range."));
+                }
+                auto targets = resolve_lock_path(graph, labels, lock, lock_index, card_isomorphism);
+                if (!targets) {
+                    return std::unexpected(targets.error());
+                }
+
+                std::vector<uint8_t> hand_selected;
+                if (hand_scoped) {
+                    const auto parsed = parse_range(lock.hands);
+                    if (!parsed.ok()) {
+                        return std::unexpected(lock_error(lock_index,
+                            "invalid hands at position " + std::to_string(parsed.error.position) + ": "
+                                + range_parse_error_text(parsed.error.code) + "."));
+                    }
+                    hand_selected.assign(combination_count, 0u);
+                    for (combination_index combo = 0; combo < combination_count; ++combo) {
+                        hand_selected[combo] = parsed.range.weights[combo] > 0.0f ? 1u : 0u;
+                    }
+                }
+
+                for (const auto node_id : *targets) {
+                    const auto infoset_id = graph.infoset_id[node_id];
+                    const auto actor = annotations.actor_by_node[node_id];
+                    const auto& node_labels = labels[node_id];
+                    const auto action_count = static_cast<uint32_t>(node_labels.size());
+
+                    lock_constraint constraint{};
+                    constraint.probability.assign(action_count, 0.0f);
+                    constraint.locked.assign(action_count, 0u);
+                    constraint.lock_index = static_cast<uint32_t>(lock_index);
+                    constraint.hand_scoped = hand_scoped;
+                    double locked_mass = 0.0;
+                    for (const auto& action : lock.actions) {
+                        const auto found = std::ranges::find(node_labels, action.action);
+                        if (found == node_labels.end()) {
+                            return std::unexpected(lock_error(lock_index,
+                                "'" + action.action + "' is not an action at the locked node. Actions: "
+                                    + join_labels(node_labels) + "."));
+                        }
+                        const auto action_index = static_cast<std::size_t>(std::distance(node_labels.begin(), found));
+                        constraint.locked[action_index] = 1u;
+                        constraint.probability[action_index] = static_cast<float>(action.frequency);
+                        locked_mass += action.frequency;
+                    }
+                    const auto locked_count = static_cast<uint32_t>(std::ranges::count(constraint.locked, uint8_t{1}));
+                    constraint.free_count = action_count - locked_count;
+                    if (constraint.free_count == 0u) {
+                        if (std::fabs(locked_mass - 1.0) > 1.0e-6) {
+                            return std::unexpected(lock_error(lock_index,
+                                "it locks every action, so the frequencies must add up to 1."));
+                        }
+                        for (auto& probability : constraint.probability) {
+                            probability = static_cast<float>(static_cast<double>(probability) / locked_mass);
+                        }
+                        constraint.residual = 0.0f;
+                    } else {
+                        constraint.residual = static_cast<float>(std::max(0.0, 1.0 - locked_mass));
+                    }
+
+                    auto& by_combo = runtime.by_infoset[infoset_id];
+                    if (by_combo.empty()) {
+                        by_combo.assign(combination_count, lock_runtime::no_lock);
+                    }
+                    const auto constraint_index = static_cast<int32_t>(runtime.constraints.size());
+                    bool applied = false;
+                    if (!hand_scoped) {
+                        if (range_locked[infoset_id] != 0u) {
+                            return std::unexpected(lock_error(lock_index,
+                                "another whole-range lock already applies at this node."));
+                        }
+                        range_locked[infoset_id] = 1u;
+                        for (const auto combo : active_combos[actor]) {
+                            by_combo[combo] = constraint_index;
+                        }
+                        applied = !active_combos[actor].empty();
+                    } else {
+                        for (const auto combo : active_combos[actor]) {
+                            if (hand_selected[combo] == 0u) {
+                                continue;
+                            }
+                            const auto existing = by_combo[combo];
+                            if (existing != lock_runtime::no_lock
+                                && runtime.constraints[static_cast<std::size_t>(existing)].hand_scoped) {
+                                return std::unexpected(lock_error(lock_index,
+                                    "its hands overlap lock "
+                                        + std::to_string(runtime.constraints[static_cast<std::size_t>(existing)].lock_index + 1u)
+                                        + " at the same node (" + hand_text_from_combo(combo) + ")."));
+                            }
+                            by_combo[combo] = constraint_index;
+                            applied = true;
+                        }
+                        if (!applied) {
+                            return std::unexpected(lock_error(lock_index,
+                                "its hands match nothing in " + spot.players[actor] + "'s range."));
+                        }
+                    }
+                    runtime.constraints.push_back(std::move(constraint));
+                    auto& node_locks = runtime.lock_indices_by_node[node_id];
+                    node_locks.push_back(static_cast<uint32_t>(lock_index));
+                    std::ranges::sort(node_locks);
+                }
+            }
+            return std::optional<lock_runtime>{std::move(runtime)};
+        }
+
+        [[nodiscard]] inline uint64_t hash_node_locks(const std::vector<node_lock>& locks)
+        {
+            if (locks.empty()) {
+                return 0u;
+            }
+            cfr::solver::compatibility_hasher hash;
+            hash.add_u64(locks.size());
+            for (const auto& lock : locks) {
+                hash.add_u64(lock.path.size());
+                for (const auto& step : lock.path) {
+                    for (const char c : step) {
+                        hash.add_u64(static_cast<uint64_t>(static_cast<unsigned char>(c)));
+                    }
+                    hash.add_u64(step.size());
+                }
+                // Hands by the combos they name, so equivalent range texts hash alike.
+                std::vector<combination_index> combos;
+                if (!lock.hands.empty()) {
+                    const auto parsed = parse_range(lock.hands);
+                    if (parsed.ok()) {
+                        for (combination_index combo = 0; combo < combination_count; ++combo) {
+                            if (parsed.range.weights[combo] > 0.0f) {
+                                combos.push_back(combo);
+                            }
+                        }
+                    }
+                }
+                hash.add_u64(lock.hands.empty() ? 0u : 1u);
+                hash.add_u64(combos.size());
+                for (const auto combo : combos) {
+                    hash.add_u64(combo);
+                }
+                hash.add_u64(lock.actions.size());
+                for (const auto& action : lock.actions) {
+                    for (const char c : action.action) {
+                        hash.add_u64(static_cast<uint64_t>(static_cast<unsigned char>(c)));
+                    }
+                    hash.add_u64(action.action.size());
+                    hash.add_u64(static_cast<uint64_t>(std::llround(action.frequency / node_lock_frequency_step)));
+                }
+            }
+            return hash.value;
+        }
+
         /**
          * Mutable per-solve state backing dynamic action pruning. @ref action_active
          * carries the active action set per infoset (preserving the original action
@@ -1169,14 +1670,17 @@ namespace zeta::holdem::cli {
             const combo_action_table& regrets,
             const std::array<std::vector<combination_index>, N>& active_combos,
             const std::vector<std::array<reach_vector, N>>& node_reach,
-            pruning_runtime& state)
+            pruning_runtime& state,
+            const lock_runtime* locks = nullptr)
         {
             const auto min_active = state.minimum_active_actions();
             for (uint32_t infoset_id = 0; infoset_id < graph.infoset_count; ++infoset_id) {
                 auto& active = state.action_active[infoset_id];
                 const auto action_n = static_cast<uint32_t>(active.size());
                 const auto node_id = state.representative_node[infoset_id];
-                if (node_id == pruning_runtime::no_node || action_n <= min_active) {
+                // A locked node keeps every action: pruning one would break its constraint.
+                if (node_id == pruning_runtime::no_node || action_n <= min_active
+                    || (locks != nullptr && locks->infoset_locked(infoset_id))) {
                     std::ranges::fill(active, 1u);
                     continue;
                 }
@@ -1228,7 +1732,8 @@ namespace zeta::holdem::cli {
             const combo_action_table& source,
             combo_action_table& destination,
             const std::array<std::vector<combination_index>, N>& active_combos,
-            const pruning_runtime* pruning = nullptr)
+            const pruning_runtime* pruning = nullptr,
+            const lock_runtime* locks = nullptr)
         {
             std::ranges::fill(destination.values, 0.0f);
             std::vector<uint8_t> seen_infosets(graph.infoset_count, 0u);
@@ -1242,6 +1747,29 @@ namespace zeta::holdem::cli {
                 }
                 seen_infosets[infoset_id] = 1u;
                 const auto actor = annotations.actor_by_node[node_id];
+                if (locks != nullptr && locks->infoset_locked(infoset_id)) {
+                    // Locked hands take their constraint; the rest regret-match as usual.
+                    // Locked nodes are never pruned, so every action is active here.
+                    const auto uniform = 1.0f / static_cast<float>(std::max<uint32_t>(1u, graph.action_count(node_id)));
+                    for (const auto combo : active_combos[actor]) {
+                        const auto src = source.combo_infoset(combo, infoset_id);
+                        auto dst = destination.combo_infoset(combo, infoset_id);
+                        if (const auto* constraint = locks->find(infoset_id, combo); constraint != nullptr) {
+                            apply_lock_constraint(*constraint, src, dst);
+                            continue;
+                        }
+                        float positive_sum = 0.0f;
+                        for (const auto value : src) {
+                            positive_sum += std::max(value, 0.0f);
+                        }
+                        for (std::size_t action_index = 0; action_index < dst.size(); ++action_index) {
+                            dst[action_index] = positive_sum > 0.0f
+                                ? std::max(src[action_index], 0.0f) / positive_sum
+                                : uniform;
+                        }
+                    }
+                    continue;
+                }
                 const auto* active = pruning ? &pruning->action_active[infoset_id] : nullptr;
                 uint32_t active_count = graph.action_count(node_id);
                 if (active != nullptr) {
@@ -1343,6 +1871,7 @@ namespace zeta::holdem::cli {
             const uint32_t node_id,
             std::vector<reach_vector>& node_values,
             const bool best_response,
+            const lock_runtime* locks,
             ChanceProbability&& chance_probability)
         {
             auto& values = node_values[node_id];
@@ -1368,7 +1897,25 @@ namespace zeta::holdem::cli {
 
             const auto infoset_id = graph.infoset_id[node_id];
             for (const auto combo : updating_combos) {
-                if (best_response) {
+                const auto* constraint = (best_response && locks != nullptr) ? locks->find(infoset_id, combo) : nullptr;
+                if (constraint != nullptr) {
+                    // A locked hand's best response keeps the locked frequencies and
+                    // puts the residual on its best free action.
+                    float total = 0.0f;
+                    float best_free = -std::numeric_limits<float>::infinity();
+                    for (const auto& edge : edges) {
+                        const auto child_value = node_values[edge.child_node][combo];
+                        if (constraint->locked[edge.action_index] != 0u) {
+                            total += constraint->probability[edge.action_index] * child_value;
+                        } else {
+                            best_free = std::max(best_free, child_value);
+                        }
+                    }
+                    if (constraint->free_count > 0u && constraint->residual > 0.0f) {
+                        total += constraint->residual * best_free;
+                    }
+                    values[combo] = total;
+                } else if (best_response) {
                     float best = -std::numeric_limits<float>::infinity();
                     for (const auto& edge : edges) {
                         best = std::max(best, node_values[edge.child_node][combo]);
@@ -1401,7 +1948,8 @@ namespace zeta::holdem::cli {
             const uint8_t updating_player,
             std::vector<reach_vector>& node_values,
             cfr::scheduler::worker_pool& pool,
-            const bool best_response = false)
+            const bool best_response = false,
+            const lock_runtime* locks = nullptr)
         {
             node_values.assign(lowered.graph.node_count, {});
             const terminal_engine<N> engine{};
@@ -1441,7 +1989,7 @@ namespace zeta::holdem::cli {
                 }
                 backup_combo_node(
                     lowered.graph, lowered.annotations, strategy_profile, active_combos[updating_player],
-                    updating_player, node_id, node_values, best_response,
+                    updating_player, node_id, node_values, best_response, locks,
                     [](const cfr::edge&) { return 1.0f; });
             }
         }
@@ -1555,7 +2103,8 @@ namespace zeta::holdem::cli {
             std::vector<reach_vector>& node_values,
             cfr::scheduler::worker_pool& pool,
             const pruning_runtime* pruning = nullptr,
-            const bool best_response = false)
+            const bool best_response = false,
+            const lock_runtime* locks = nullptr)
         {
             static_assert(N == 2, "multi-street public-game CFR is heads-up only");
             node_values.assign(lowered.graph.node_count, {});
@@ -1613,7 +2162,7 @@ namespace zeta::holdem::cli {
                     : cfr::private_hand_chance_scale(*event, static_cast<uint32_t>(N));
                 backup_combo_node(
                     lowered.graph, lowered.annotations, strategy_profile, active_combos[updating_player],
-                    updating_player, node_id, node_values, best_response,
+                    updating_player, node_id, node_values, best_response, locks,
                     [&](const cfr::edge& edge) {
                         return static_cast<float>(private_scale * lowered.chance_events.probability_for_edge(node_id, edge));
                     });
@@ -1631,7 +2180,8 @@ namespace zeta::holdem::cli {
             const std::vector<reach_vector>& node_values,
             combo_action_table& regrets,
             combo_action_table& strategy_sums,
-            const pruning_runtime* pruning = nullptr)
+            const pruning_runtime* pruning = nullptr,
+            const lock_runtime* locks = nullptr)
         {
             for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
                 if (!graph.is_player_node(node_id)) {
@@ -1650,6 +2200,32 @@ namespace zeta::holdem::cli {
                 for (const auto combo : active_combos[updating_player]) {
                     const auto node_value = node_values[node_id][combo];
                     const auto path_weight = node_reach[node_id][updating_player][combo];
+                    if (const auto* constraint = locks != nullptr ? locks->find(infoset_id, combo) : nullptr;
+                        constraint != nullptr) {
+                        // Free actions regret against the free-only value, scaled by the
+                        // residual: r * (V_a - V_free) = r * V_a - sum_free sigma_b * V_b.
+                        // Locked actions never accumulate regret; with no residual nothing does.
+                        float free_value = 0.0f;
+                        for (const auto& edge : edges) {
+                            const auto action_probability = current_strategy.value(combo, infoset_id, edge.action_index);
+                            strategy_sums.value(combo, infoset_id, edge.action_index) += path_weight * action_probability;
+                            if (constraint->locked[edge.action_index] == 0u) {
+                                free_value += action_probability * node_values[edge.child_node][combo];
+                            }
+                        }
+                        if (constraint->free_count == 0u || constraint->residual <= 0.0f) {
+                            continue;
+                        }
+                        for (const auto& edge : edges) {
+                            if (constraint->locked[edge.action_index] != 0u) {
+                                continue;
+                            }
+                            auto& regret = regrets.value(combo, infoset_id, edge.action_index);
+                            regret = std::max(0.0f,
+                                regret + constraint->residual * node_values[edge.child_node][combo] - free_value);
+                        }
+                        continue;
+                    }
                     for (const auto& edge : edges) {
                         if (active != nullptr && (*active)[edge.action_index] == 0u) {
                             continue;
@@ -1794,6 +2370,7 @@ namespace zeta::holdem::cli {
             hashes.board_hash = hash_board(public_board);
             hashes.betting_policy_hash = hash_spot_configuration(spot, config);
             hashes.solver_config_hash = hash_solver_configuration(spot, runtime, requested_iterations);
+            hashes.locks_hash = hash_node_locks(spot.locks);
 
             cfr::solver::compatibility_hasher combined;
             combined.add_u64(hashes.tree_hash);
@@ -1801,18 +2378,29 @@ namespace zeta::holdem::cli {
             combined.add_u64(hashes.board_hash);
             combined.add_u64(hashes.betting_policy_hash);
             combined.add_u64(hashes.solver_config_hash);
+            // Only when present, so a solve without locks keeps its earlier hash.
+            if (!spot.locks.empty()) {
+                combined.add_u64(hashes.locks_hash);
+            }
             hashes.solve_hash = combined.value;
             return hashes;
         }
 
         [[nodiscard]] inline std::vector<std::string> build_solve_warnings(
             const solve_runtime_options& runtime,
-            const bool exploitability_available)
+            const bool exploitability_available,
+            const std::size_t lock_count = 0)
         {
             std::vector<std::string> warnings;
             warnings.push_back(
                 "Strategy is an equilibrium only within the configured betting abstraction "
                 "(bet sizings and max raises); it is not the full no-limit game.");
+            if (lock_count > 0) {
+                warnings.push_back(
+                    std::to_string(lock_count) + (lock_count == 1 ? " node lock" : " node locks")
+                    + " fixed part of the strategy. The free play is a best response within the locked game, "
+                      "and exploitability is measured in that game, not the unlocked one.");
+            }
             if (!exploitability_available) {
                 warnings.push_back(
                     "Exact best-response exploitability is only computed heads-up; "
@@ -1899,7 +2487,8 @@ namespace zeta::holdem::cli {
             const std::vector<uint32_t>& terminal_nodes,
             std::vector<std::array<reach_vector, 2>>& node_reach_scratch,
             std::vector<reach_vector>& value_scratch,
-            cfr::scheduler::worker_pool& pool)
+            cfr::scheduler::worker_pool& pool,
+            const lock_runtime* locks = nullptr)
         {
             build_node_reach_vectors(
                 lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach_scratch);
@@ -1908,7 +2497,7 @@ namespace zeta::holdem::cli {
                 [&](const uint8_t seat, const bool best_response, std::vector<reach_vector>& values) {
                     evaluate_combo_profile(
                         lowered, average_strategy, active_combos, node_reach_scratch, cache, base_indices,
-                        terminal_nodes, seat, values, pool, best_response);
+                        terminal_nodes, seat, values, pool, best_response, locks);
                 });
         }
 
@@ -1925,7 +2514,8 @@ namespace zeta::holdem::cli {
             const std::vector<uint32_t>& terminal_nodes,
             std::vector<std::array<reach_vector, 2>>& node_reach_scratch,
             std::vector<reach_vector>& value_scratch,
-            cfr::scheduler::worker_pool& pool)
+            cfr::scheduler::worker_pool& pool,
+            const lock_runtime* locks = nullptr)
         {
             build_node_reach_vectors(
                 lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach_scratch);
@@ -1936,7 +2526,7 @@ namespace zeta::holdem::cli {
                 [&](const uint8_t seat, const bool best_response, std::vector<reach_vector>& values) {
                     evaluate_multi_street_combo_profile(
                         lowered, average_strategy, active_combos, node_reach_scratch, terminal_table,
-                        river_base_index_by_state, terminal_nodes, seat, values, pool, nullptr, best_response);
+                        river_base_index_by_state, terminal_nodes, seat, values, pool, nullptr, best_response, locks);
                 });
         }
 
@@ -2001,18 +2591,17 @@ namespace zeta::holdem::cli {
         [[nodiscard]] inline std::vector<action_strategy> aggregate_root_strategy_for_actor(
             const combo_action_table& average_strategy,
             const uint32_t infoset_id,
-            const std::vector<cfr::betting_action>& root_actions,
-            const reach_vector& actor_reach,
-            const utility gross_pot)
+            const std::vector<std::string>& root_labels,
+            const reach_vector& actor_reach)
         {
             std::vector<action_strategy> root_strategy;
-            root_strategy.reserve(root_actions.size());
+            root_strategy.reserve(root_labels.size());
             double total_weight = 0.0;
             for (combination_index combo = 0; combo < combination_count; ++combo) {
                 total_weight += std::max(0.0f, actor_reach[combo]);
             }
-            const auto uniform = root_actions.empty() ? 0.0 : 1.0 / static_cast<double>(root_actions.size());
-            for (std::size_t action_index = 0; action_index < root_actions.size(); ++action_index) {
+            const auto uniform = root_labels.empty() ? 0.0 : 1.0 / static_cast<double>(root_labels.size());
+            for (std::size_t action_index = 0; action_index < root_labels.size(); ++action_index) {
                 double weighted_total = 0.0;
                 for (combination_index combo = 0; combo < combination_count; ++combo) {
                     const auto weight = std::max(0.0f, actor_reach[combo]);
@@ -2023,7 +2612,7 @@ namespace zeta::holdem::cli {
                         * static_cast<double>(average_strategy.value(combo, infoset_id, static_cast<uint32_t>(action_index)));
                 }
                 root_strategy.push_back(action_strategy{
-                    .action = action_label(root_actions[action_index], gross_pot),
+                    .action = root_labels[action_index],
                     .frequency = total_weight > 0.0 ? weighted_total / total_weight : uniform
                 });
             }
@@ -2100,7 +2689,9 @@ namespace zeta::holdem::cli {
             const std::array<std::vector<combination_index>, N>& active_combos,
             const std::vector<std::array<reach_vector, N>>& node_reach,
             const std::array<std::vector<reach_vector>, N>& node_values_by_seat,
-            const uint8_t hero_seat)
+            const uint8_t hero_seat,
+            const std::vector<std::string>& action_labels,
+            const lock_runtime* locks)
         {
             const auto is_player = graph.is_player_node(node_id);
             const auto seat = is_player ? annotations.actor_by_node[node_id] : hero_seat;
@@ -2116,20 +2707,24 @@ namespace zeta::holdem::cli {
                 if (is_player) {
                     for (uint32_t action_index = 0; action_index < action_count; ++action_index) {
                         combo_strategy.push_back(action_strategy{
-                            .action = std::to_string(action_index),
+                            .action = action_index < action_labels.size()
+                                ? action_labels[action_index]
+                                : std::to_string(action_index),
                             .frequency = average_strategy.value(combo, infoset_id, action_index)
                         });
                     }
                 }
                 const auto range_weight = std::max(0.0f, base_reach[seat][combo]);
                 const auto path_weight = std::max(0.0f, node_reach[node_id][seat][combo]);
-                rows.push_back(make_hand_strategy_row(
+                auto row = make_hand_strategy_row(
                     combo,
                     std::move(combo_strategy),
                     range_weight,
                     range_weight > 0.0 ? path_weight / range_weight : 0.0,
                     node_values_by_seat[seat][node_id][combo],
-                    masses[combo]));
+                    masses[combo]);
+                row.locked = is_player && locks != nullptr && locks->find(infoset_id, combo) != nullptr;
+                rows.push_back(std::move(row));
             }
             return rows;
         }
@@ -2211,10 +2806,15 @@ namespace zeta::holdem::cli {
             const std::array<std::vector<combination_index>, N>& active_combos,
             const std::vector<std::array<reach_vector, N>>& node_reach,
             const std::array<std::vector<reach_vector>, N>& node_values_by_seat,
-            const std::vector<card_mask>& board_by_node)
+            const std::vector<card_mask>& board_by_node,
+            const std::vector<std::vector<std::string>>& labels,
+            const lock_runtime* locks)
         {
             const auto hero_seat = static_cast<uint8_t>(std::min<std::size_t>(artifact.hero_seat, N - 1u));
             for (auto& node : artifact.solved_nodes) {
+                if (locks != nullptr) {
+                    node.lock_indices = locks->lock_indices_by_node[node.node_id];
+                }
                 const auto board_mask = board_by_node[node.node_id];
                 node.seat_values = compute_node_seat_values(
                     node.node_id,
@@ -2233,7 +2833,9 @@ namespace zeta::holdem::cli {
                     active_combos,
                     node_reach,
                     node_values_by_seat,
-                    hero_seat);
+                    hero_seat,
+                    labels[node.node_id],
+                    locks);
                 node.category_summary_derivation_version = 1;
                 node.category_summaries = compute_category_summaries(node.strategy_rows);
             }
@@ -2487,44 +3089,45 @@ namespace zeta::holdem::cli {
             const cfr::game_graph& graph,
             const cfr::solver::solver_graph_annotations& annotations,
             const combo_action_table& average_strategy,
-            const std::vector<cfr::betting_action>& root_actions,
+            const std::vector<std::string>& root_labels,
             const std::array<reach_vector, N>& reach_vectors,
             const std::array<std::vector<combination_index>, N>& active_combos,
             const reach_vector& hero_root_values,
             const card_mask root_board,
             const uint8_t hero,
-            const utility gross_pot)
+            const lock_runtime* locks)
         {
             const auto root_infoset = graph.infoset_id[graph.root_node];
             const auto root_actor = annotations.actor_by_node[graph.root_node];
             artifact.root_strategy = aggregate_root_strategy_for_actor(
-                average_strategy, root_infoset, root_actions, reach_vectors[root_actor], gross_pot);
+                average_strategy, root_infoset, root_labels, reach_vectors[root_actor]);
 
             const auto masses = opponent_reach_masses<N>(reach_vectors, active_combos, root_board, hero);
             for (const auto combo : active_combos[hero]) {
                 std::vector<action_strategy> combo_strategy;
                 if (hero == root_actor) {
-                    combo_strategy.reserve(root_actions.size());
-                    for (std::size_t action_index = 0; action_index < root_actions.size(); ++action_index) {
+                    combo_strategy.reserve(root_labels.size());
+                    for (std::size_t action_index = 0; action_index < root_labels.size(); ++action_index) {
                         combo_strategy.push_back(action_strategy{
                             .action = artifact.root_strategy[action_index].action,
                             .frequency = average_strategy.value(combo, root_infoset, static_cast<uint32_t>(action_index))
                         });
                     }
                 }
-                artifact.strategy.push_back(make_hand_strategy_row(
+                auto row = make_hand_strategy_row(
                     combo,
                     std::move(combo_strategy),
                     reach_vectors[hero][combo],
                     reach_vectors[hero][combo] > 0.0f ? 1.0 : 0.0,
                     hero_root_values[combo],
-                    masses[combo]));
+                    masses[combo]);
+                row.locked = hero == root_actor && locks != nullptr && locks->find(root_infoset, combo) != nullptr;
+                artifact.strategy.push_back(std::move(row));
             }
         }
 
         // Range-level action mix at every player node, weighted by the acting seat's
-        // reach. Root actions keep the root strategy's labels; deeper actions are
-        // labelled by index.
+        // reach, with each action under its label.
         template <std::size_t N>
         [[nodiscard]] inline std::vector<std::vector<action_strategy>> make_node_strategies(
             const cfr::game_graph& graph,
@@ -2532,7 +3135,7 @@ namespace zeta::holdem::cli {
             const combo_action_table& average_strategy,
             const std::array<std::vector<combination_index>, N>& active_combos,
             const std::vector<std::array<reach_vector, N>>& node_reach,
-            const std::vector<action_strategy>& root_strategy)
+            const std::vector<std::vector<std::string>>& labels)
         {
             std::vector<std::vector<action_strategy>> node_strategies(graph.node_count);
             for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
@@ -2559,8 +3162,8 @@ namespace zeta::holdem::cli {
                 node_strategy.reserve(edges.size());
                 for (uint32_t action_index = 0; action_index < edges.size(); ++action_index) {
                     node_strategy.push_back(action_strategy{
-                        .action = (node_id == graph.root_node && action_index < root_strategy.size())
-                            ? root_strategy[action_index].action
+                        .action = action_index < labels[node_id].size()
+                            ? labels[node_id][action_index]
                             : std::to_string(action_index),
                         .frequency = total > 0.0
                             ? weighted[action_index] / total
@@ -2603,11 +3206,19 @@ namespace zeta::holdem::cli {
                 const auto& graph = public_game.graph;
                 const auto& annotations = public_game.annotations;
 
+                const auto active_combos = active_combos_by_player(reach_vectors);
+                const auto labels = make_edge_labels<N>(graph, config, &public_game.chance_events, spot.gross_pot);
+                auto resolved_locks = resolve_node_locks<N>(
+                    spot, graph, annotations, labels, active_combos, runtime.enable_card_isomorphism);
+                if (!resolved_locks) {
+                    return std::unexpected(resolved_locks.error());
+                }
+                const lock_runtime* locks = resolved_locks->has_value() ? &**resolved_locks : nullptr;
+
                 combo_action_table regrets(layout);
                 combo_action_table strategy_sums(layout);
                 combo_action_table current_strategy(layout);
                 combo_action_table average_strategy(layout);
-                const auto active_combos = active_combos_by_player(reach_vectors);
                 const auto terminal_nodes = terminal_node_ids(graph);
                 cfr::scheduler::worker_pool pool{resolve_worker_count(runtime)};
                 stop_pool_on_cancel(pool, runtime);
@@ -2673,9 +3284,9 @@ namespace zeta::holdem::cli {
                         return std::unexpected(solve_cancelled_error());
                     }
                     if (pruning_state && i > 0 && (i % pruning_state->reconsider_interval()) == 0) {
-                        normalize_combo_action_table(graph, annotations, regrets, current_strategy, active_combos, pruning);
+                        normalize_combo_action_table(graph, annotations, regrets, current_strategy, active_combos, pruning, locks);
                         build_node_reach_vectors(graph, annotations, current_strategy, reach_vectors, active_combos, node_reach, pruning);
-                        reconsider_active_actions(graph, annotations, regrets, active_combos, node_reach, *pruning_state);
+                        reconsider_active_actions(graph, annotations, regrets, active_combos, node_reach, *pruning_state, locks);
                         recompute_node_live(graph, *pruning_state);
                     }
                     for (uint8_t updating_player = 0; updating_player < N; ++updating_player) {
@@ -2691,7 +3302,7 @@ namespace zeta::holdem::cli {
                                     std::chrono::steady_clock::now() - iter_begin).count(),
                                 "Multi-street CFR+ player update.");
                         }
-                        normalize_combo_action_table(graph, annotations, regrets, current_strategy, active_combos, pruning);
+                        normalize_combo_action_table(graph, annotations, regrets, current_strategy, active_combos, pruning, locks);
                         build_node_reach_vectors(graph, annotations, current_strategy, reach_vectors, active_combos, node_reach, pruning);
                         evaluate_multi_street_combo_profile(
                             public_game,
@@ -2715,16 +3326,17 @@ namespace zeta::holdem::cli {
                             node_values,
                             regrets,
                             strategy_sums,
-                            pruning);
+                            pruning,
+                            locks);
                     }
                     const uint64_t done = i + 1;
                     const bool at_final = done == iterations;
                     const bool at_check = measurement_interval > 0 && (done % measurement_interval == 0);
                     if (measure && (at_check || at_final)) {
-                        normalize_combo_action_table(graph, annotations, strategy_sums, measure_average, active_combos);
+                        normalize_combo_action_table(graph, annotations, strategy_sums, measure_average, active_combos, nullptr, locks);
                         final_exploitability = measure_multi_street_exploitability(
                             public_game, measure_average, reach_vectors, active_combos, terminal_table,
-                            river_base_index_by_state, terminal_nodes, measure_reach, measure_values, pool);
+                            river_base_index_by_state, terminal_nodes, measure_reach, measure_values, pool, locks);
                         have_exploitability = true;
                         if (at_check && convergence_curve.size() < runtime.convergence.max_curve_samples) {
                             convergence_curve.push_back(convergence_sample{
@@ -2772,7 +3384,7 @@ namespace zeta::holdem::cli {
                     0.0,
                     "Extracting combo strategies.");
 
-                normalize_combo_action_table(graph, annotations, strategy_sums, average_strategy, active_combos, pruning);
+                normalize_combo_action_table(graph, annotations, strategy_sums, average_strategy, active_combos, pruning, locks);
                 build_node_reach_vectors(graph, annotations, average_strategy, reach_vectors, active_combos, node_reach, pruning);
                 const auto hero = static_cast<uint8_t>(spot.hero_seat);
                 std::array<std::vector<reach_vector>, N> node_values_by_seat{};
@@ -2809,7 +3421,9 @@ namespace zeta::holdem::cli {
                         .mask = public_game.public_states.states[root_state_id].board_cards};
                     artifact.solver.hashes = make_solve_hashes<N>(
                         graph, annotations, spot, config, reach_vectors, public_board, runtime, iterations);
-                    artifact.solver.warnings = build_solve_warnings(runtime, /*exploitability_available=*/true);
+                    artifact.solver.warnings = build_solve_warnings(
+                        runtime, /*exploitability_available=*/true, spot.locks.size());
+                    artifact.solver.locks = spot.locks;
                     convergence_report report{};
                     report.exploitability_available = have_exploitability;
                     if (have_exploitability) {
@@ -2834,13 +3448,13 @@ namespace zeta::holdem::cli {
                     graph,
                     annotations,
                     average_strategy,
-                    root_actions,
+                    labels[graph.root_node],
                     reach_vectors,
                     active_combos,
                     node_values_by_seat[hero][graph.root_node],
                     board_by_node[graph.root_node],
                     hero,
-                    spot.gross_pot);
+                    locks);
 
                 append_solved_graph_payload(
                     artifact,
@@ -2849,7 +3463,7 @@ namespace zeta::holdem::cli {
                     &public_game.public_states,
                     &public_game.chance_events,
                     &public_game.runouts,
-                    make_node_strategies<N>(graph, annotations, average_strategy, active_combos, node_reach, artifact.root_strategy));
+                    make_node_strategies<N>(graph, annotations, average_strategy, active_combos, node_reach, labels));
                 populate_solved_node_profiles(
                     artifact,
                     graph,
@@ -2859,7 +3473,9 @@ namespace zeta::holdem::cli {
                     active_combos,
                     node_reach,
                     node_values_by_seat,
-                    board_by_node);
+                    board_by_node,
+                    labels,
+                    locks);
                 output.artifact = std::move(artifact);
                 output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - extraction_begin).count();
@@ -2895,11 +3511,19 @@ namespace zeta::holdem::cli {
             const std::array<reach_vector, N>& reach_vectors,
             solve_output& output)
         {
+            const auto active_combos = active_combos_by_player(reach_vectors);
+            const auto labels = make_edge_labels<N>(lowered.graph, config, nullptr, spot.gross_pot);
+            auto resolved_locks = resolve_node_locks<N>(
+                spot, lowered.graph, lowered.annotations, labels, active_combos, /*card_isomorphism=*/false);
+            if (!resolved_locks) {
+                return std::unexpected(resolved_locks.error());
+            }
+            const lock_runtime* locks = resolved_locks->has_value() ? &**resolved_locks : nullptr;
+
             combo_action_table regrets(layout);
             combo_action_table strategy_sums(layout);
             combo_action_table current_strategy(layout);
             combo_action_table average_strategy(layout);
-            const auto active_combos = active_combos_by_player(reach_vectors);
             const auto terminal_nodes = terminal_node_ids(lowered.graph);
             cfr::scheduler::worker_pool pool{resolve_worker_count(runtime)};
             stop_pool_on_cancel(pool, runtime);
@@ -2950,7 +3574,7 @@ namespace zeta::holdem::cli {
                                 std::chrono::steady_clock::now() - iter_begin).count(),
                             "River CFR+ player update.");
                     }
-                    normalize_combo_action_table(lowered.graph, lowered.annotations, regrets, current_strategy, active_combos);
+                    normalize_combo_action_table(lowered.graph, lowered.annotations, regrets, current_strategy, active_combos, nullptr, locks);
                     build_node_reach_vectors(lowered.graph, lowered.annotations, current_strategy, reach_vectors, active_combos, node_reach);
                     evaluate_combo_profile(
                         lowered,
@@ -2972,17 +3596,20 @@ namespace zeta::holdem::cli {
                         node_reach,
                         node_values,
                         regrets,
-                        strategy_sums);
+                        strategy_sums,
+                        nullptr,
+                        locks);
                 }
                 const uint64_t done = i + 1;
                 const bool at_final = done == iterations;
                 const bool at_check = measurement_interval > 0 && (done % measurement_interval == 0);
                 if constexpr (exploitability_supported) {
                     if (measure && (at_check || at_final)) {
-                        normalize_combo_action_table(lowered.graph, lowered.annotations, strategy_sums, measure_average, active_combos);
+                        normalize_combo_action_table(
+                            lowered.graph, lowered.annotations, strategy_sums, measure_average, active_combos, nullptr, locks);
                         final_exploitability = measure_river_exploitability(
                             lowered, measure_average, reach_vectors, active_combos, cache, base_indices,
-                            terminal_nodes, measure_reach, measure_values, pool);
+                            terminal_nodes, measure_reach, measure_values, pool, locks);
                         have_exploitability = true;
                         if (at_check && convergence_curve.size() < runtime.convergence.max_curve_samples) {
                             convergence_curve.push_back(convergence_sample{
@@ -3031,7 +3658,8 @@ namespace zeta::holdem::cli {
                 0.0,
                 "Extracting combo strategies.");
 
-            normalize_combo_action_table(lowered.graph, lowered.annotations, strategy_sums, average_strategy, active_combos);
+            normalize_combo_action_table(
+                lowered.graph, lowered.annotations, strategy_sums, average_strategy, active_combos, nullptr, locks);
             build_node_reach_vectors(lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach);
             const auto hero = static_cast<uint8_t>(spot.hero_seat);
             std::array<std::vector<reach_vector>, N> node_values_by_seat{};
@@ -3064,7 +3692,8 @@ namespace zeta::holdem::cli {
             {
                 artifact.solver.hashes = make_solve_hashes<N>(
                     lowered.graph, lowered.annotations, spot, config, reach_vectors, public_board, runtime, iterations);
-                artifact.solver.warnings = build_solve_warnings(runtime, exploitability_supported);
+                artifact.solver.warnings = build_solve_warnings(runtime, exploitability_supported, spot.locks.size());
+                artifact.solver.locks = spot.locks;
                 convergence_report report{};
                 report.exploitability_available = have_exploitability;
                 if (have_exploitability) {
@@ -3088,13 +3717,13 @@ namespace zeta::holdem::cli {
                 lowered.graph,
                 lowered.annotations,
                 average_strategy,
-                root_actions,
+                labels[lowered.graph.root_node],
                 reach_vectors,
                 active_combos,
                 node_values_by_seat[hero][lowered.graph.root_node],
                 public_board.mask,
                 hero,
-                spot.gross_pot);
+                locks);
             append_solved_graph_payload(
                 artifact,
                 lowered.graph,
@@ -3103,7 +3732,7 @@ namespace zeta::holdem::cli {
                 nullptr,
                 nullptr,
                 make_node_strategies<N>(
-                    lowered.graph, lowered.annotations, average_strategy, active_combos, node_reach, artifact.root_strategy));
+                    lowered.graph, lowered.annotations, average_strategy, active_combos, node_reach, labels));
             populate_solved_node_profiles(
                 artifact,
                 lowered.graph,
@@ -3113,7 +3742,9 @@ namespace zeta::holdem::cli {
                 active_combos,
                 node_reach,
                 node_values_by_seat,
-                std::vector<card_mask>(lowered.graph.node_count, public_board.mask));
+                std::vector<card_mask>(lowered.graph.node_count, public_board.mask),
+                labels,
+                locks);
             output.artifact = std::move(artifact);
             output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - extraction_begin).count();
@@ -3357,17 +3988,73 @@ namespace zeta::holdem::cli {
         if (spot.board.size() != detail::board_size_for_street(*street)) {
             return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Board card count must match street."});
         }
+        // Spots built in code skip parse_spot_json, so their locks are normalised here.
+        std::optional<struct solve_spot> normalized;
+        const struct solve_spot* source = &spot;
+        if (!spot.locks.empty()) {
+            normalized = spot;
+            if (auto locks = normalize_node_locks(normalized->locks); !locks) {
+                return std::unexpected(locks.error());
+            }
+            source = &*normalized;
+        }
 
-        switch (spot.players.size()) {
-            case 2: return detail::solve_spot_impl<2>(spot, iterations, runtime);
-            case 3: return detail::solve_spot_impl<3>(spot, iterations, runtime);
-            case 4: return detail::solve_spot_impl<4>(spot, iterations, runtime);
-            case 5: return detail::solve_spot_impl<5>(spot, iterations, runtime);
-            case 6: return detail::solve_spot_impl<6>(spot, iterations, runtime);
-            case 7: return detail::solve_spot_impl<7>(spot, iterations, runtime);
+        switch (source->players.size()) {
+            case 2: return detail::solve_spot_impl<2>(*source, iterations, runtime);
+            case 3: return detail::solve_spot_impl<3>(*source, iterations, runtime);
+            case 4: return detail::solve_spot_impl<4>(*source, iterations, runtime);
+            case 5: return detail::solve_spot_impl<5>(*source, iterations, runtime);
+            case 6: return detail::solve_spot_impl<6>(*source, iterations, runtime);
+            case 7: return detail::solve_spot_impl<7>(*source, iterations, runtime);
             default:
                 return std::unexpected(cli_error{cli_error_kind::invalid_spot, "Unsupported player count."});
         }
+    }
+
+    /**
+     * The lock path that reaches `node_id` in a solved artifact: each player step's
+     * action label and each chance step's dealt card. Empty for the root; nullopt when
+     * the node is not in the artifact.
+     */
+    [[nodiscard]] inline std::optional<std::vector<std::string>> node_lock_path(
+        const solve_artifact& artifact,
+        const uint32_t node_id)
+    {
+        const auto find_node = [&artifact](const uint32_t id) -> const solved_node* {
+            const auto found = std::ranges::find_if(artifact.solved_nodes, [id](const solved_node& node) {
+                return node.node_id == id;
+            });
+            return found == artifact.solved_nodes.end() ? nullptr : &*found;
+        };
+        const auto* current = find_node(node_id);
+        if (current == nullptr) {
+            return std::nullopt;
+        }
+        std::vector<std::string> reversed;
+        while (current->parent_node_id != cfr::game_graph::INVALID_NODE) {
+            const auto* parent = find_node(current->parent_node_id);
+            if (parent == nullptr) {
+                return std::nullopt;
+            }
+            const auto action = std::ranges::find_if(parent->actions, [&](const solved_node_action& candidate) {
+                return candidate.child_node_id == current->node_id;
+            });
+            if (action == parent->actions.end()) {
+                return std::nullopt;
+            }
+            if (parent->kind == "chance") {
+                std::string cards;
+                for (const auto& card : action->dealt_cards) {
+                    cards += card;
+                }
+                reversed.push_back(std::move(cards));
+            } else {
+                reversed.push_back(action->action);
+            }
+            current = parent;
+        }
+        std::ranges::reverse(reversed);
+        return reversed;
     }
 
     [[nodiscard]] inline std::string format_dump(const solve_artifact& artifact)

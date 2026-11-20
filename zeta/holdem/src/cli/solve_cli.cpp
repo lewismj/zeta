@@ -482,11 +482,16 @@ namespace zeta::holdem::cli {
             if (!opponent_reach_mass) {
                 return std::unexpected(opponent_reach_mass.error());
             }
+            auto locked = optional_bool(object, "locked", false);
+            if (!locked) {
+                return std::unexpected(locked.error());
+            }
             row.range_weight = *range_weight;
             row.reach_probability = *reach_probability;
             row.ev = *ev;
             row.counterfactual_value = *counterfactual_value;
             row.opponent_reach_mass = *opponent_reach_mass;
+            row.locked = *locked;
             return row;
         }
 
@@ -654,6 +659,71 @@ namespace zeta::holdem::cli {
             return std::strtoull(std::string{text}.c_str(), nullptr, 0);
         }
 
+        [[nodiscard]] json::array node_locks_json(const std::vector<node_lock>& locks)
+        {
+            json::array out;
+            out.reserve(locks.size());
+            for (const auto& lock : locks) {
+                json::object object;
+                object["path"] = string_array_json(lock.path);
+                if (!lock.hands.empty()) {
+                    object["hands"] = lock.hands;
+                }
+                json::object actions;
+                for (const auto& action : lock.actions) {
+                    actions[action.action] = action.frequency;
+                }
+                object["actions"] = std::move(actions);
+                out.emplace_back(std::move(object));
+            }
+            return out;
+        }
+
+        [[nodiscard]] std::expected<std::vector<node_lock>, cli_error> parse_node_locks(const json::value& value)
+        {
+            if (!value.is_array()) {
+                return std::unexpected(cli_error{cli_error_kind::parse, "locks must be an array."});
+            }
+            std::vector<node_lock> locks;
+            locks.reserve(value.as_array().size());
+            for (const auto& lock_value : value.as_array()) {
+                const auto position = "Lock " + std::to_string(locks.size() + 1u) + ": ";
+                if (!lock_value.is_object()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, position + "must be an object."});
+                }
+                const auto& object = lock_value.as_object();
+                node_lock lock{};
+                auto path = optional_string_array(object, "path", {});
+                if (!path) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, position + path.error().message});
+                }
+                lock.path = std::move(*path);
+                auto hands = optional_string(object, "hands", "");
+                if (!hands) {
+                    return std::unexpected(cli_error{cli_error_kind::parse, position + hands.error().message});
+                }
+                lock.hands = std::move(*hands);
+                const auto* actions_value = find_value(object, "actions");
+                if (actions_value == nullptr || !actions_value->is_object()) {
+                    return std::unexpected(cli_error{cli_error_kind::parse,
+                        position + "actions must be an object mapping action labels to frequencies."});
+                }
+                for (const auto& [key, frequency_value] : actions_value->as_object()) {
+                    const std::string label{key.data(), key.size()};
+                    auto frequency = number_value(frequency_value, "actions." + label);
+                    if (!frequency) {
+                        return std::unexpected(cli_error{cli_error_kind::parse, position + frequency.error().message});
+                    }
+                    lock.actions.push_back(node_lock_action{.action = label, .frequency = *frequency});
+                }
+                locks.push_back(std::move(lock));
+            }
+            if (auto normalized = normalize_node_locks(locks); !normalized) {
+                return std::unexpected(normalized.error());
+            }
+            return locks;
+        }
+
         [[nodiscard]] json::object solver_json(const solver_metadata& solver)
         {
             json::object out;
@@ -668,8 +738,10 @@ namespace zeta::holdem::cli {
             hashes["board"] = hash_to_hex(solver.hashes.board_hash);
             hashes["betting_policy"] = hash_to_hex(solver.hashes.betting_policy_hash);
             hashes["solver_config"] = hash_to_hex(solver.hashes.solver_config_hash);
+            hashes["locks"] = hash_to_hex(solver.hashes.locks_hash);
             hashes["solve"] = hash_to_hex(solver.hashes.solve_hash);
             out["hashes"] = std::move(hashes);
+            out["locks"] = node_locks_json(solver.locks);
 
             const auto& convergence = solver.convergence;
             json::object convergence_object;
@@ -756,6 +828,9 @@ namespace zeta::holdem::cli {
                 row_object["ev"] = row.ev;
                 row_object["counterfactual_value"] = row.counterfactual_value;
                 row_object["opponent_reach_mass"] = row.opponent_reach_mass;
+                if (row.locked) {
+                    row_object["locked"] = true;
+                }
                 rows.emplace_back(std::move(row_object));
             }
             return rows;
@@ -896,11 +971,70 @@ namespace zeta::holdem::cli {
                 if (mode != solve_artifact_export_mode::summary) {
                     object["strategy_rows"] = strategy_json(node.strategy_rows);
                 }
+                if (!node.lock_indices.empty()) {
+                    json::array lock_indices;
+                    for (const auto index : node.lock_indices) {
+                        lock_indices.emplace_back(static_cast<uint64_t>(index));
+                    }
+                    object["lock_indices"] = std::move(lock_indices);
+                }
                 out.emplace_back(std::move(object));
             }
             return out;
         }
 
+    }
+
+    std::expected<void, cli_error> normalize_node_locks(std::vector<node_lock>& locks)
+    {
+        for (std::size_t index = 0; index < locks.size(); ++index) {
+            auto& lock = locks[index];
+            const auto fail = [index](const std::string& message) {
+                return std::unexpected(detail::lock_error(index, message));
+            };
+            for (std::size_t step = 0; step < lock.path.size(); ++step) {
+                auto& token = lock.path[step];
+                if (token.empty()) {
+                    return fail("path step " + std::to_string(step + 1u) + " is empty.");
+                }
+                // A dealt card is written in canonical form ("kh" -> "Kh"); action labels
+                // are never two characters, so they cannot be mistaken for a card.
+                if (token.size() == 2u) {
+                    if (const auto card = detail::parse_card_text(token); card) {
+                        token = detail::card_text_from_id(static_cast<uint8_t>(*card));
+                    }
+                }
+            }
+            if (lock.hands.find_first_not_of(" \t\r\n") == std::string::npos) {
+                lock.hands.clear();
+            } else if (const auto parsed = parse_range(lock.hands); !parsed.ok()) {
+                return fail("invalid hands at position " + std::to_string(parsed.error.position) + ": "
+                    + range_parse_error_text(parsed.error.code) + ".");
+            }
+            if (lock.actions.empty()) {
+                return fail("it must constrain at least one action.");
+            }
+            std::ranges::sort(lock.actions, {}, &node_lock_action::action);
+            double total = 0.0;
+            for (std::size_t action_index = 0; action_index < lock.actions.size(); ++action_index) {
+                auto& action = lock.actions[action_index];
+                if (action.action.empty()) {
+                    return fail("action labels must not be empty.");
+                }
+                if (action_index > 0 && lock.actions[action_index - 1u].action == action.action) {
+                    return fail("'" + action.action + "' is listed twice.");
+                }
+                if (!std::isfinite(action.frequency) || action.frequency < 0.0 || action.frequency > 1.0) {
+                    return fail("the frequency of '" + action.action + "' must be between 0 and 1.");
+                }
+                action.frequency = std::nearbyint(action.frequency / node_lock_frequency_step) * node_lock_frequency_step;
+                total += action.frequency;
+            }
+            if (total > 1.0 + 1.0e-9) {
+                return fail("its frequencies add up to more than 1.");
+            }
+        }
+        return {};
     }
 
     std::vector<spot_amount_issue> validate_spot_amounts(const struct solve_spot& spot)
@@ -1080,6 +1214,14 @@ namespace zeta::holdem::cli {
         spot.root_actor = *root_actor;
         spot.hero_seat = *hero_seat;
 
+        if (const auto* locks_value = find_value(*root, "locks"); locks_value != nullptr) {
+            auto locks = parse_node_locks(*locks_value);
+            if (!locks) {
+                return std::unexpected(locks.error());
+            }
+            spot.locks = std::move(*locks);
+        }
+
         if (auto validation = validate_spot_fields(spot); !validation) {
             return std::unexpected(validation.error());
         }
@@ -1229,6 +1371,10 @@ namespace zeta::holdem::cli {
             ? spot.players[spot.root_actor] : std::to_string(spot.root_actor);
         out["hero_seat"] = spot.hero_seat < spot.players.size()
             ? spot.players[spot.hero_seat] : std::to_string(spot.hero_seat);
+        // Omitted when empty so a spot without locks serialises exactly as before.
+        if (!spot.locks.empty()) {
+            out["locks"] = node_locks_json(spot.locks);
+        }
         return json::serialize(out);
     }
 
@@ -1247,9 +1393,10 @@ namespace zeta::holdem::cli {
         if (!schema_version) {
             return std::unexpected(schema_version.error());
         }
-        if (*schema_version != current_artifact_schema_version) {
+        if (*schema_version < oldest_readable_artifact_schema_version || *schema_version > current_artifact_schema_version) {
             return std::unexpected(cli_error{cli_error_kind::invalid_artifact,
-                "Unsupported schema_version. Only version " + std::to_string(current_artifact_schema_version) + " is accepted."});
+                "Unsupported schema_version. Versions " + std::to_string(oldest_readable_artifact_schema_version)
+                    + " to " + std::to_string(current_artifact_schema_version) + " are accepted."});
         }
         if (!extraction_version) {
             return std::unexpected(extraction_version.error());
@@ -1264,7 +1411,8 @@ namespace zeta::holdem::cli {
         if (!street) {
             return std::unexpected(street.error());
         }
-        artifact.schema_version = *schema_version;
+        // Schema 6 differs only by lacking the lock fields, which default to none.
+        artifact.schema_version = current_artifact_schema_version;
         artifact.extraction_version = *extraction_version;
         artifact.game = std::move(*game);
         artifact.street = std::move(*street);
@@ -1330,13 +1478,16 @@ namespace zeta::holdem::cli {
             auto board = optional_string(hashes_object, "board", "");
             auto betting_policy = optional_string(hashes_object, "betting_policy", "");
             auto solver_config = optional_string(hashes_object, "solver_config", "");
+            auto locks = optional_string(hashes_object, "locks", "");
             auto solve = optional_string(hashes_object, "solve", "");
             if (!tree) { return std::unexpected(tree.error()); }
             if (!range) { return std::unexpected(range.error()); }
             if (!board) { return std::unexpected(board.error()); }
             if (!betting_policy) { return std::unexpected(betting_policy.error()); }
             if (!solver_config) { return std::unexpected(solver_config.error()); }
+            if (!locks) { return std::unexpected(locks.error()); }
             if (!solve) { return std::unexpected(solve.error()); }
+            artifact.solver.hashes.locks_hash = hash_from_hex(*locks);
             artifact.solver.hashes.tree_hash = hash_from_hex(*tree);
             artifact.solver.hashes.range_hash = hash_from_hex(*range);
             artifact.solver.hashes.board_hash = hash_from_hex(*board);
@@ -1404,6 +1555,14 @@ namespace zeta::holdem::cli {
             return std::unexpected(warnings.error());
         }
         artifact.solver.warnings = std::move(*warnings);
+
+        if (const auto* locks_value = find_value(solver_object, "locks"); locks_value != nullptr) {
+            auto locks = parse_node_locks(*locks_value);
+            if (!locks) {
+                return std::unexpected(locks.error());
+            }
+            artifact.solver.locks = std::move(*locks);
+        }
 
         if (const auto* root_strategy_value = find_value(*root, "root_strategy"); root_strategy_value != nullptr) {
             if (!root_strategy_value->is_array()) {
@@ -1635,6 +1794,18 @@ namespace zeta::holdem::cli {
                             return std::unexpected(row.error());
                         }
                         node.strategy_rows.push_back(std::move(*row));
+                    }
+                }
+                if (const auto* lock_indices_value = find_value(object, "lock_indices"); lock_indices_value != nullptr) {
+                    if (!lock_indices_value->is_array()) {
+                        return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.lock_indices must be an array."});
+                    }
+                    for (const auto& index_value : lock_indices_value->as_array()) {
+                        auto index = uint64_value(index_value, "lock_indices");
+                        if (!index) {
+                            return std::unexpected(index.error());
+                        }
+                        node.lock_indices.push_back(static_cast<uint32_t>(*index));
                     }
                 }
                 artifact.solved_nodes.push_back(std::move(node));

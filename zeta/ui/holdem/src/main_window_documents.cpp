@@ -236,6 +236,15 @@ namespace zeta::holdem::ui {
                     documents_[index].document.replace_spot(std::move(next_spot));
                     refresh_workspace_from_document(index);
                 },
+                .on_locks_changed = [this, index](std::vector<cli::node_lock> locks) {
+                    if (index < 0 || index >= static_cast<int>(documents_.size())) {
+                        return;
+                    }
+                    auto next_spot = documents_[index].document.current_spot();
+                    next_spot.locks = std::move(locks);
+                    documents_[index].document.replace_spot(std::move(next_spot));
+                    refresh_workspace_from_document(index);
+                },
                 .on_duplicate_requested = [this](const spot& source) {
                     auto document = spot_document::create_new();
                     document.replace_spot(source);

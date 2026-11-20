@@ -16,12 +16,16 @@ class QLabel;
 namespace zeta::holdem::ui {
 
     namespace widgets {
+        class spot_builder;
         class spot_json_editor;
+        class strategy_explorer;
         class table_state_view;
     }
 
     struct document_workspace_callbacks {
         std::function<void(spot)> on_spot_changed;
+        /** The Strategy Explorer edited the locks; only the spot's locks change. */
+        std::function<void(std::vector<cli::node_lock>)> on_locks_changed;
         std::function<void(const spot&)> on_duplicate_requested;
         std::function<void()> on_raw_editor_dirty;
         std::function<void(const QString&)> on_leaving_raw_editor;
@@ -76,6 +80,8 @@ namespace zeta::holdem::ui {
         widgets::spot_json_editor* raw_editor_ = nullptr;
         QWidget* right_column_ = nullptr;
         widgets::table_state_view* table_view_ = nullptr;
+        widgets::spot_builder* builder_ = nullptr;
+        widgets::strategy_explorer* explorer_ = nullptr;
         QPlainTextEdit* solve_console_ = nullptr;
         QSplitter* workspace_splitter_ = nullptr;
         QLabel* summary_header_ = nullptr;

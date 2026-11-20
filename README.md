@@ -33,7 +33,10 @@ The Hold'em module currently includes a lookup-based native 7-card evaluator and
 
 Zeta includes a combo-vectorised CFR+ solver for Hold'em postflop analysis: heads-up
 **flop**, **turn**, and **river** spots, and multiway (up to 7 players) **river** spots. It
-is exposed through both the `zeta-solve` CLI and the solver UI. River leaves are
+is exposed through both the `zeta-solve` CLI and the solver UI. Node locks fix part of a
+player's strategy at chosen decisions (for the whole range or named hands) and re-solve,
+so you can see how the other player exploits that play; see the
+[node locks section of the CLI guide](doc/holdem/cli_usage.md#node-locks-locks-array). River leaves are
 evaluated by the terminal evaluator documented in
 [River terminal evaluator](doc/holdem/terminal_evaluator.md), which currently
 implements:

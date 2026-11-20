@@ -37,8 +37,12 @@ namespace zeta::holdem::ui::widgets {
 
         void set_spot(const spot& source);
 
+        /** Replaces only the locks, e.g. after the Strategy Explorer edits them, leaving other controls alone. */
+        void set_locks(std::vector<cli::node_lock> locks);
+
     private:
         void create_layout();
+        void refresh_locks_panel();
         void refresh_from_spot();
         void refresh_board_controls();
         void refresh_actor_selectors();
@@ -74,6 +78,9 @@ namespace zeta::holdem::ui::widgets {
         QLabel* players_error_ = nullptr;
         QLabel* actor_error_ = nullptr;
         QLabel* betting_policy_error_ = nullptr;
+        QTableWidget* lock_table_ = nullptr;
+        QPushButton* remove_lock_button_ = nullptr;
+        QPushButton* clear_locks_button_ = nullptr;
     };
 
 }

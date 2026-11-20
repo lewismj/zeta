@@ -319,11 +319,24 @@ The **Action Tree** panel shows the root and generated child nodes:
 
 | Column | Meaning |
 |---|---|
-| **Node** | Root or the action that led to the child node. |
-| **Actor** | Acting seat at that node, or terminal marker. |
+| **Node** | Root, the action that led to the child node, or the card dealt to reach it. |
+| **Actor** | Acting seat at that node, or terminal marker. "· locked" marks a node a lock constrained in this solve. |
 | **Actions** | Number of legal actions at that node. |
 
 Selecting a node updates the breadcrumb, node table state, node action-frequency table, strategy matrix, and hand table. Combo-level strategy is shown for the root node; child nodes without combo strategy show "No node strategy".
+
+### Node locks
+
+A lock fixes some of a player's action frequencies at one decision and leaves the rest free, so a re-solve shows how the other player exploits that play: for example, "what if BB always folds to this bet?".
+
+1. Select a decision in the **Action Tree** and click **Lock node...**.
+2. Tick the actions to fix and set their frequencies. The editor starts from the solved mix. Unticked actions stay free and share whatever frequency is left.
+3. Optionally enter **Hands** (range text such as `AA,KK,AKs`) to lock only those hands. A lock on some hands overrides a whole-range lock at the same node for those hands.
+4. Click **Apply lock**, then re-run the solve. The stale banner shows the strategy no longer matches the inputs until you do.
+
+The **Lock** column of the node action table shows the frequencies a whole-range lock fixes, and the line under the table lists every lock reaching the node and whether this solve applied it. **Remove locks** removes the locks written for the selected node.
+
+The **Spot Builder** lists every lock in the document under **Node locks**, with **Remove selected** and **Clear all**. Locks are saved with the document and appear in the Spot JSON tab as the `locks` array (see the CLI usage guide for the format, including `"*"` to lock a decision on every turn or river card). If a lock no longer fits the tree, for example after changing bet sizes, the solve fails with the lock's number and the reason.
 
 ### Artifact summary
 

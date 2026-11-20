@@ -1,5 +1,8 @@
 #include "widgets/spot_builder.h"
 
+#include "viewmodels/lock_view_model.h"
+
+#include <QAbstractItemView>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFrame>
@@ -20,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <utility>
 
 namespace zeta::holdem::ui::widgets {
@@ -513,6 +517,63 @@ namespace zeta::holdem::ui::widgets {
         seats_layout->addWidget(players_error_);
         root->addWidget(seats_panel, 1);
 
+        auto* locks_panel = make_panel();
+        auto* locks_layout = new QVBoxLayout{locks_panel};
+        locks_layout->setContentsMargins(metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin, metrics_.panel_margin);
+        locks_layout->setSpacing(metrics_.panel_spacing);
+        locks_layout->addWidget(make_panel_title(tr("Node locks")));
+        auto* locks_hint = new QLabel{
+            tr("Locks fix some of a player's action frequencies at a decision, so the solve shows how the other "
+               "player exploits that play. Add them from the Strategy Explorer after a solve, or in the Spot JSON."),
+            locks_panel};
+        locks_hint->setObjectName("mutedLabel");
+        locks_hint->setWordWrap(true);
+        locks_layout->addWidget(locks_hint);
+        lock_table_ = new QTableWidget{locks_panel};
+        lock_table_->setObjectName("nodeLockTable");
+        lock_table_->setColumnCount(3);
+        lock_table_->setHorizontalHeaderLabels({tr("Node"), tr("Hands"), tr("Fixed frequencies")});
+        lock_table_->verticalHeader()->setVisible(false);
+        lock_table_->horizontalHeader()->setStretchLastSection(true);
+        lock_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        lock_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        lock_table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        lock_table_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+        locks_layout->addWidget(lock_table_);
+        auto* lock_buttons = new QHBoxLayout;
+        remove_lock_button_ = new QPushButton{tr("Remove selected"), locks_panel};
+        remove_lock_button_->setObjectName("removeNodeLockButton");
+        clear_locks_button_ = new QPushButton{tr("Clear all"), locks_panel};
+        clear_locks_button_->setObjectName("clearNodeLocksButton");
+        lock_buttons->addWidget(remove_lock_button_);
+        lock_buttons->addWidget(clear_locks_button_);
+        lock_buttons->addStretch(1);
+        locks_layout->addLayout(lock_buttons);
+        root->addWidget(locks_panel);
+
+        connect(lock_table_, &QTableWidget::itemSelectionChanged, this, [this] {
+            remove_lock_button_->setEnabled(!lock_table_->selectionModel()->selectedRows().isEmpty());
+        });
+        connect(remove_lock_button_, &QPushButton::clicked, this, [this] {
+            std::vector<int> rows;
+            for (const auto& index : lock_table_->selectionModel()->selectedRows()) {
+                rows.push_back(index.row());
+            }
+            std::ranges::sort(rows, std::greater{});
+            for (const auto row : rows) {
+                if (row >= 0 && row < static_cast<int>(spot_.locks.size())) {
+                    spot_.locks.erase(spot_.locks.begin() + row);
+                }
+            }
+            refresh_locks_panel();
+            emit_spot_changed();
+        });
+        connect(clear_locks_button_, &QPushButton::clicked, this, [this] {
+            spot_.locks.clear();
+            refresh_locks_panel();
+            emit_spot_changed();
+        });
+
         connect(street_selector_, &QComboBox::currentTextChanged, this, [this](const QString& street) {
             if (updating_) {
                 return;
@@ -632,6 +693,7 @@ namespace zeta::holdem::ui::widgets {
         refresh_board_controls();
         refresh_actor_selectors();
         refresh_betting_policy_controls();
+        refresh_locks_panel();
         updating_ = false;
         refresh_validation();
     }
@@ -694,6 +756,30 @@ namespace zeta::holdem::ui::widgets {
         }
         betting_policy_error_->clear();
         betting_policy_error_->setVisible(false);
+    }
+
+    void spot_builder::set_locks(std::vector<cli::node_lock> locks)
+    {
+        spot_.locks = std::move(locks);
+        refresh_locks_panel();
+    }
+
+    void spot_builder::refresh_locks_panel()
+    {
+        if (lock_table_ == nullptr) {
+            return;
+        }
+        const QSignalBlocker blocker{lock_table_};
+        lock_table_->clearSelection();
+        lock_table_->setRowCount(static_cast<int>(spot_.locks.size()));
+        for (int row = 0; row < lock_table_->rowCount(); ++row) {
+            const auto& lock = spot_.locks[static_cast<std::size_t>(row)];
+            lock_table_->setItem(row, 0, new QTableWidgetItem{QString::fromStdString(viewmodels::format_lock_path(lock.path))});
+            lock_table_->setItem(row, 1, new QTableWidgetItem{QString::fromStdString(viewmodels::format_lock_hands(lock))});
+            lock_table_->setItem(row, 2, new QTableWidgetItem{QString::fromStdString(viewmodels::format_lock_actions(lock))});
+        }
+        remove_lock_button_->setEnabled(false);
+        clear_locks_button_->setEnabled(!spot_.locks.empty());
     }
 
     void spot_builder::emit_spot_changed()

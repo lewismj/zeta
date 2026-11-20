@@ -119,9 +119,19 @@ Why it matters: GTO-style analysis is driven by comparing frequencies and EVs at
 each node. The UI can only become powerful if the solver artifact carries these
 surfaces cleanly.
 
-## 4. Node locking and strategy constraints
+## 4. Node locking and strategy constraints (delivered)
 
-Node locking is one of the most valuable practical solver features.
+**Status: Delivered.** Spots carry a `locks` array. Each lock fixes some action
+frequencies at a decision, given by its action path from the root, with `"*"` for
+every dealt card. A lock covers the whole range or named hands, and the actions it
+doesn't list stay free. Locks are checked against the lowered tree before the solve
+starts. They are then enforced inside CFR+: the played strategy keeps the fixed
+frequencies, and free regrets are updated against the free-only value. The opponent
+best-responds, and exploitability is measured in the locked game. Artifacts
+(schema 7) record the locks, a locks hash, which locks applied at each node, and
+which hands they fixed; every action now carries its real label. In the UI, locks
+are added from the Strategy Explorer and listed in the Spot Builder. See
+[`node_locking_plan.md`](node_locking_plan.md) and the CLI usage guide.
 
 Core deliverables:
 
@@ -264,15 +274,14 @@ Why it matters: this turns solver output into an interactive study and practice 
 ## Recommended implementation order
 
 1. Per-street betting expansion for flop/turn solves. (delivered)
-2. Robust convergence and exploitability reporting.
+2. Robust convergence and exploitability reporting. (delivered)
 3. Strategy and EV result surfaces. (delivered)
-4. Node locking.
+4. Node locking. (delivered)
 5. Postflop range tools.
 6. Saved spot library and solve cache.
 7. Compare mode and reports.
 8. Trainer/drill mode.
 
-The first four items are the core solver foundation; items 1 through 3 are now
-delivered, leaving node locking as the final remaining core-solver foundation
-step. Items five through eight are what make the solver feel like a complete
-analysis product.
+The first four items are the core solver foundation, and all four are delivered.
+Items five through eight are what make the solver feel like a complete analysis
+product.

@@ -1,5 +1,8 @@
 #include "widgets/strategy_explorer.h"
 
+#include "viewmodels/lock_view_model.h"
+#include "widgets/node_lock_dialog.h"
+
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QFrame>
@@ -187,8 +190,29 @@ namespace zeta::holdem::ui::widgets {
         , solution_(std::move(solution).value_or(solver::make_action_tree_solution_store(source, artifact)))
         , metrics_(metrics)
         , active_node_id_(q(solution_.root_node_id))
+        , current_locks_(source.locks)
+        , solved_locks_(artifact.solver.locks)
     {
         setObjectName("strategyExplorer");
+        for (const auto& node : artifact.solved_nodes) {
+            if (!node.lock_indices.empty()) {
+                solved_lock_indices_.emplace(node.node_id, node.lock_indices);
+            }
+            for (const auto& action : node.actions) {
+                if (action.child_node_id == cfr::game_graph::INVALID_NODE) {
+                    continue;
+                }
+                std::string step;
+                if (node.kind == "chance") {
+                    for (const auto& card : action.dealt_cards) {
+                        step += card;
+                    }
+                } else {
+                    step = action.action;
+                }
+                lock_steps_.emplace(action.child_node_id, std::pair{node.node_id, std::move(step)});
+            }
+        }
         create_layout();
         refresh_filter();
     }
@@ -237,7 +261,7 @@ namespace zeta::holdem::ui::widgets {
             auto* item = new QTreeWidgetItem{
                 QStringList{
                     tr("Root"),
-                    seat_text(solution_, root_node->acting_seat),
+                    seat_text(solution_, root_node->acting_seat) + node_lock_suffix(root_node->graph_node_id),
                     QString::number(root_node->legal_actions.size())
                 }};
             item->setData(0, Qt::UserRole, q(root_node->node_id));
@@ -249,19 +273,49 @@ namespace zeta::holdem::ui::widgets {
         }
         tree_body->addWidget(node_tree_, 3);
 
+        auto* action_column = new QVBoxLayout;
+        action_column->setSpacing(metrics_.panel_spacing);
         node_action_table_ = new QTableWidget{tree_panel};
         node_action_table_->setObjectName("solutionNodeActionTable");
-        node_action_table_->setColumnCount(3);
-        node_action_table_->setHorizontalHeaderLabels({tr("Action"), tr("Frequency"), tr("Action EV")});
+        node_action_table_->setColumnCount(4);
+        node_action_table_->setHorizontalHeaderLabels({tr("Action"), tr("Frequency"), tr("Action EV"), tr("Lock")});
         node_action_table_->horizontalHeaderItem(2)->setToolTip(
             tr("The acting seat's range EV in chips after taking this action at the selected node, averaged over "
                "every hand matchup the two ranges allow. An em dash means the action is never taken."));
+        node_action_table_->horizontalHeaderItem(3)->setToolTip(
+            tr("The frequency a whole-range lock fixes for this action at the selected node in the current inputs. "
+               "Blank actions are free for the solver to choose."));
         node_action_table_->verticalHeader()->setVisible(false);
         node_action_table_->horizontalHeader()->setStretchLastSection(true);
         node_action_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
         node_action_table_->setSelectionMode(QAbstractItemView::NoSelection);
-        tree_body->addWidget(node_action_table_, 2);
+        action_column->addWidget(node_action_table_, 1);
+
+        lock_status_ = make_muted_label({});
+        lock_status_->setObjectName("nodeLockStatus");
+        action_column->addWidget(lock_status_);
+        auto* lock_buttons = new QHBoxLayout;
+        lock_buttons->setSpacing(metrics_.panel_spacing);
+        lock_button_ = new QPushButton{tr("Lock node..."), tree_panel};
+        lock_button_->setObjectName("lockNodeButton");
+        lock_button_->setToolTip(tr("Fix some of the acting player's action frequencies at this node, then re-solve "
+                                    "to see how the other player exploits them."));
+        unlock_button_ = new QPushButton{tr("Remove locks"), tree_panel};
+        unlock_button_->setObjectName("unlockNodeButton");
+        unlock_button_->setToolTip(tr("Remove the locks written for this node. Locks that reach it through any "
+                                      "dealt card ('Any card') are kept; remove them from the Spot Builder."));
+        lock_buttons->addWidget(lock_button_);
+        lock_buttons->addWidget(unlock_button_);
+        lock_buttons->addStretch(1);
+        action_column->addLayout(lock_buttons);
+        tree_body->addLayout(action_column, 2);
         tree_layout->addLayout(tree_body);
+        connect(lock_button_, &QPushButton::clicked, this, [this] {
+            open_lock_dialog();
+        });
+        connect(unlock_button_, &QPushButton::clicked, this, [this] {
+            remove_node_locks();
+        });
         if (!solution_.diagnostics.empty()) {
             QStringList diagnostics;
             for (const auto& diagnostic : solution_.diagnostics) {
@@ -481,7 +535,9 @@ namespace zeta::holdem::ui::widgets {
                 found == node->average_strategy.end() || !found->ev_available
                     ? QStringLiteral("\u2014")
                     : ev_text(found->average_ev)});
+            node_action_table_->setItem(row, 3, new QTableWidgetItem{});
         }
+        refresh_lock_controls();
 
         refresh_matrix();
         refresh_hand_table();
@@ -614,11 +670,15 @@ namespace zeta::holdem::ui::widgets {
             if (child == nullptr) {
                 continue;
             }
-            const auto label = child->path.empty() ? tr("Root") : q(child->path.back());
+            // Dealt cards name chance children; the artifact labels those edges "deal".
+            const auto step = lock_steps_.find(child->graph_node_id);
+            const auto label = step != lock_steps_.end()
+                ? display_action_text(step->second.second)
+                : (child->path.empty() ? tr("Root") : q(child->path.back()));
             auto* child_item = new QTreeWidgetItem{
                 QStringList{
                     label,
-                    seat_text(solution_, child->acting_seat),
+                    seat_text(solution_, child->acting_seat) + node_lock_suffix(child->graph_node_id),
                     QString::number(child->legal_actions.size())
                 }};
             child_item->setData(0, Qt::UserRole, q(child->node_id));
@@ -640,6 +700,165 @@ namespace zeta::holdem::ui::widgets {
     {
         const auto* node = solver::find_solution_node(solution_, active_node_id_.toStdString());
         return node != nullptr && node->kind == "player" && active_node_id_.toStdString() == solution_.root_node_id;
+    }
+
+    void strategy_explorer::set_locks_changed_callback(locks_changed_callback callback)
+    {
+        on_locks_changed_ = std::move(callback);
+        refresh_lock_controls();
+    }
+
+    void strategy_explorer::set_current_locks(std::vector<cli::node_lock> locks)
+    {
+        current_locks_ = std::move(locks);
+        refresh_lock_controls();
+    }
+
+    std::optional<std::vector<std::string>> strategy_explorer::active_lock_path() const
+    {
+        const auto* node = solver::find_solution_node(solution_, active_node_id_.toStdString());
+        if (node == nullptr || node->kind != "player" || node->terminal) {
+            return std::nullopt;
+        }
+        std::vector<std::string> reversed;
+        auto current = node->graph_node_id;
+        for (auto step = lock_steps_.find(current); step != lock_steps_.end(); step = lock_steps_.find(current)) {
+            reversed.push_back(step->second.second);
+            current = step->second.first;
+        }
+        std::ranges::reverse(reversed);
+        return reversed;
+    }
+
+    void strategy_explorer::apply_node_lock(cli::node_lock lock)
+    {
+        const auto path = active_lock_path();
+        if (!path) {
+            return;
+        }
+        lock.path = *path;
+        current_locks_ = viewmodels::with_lock(std::move(current_locks_), std::move(lock));
+        refresh_lock_controls();
+        if (on_locks_changed_) {
+            on_locks_changed_(current_locks_);
+        }
+    }
+
+    void strategy_explorer::remove_node_locks()
+    {
+        const auto path = active_lock_path();
+        if (!path) {
+            return;
+        }
+        current_locks_ = viewmodels::without_locks_at(std::move(current_locks_), *path);
+        refresh_lock_controls();
+        if (on_locks_changed_) {
+            on_locks_changed_(current_locks_);
+        }
+    }
+
+    void strategy_explorer::open_lock_dialog()
+    {
+        const auto path = active_lock_path();
+        const auto* node = solver::find_solution_node(solution_, active_node_id_.toStdString());
+        if (!path || node == nullptr) {
+            return;
+        }
+        std::vector<double> solved;
+        solved.reserve(node->legal_actions.size());
+        for (const auto& action : node->legal_actions) {
+            const auto found = std::ranges::find(node->average_strategy, action, &solver::solution_action_summary::action);
+            solved.push_back(found == node->average_strategy.end() ? 0.0 : found->frequency);
+        }
+        // Start from this node's whole-range lock, or its only lock, when it has one.
+        std::optional<cli::node_lock> existing;
+        for (const auto& lock : current_locks_) {
+            if (lock.path == *path && (lock.hands.empty() || !existing)) {
+                existing = lock;
+            }
+        }
+        node_lock_dialog dialog{*path, seat_text(solution_, node->acting_seat), node->legal_actions, solved, existing, this};
+        if (dialog.exec() == QDialog::Accepted && dialog.lock()) {
+            apply_node_lock(*dialog.lock());
+        }
+    }
+
+    void strategy_explorer::refresh_lock_controls()
+    {
+        if (lock_status_ == nullptr) {
+            return;
+        }
+        const auto path = active_lock_path();
+        const auto* node = solver::find_solution_node(solution_, active_node_id_.toStdString());
+        const bool editable = static_cast<bool>(on_locks_changed_);
+        lock_button_->setEnabled(editable && path.has_value());
+        lock_button_->setVisible(editable);
+        unlock_button_->setVisible(editable);
+        if (!path || node == nullptr) {
+            unlock_button_->setEnabled(false);
+            lock_status_->setText({});
+            return;
+        }
+
+        const auto matching = viewmodels::locks_at_node(current_locks_, *path);
+        unlock_button_->setEnabled(editable && std::ranges::any_of(current_locks_, [&path](const cli::node_lock& lock) {
+            return lock.path == *path;
+        }));
+
+        const cli::node_lock* range_lock = nullptr;
+        for (const auto index : matching) {
+            if (current_locks_[index].hands.empty()) {
+                range_lock = &current_locks_[index];
+            }
+        }
+        for (int row = 0; row < node_action_table_->rowCount(); ++row) {
+            const auto& action = node->legal_actions[static_cast<std::size_t>(row)];
+            QString text;
+            if (range_lock != nullptr) {
+                const auto found = std::ranges::find(range_lock->actions, action, &cli::node_lock_action::action);
+                if (found != range_lock->actions.end()) {
+                    text = percent_text(found->frequency);
+                }
+            }
+            if (auto* item = node_action_table_->item(row, 3); item != nullptr) {
+                item->setText(text);
+            }
+        }
+
+        const auto same_lock = [](const cli::node_lock& lhs, const cli::node_lock& rhs) {
+            return lhs.path == rhs.path && lhs.hands == rhs.hands
+                && std::ranges::equal(lhs.actions, rhs.actions, [](const auto& a, const auto& b) {
+                    return a.action == b.action && a.frequency == b.frequency;
+                });
+        };
+        const auto solved = solved_lock_indices_.find(node->graph_node_id);
+        const std::size_t solved_count = solved == solved_lock_indices_.end() ? 0u : solved->second.size();
+        if (matching.empty()) {
+            lock_status_->setText(solved_count > 0
+                ? tr("Locked in this solve, but the lock has since been removed. Re-run the solve to unlock it.")
+                : tr("No locks. Every action is free for the solver."));
+            return;
+        }
+        QStringList lines;
+        bool applied = solved_count == matching.size();
+        for (const auto index : matching) {
+            const auto& lock = current_locks_[index];
+            lines.push_back(tr("%1: %2")
+                .arg(q(viewmodels::format_lock_hands(lock)))
+                .arg(q(viewmodels::format_lock_actions(lock))));
+            applied = applied && std::ranges::any_of(solved_locks_, [&](const cli::node_lock& candidate) {
+                return same_lock(candidate, lock);
+            });
+        }
+        lines.push_back(applied
+            ? tr("Applied in this solve.")
+            : tr("Not solved yet: re-run the solve to apply."));
+        lock_status_->setText(lines.join(QStringLiteral("\n")));
+    }
+
+    QString strategy_explorer::node_lock_suffix(const uint32_t graph_node_id) const
+    {
+        return solved_lock_indices_.contains(graph_node_id) ? tr(" · locked") : QString{};
     }
 
 }

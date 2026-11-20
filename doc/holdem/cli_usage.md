@@ -195,6 +195,40 @@ additionally records a convergence curve; a positive `target_exploitability` sto
 the solve once the measured heads-up exploitability reaches the threshold, and the
 artifact's `solver.iterations` reflects the reduced count.
 
+### Node locks (`locks` array)
+
+A lock fixes some of a seat's action frequencies at one decision and leaves the
+other actions free, so the solve shows how the other player exploits that play.
+Locks are part of the spot:
+
+```json
+"locks": [
+  { "path": ["bet_75"], "actions": { "fold": 1.0 } },
+  { "path": ["check", "check", "*"], "actions": { "bet_50": 0.0 } },
+  { "path": ["bet_75"], "hands": "AK", "actions": { "call": 0.6, "all_in": 0.4 } }
+]
+```
+
+| Field     | Meaning |
+|-----------|---------|
+| `path`    | Action labels from the root to the locked decision. `[]` is the root. A step after a street ends names the dealt card (`"Kh"`) or `"*"` for every card. |
+| `hands`   | Optional range text. Absent locks the whole range; present, it overrides a whole-range lock at the same node for those hands. |
+| `actions` | Only the actions being fixed, with frequencies in `[0, 1]` adding up to at most 1. Unlisted actions share the rest. If every action is listed, they must add up to 1. |
+
+Action labels are the ones in the artifact's `solved_nodes[*].actions`: `fold`,
+`check`, `call`, `all_in`, `bet_<pct>` and `raise_<pct>`, where `<pct>` is the
+chips the action adds as a percentage of the gross pot before it. Solve once
+without locks to read them off, or use the Strategy Explorer's **Lock node...**
+button. Frequencies are rounded to 1e-6. With `card_isomorphism` on, a card names
+its whole suit class (use the class's representative card, or `"*"`), and locks
+with `hands` are rejected because they break suit symmetry.
+
+A lock that does not fit the tree is rejected before any iteration runs, with its
+1-based position and the reason (an unknown action, a path that ends where a card
+is dealt, frequencies that add up to more than 1, overlapping hand locks, and so
+on). The solve then records the locks and a warning: exploitability, when
+measured, is measured in the locked game.
+
 ### Over-budget error
 
 Before allocating the CFR tables, the solver estimates the multi-street footprint
@@ -208,7 +242,7 @@ shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "extraction_version": 1,
   "game": "holdem",
   "street": "turn",
@@ -226,8 +260,10 @@ shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
       "board": "0x0123456789abcdef",
       "betting_policy": "0x0123456789abcdef",
       "solver_config": "0x0123456789abcdef",
+      "locks": "0x0000000000000000",
       "solve": "0x0123456789abcdef"
     },
+    "locks": [],
     "convergence": {
       "exploitability_available": true,
       "exploitability": 0.42,
@@ -262,7 +298,7 @@ shrink the tree (`max_history`, `betting_policy`) to bring the footprint down.
 }
 ```
 
-Value fields (schema 6):
+Value fields (schema 7):
 
 - `ev` is in chips: the hand's net result over the whole hand (its contribution
   already in the pot included), averaged over the opponent hands it does not block.
@@ -278,7 +314,19 @@ Value fields (schema 6):
 - Heads-up these are exact. Multiway, the opponent mass is the product of each
   opponent's compatible mass, which ignores card collisions between opponents.
 
-Schema 5 artifacts reported unnormalised values in `ev` and are rejected.
+Lock fields (schema 7):
+
+- `solver.locks` lists the locks the solve honoured, in canonical form (actions
+  sorted, frequencies rounded). `solver.hashes.locks` hashes them; it is `0` with no
+  locks and only then left out of `solve`, so a solve without locks keeps its hash.
+- `solved_nodes[*].lock_indices` (present only on locked nodes) indexes
+  `solver.locks`, and a hand row's `locked: true` marks a hand whose play at that
+  node is fixed.
+- Every action in `solved_nodes` carries its real label; schema 6 labelled actions
+  below the root `"0"`, `"1"`, ...
+
+Schema 6 artifacts still load, with no locks. Schema 5 artifacts reported
+unnormalised values in `ev` and are rejected.
 
 Validation checks include:
 
@@ -394,6 +442,19 @@ zeta-solve solve --spot spot_4way_exact_combos.json --iterations 2000 --output s
   "root_actor": "BTN",
   "hero_seat": "BTN"
 }
+```
+
+### Lock a node and re-solve
+
+Solve once, read the labels off `solved_nodes`, then add a lock to the spot and
+solve again. Here BB always folds to BTN's 75% bet, so BTN bets far more often:
+
+```json
+"locks": [{ "path": ["bet_75"], "actions": { "fold": 1.0 } }]
+```
+
+```powershell
+zeta-solve solve --spot river_locked.json --iterations 2000 --output river_locked_out.json
 ```
 
 ### Validate and inspect

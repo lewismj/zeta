@@ -113,6 +113,7 @@ namespace zeta::holdem::ui {
                 }
             },
             left_tabs_};
+        builder_ = builder;
         left_tabs_->addTab(builder, tr("Spot Builder"));
         auto* range_editor = new widgets::range_editor{
             document.current_spot(),
@@ -154,12 +155,18 @@ namespace zeta::holdem::ui {
             stale_banner_ = banner;
             strategy_layout->addWidget(banner);
 
-            strategy_layout->addWidget(new widgets::strategy_explorer{
+            explorer_ = new widgets::strategy_explorer{
                 document.current_spot(),
                 *document.artifact(),
                 document.solution(),
                 metrics_,
-                strategy_tab_}, 1);
+                strategy_tab_};
+            explorer_->set_locks_changed_callback([this](std::vector<cli::node_lock> locks) {
+                if (callbacks_.on_locks_changed) {
+                    callbacks_.on_locks_changed(std::move(locks));
+                }
+            });
+            strategy_layout->addWidget(explorer_, 1);
             left_tabs_->addTab(strategy_tab_, tr("Strategy Explorer"));
         }
         left_tabs_->addTab(raw_editor_, tr("Spot JSON"));
@@ -378,6 +385,14 @@ namespace zeta::holdem::ui {
         }
         if (table_view_ != nullptr) {
             table_view_->set_spot(document.current_spot());
+        }
+        // The builder and the explorer each keep a copy of the spot; keep their locks in
+        // step so an edit in one never drops a lock added in the other.
+        if (builder_ != nullptr) {
+            builder_->set_locks(document.current_spot().locks);
+        }
+        if (explorer_ != nullptr) {
+            explorer_->set_current_locks(document.current_spot().locks);
         }
         update_inspector_summary(document);
     }

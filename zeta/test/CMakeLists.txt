@@ -4,7 +4,9 @@ set(ZETA_TEST_SOURCES
     src/test_repr.cpp
     src/test_holdem.cpp
     src/test_holdem_cli.cpp
+    src/test_holdem_locks.cpp
     src/test_holdem_ui.cpp
+    src/test_holdem_ui_locks.cpp
     src/test_cfr_graph.cpp
 )
 
@@ -32,9 +34,11 @@ add_executable(zeta_tests
     ../ui/holdem/src/viewmodels/range_view_model.cpp
     ../ui/holdem/src/viewmodels/spot_view_model.cpp
     ../ui/holdem/src/viewmodels/strategy_view_model.cpp
+    ../ui/holdem/src/viewmodels/lock_view_model.cpp
     ../ui/holdem/src/widgets/range_editor.cpp
     ../ui/holdem/src/widgets/spot_json_editor.cpp
     ../ui/holdem/src/widgets/spot_builder.cpp
+    ../ui/holdem/src/widgets/node_lock_dialog.cpp
     ../ui/holdem/src/widgets/strategy_explorer.cpp
     ../ui/holdem/src/widgets/table_state_view.cpp
     ../ui/holdem/resources/holdem.qrc
