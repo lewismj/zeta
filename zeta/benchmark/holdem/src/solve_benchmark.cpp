@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <optional>
@@ -140,23 +142,41 @@ namespace {
         }
         const auto terminals = terminal_leaf_count(probe->artifact);
 
+        // Stage times from the solver's own timing, summed over the timed solves. Setup
+        // (river caches, reach indices, labels, locks) is the wall time not in a stage.
+        double build_ms = 0.0;
+        double cfr_ms = 0.0;
+        double extraction_ms = 0.0;
+        double wall_ms = 0.0;
         for (auto _ : state) {
+            const auto begin = std::chrono::steady_clock::now();
             auto output = cli::solve_spot(*spot, c.iterations, runtime);
+            wall_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+            if (output) {
+                build_ms += output->timing.graph_build_ms;
+                cfr_ms += output->timing.cfr_iterations_ms;
+                extraction_ms += output->timing.extraction_ms;
+            }
             benchmark::DoNotOptimize(output);
         }
 
+        const auto solves = static_cast<double>(state.iterations());
         const auto solved_iterations = static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(c.iterations);
         const auto players = static_cast<std::int64_t>(spot->players.size());
+        const auto cfr_seconds = std::max(cfr_ms / 1000.0, 1e-9);
         state.SetLabel(c.label);
         state.SetItemsProcessed(solved_iterations);
         state.counters["graph_nodes"] = static_cast<double>(probe->artifact.solved_nodes.size());
         state.counters["terminal_leaves"] = static_cast<double>(terminals);
-        state.counters["graph_build_ms"] = probe->timing.graph_build_ms;
-        state.counters["cfr_iterations_per_second"] = benchmark::Counter(
-            static_cast<double>(solved_iterations), benchmark::Counter::kIsRate);
+        state.counters["graph_build_ms"] = build_ms / solves;
+        state.counters["setup_ms"] = std::max(0.0, wall_ms - build_ms - cfr_ms - extraction_ms) / solves;
+        state.counters["extraction_ms"] = extraction_ms / solves;
+        state.counters["cfr_ms_per_iteration"] = cfr_ms / static_cast<double>(solved_iterations);
+        // Rates over CFR time only, so setup and extraction don't dilute them.
+        state.counters["cfr_iterations_per_second"] = static_cast<double>(solved_iterations) / cfr_seconds;
         // Each CFR iteration evaluates every terminal leaf once per updating player.
-        state.counters["terminal_evals_per_second"] = benchmark::Counter(
-            static_cast<double>(solved_iterations * terminals * players), benchmark::Counter::kIsRate);
+        state.counters["terminal_evals_per_second"] =
+            static_cast<double>(solved_iterations * terminals * players) / cfr_seconds;
     }
 
     [[nodiscard]] std::optional<cfr::holdem_public_game_config<2>> public_config_from_spot(const parsed_spot& spot)
@@ -235,8 +255,10 @@ BENCHMARK(BM_SizeFlopRealistic)->Unit(benchmark::kMicrosecond);
 
 int main(int argc, char** argv) {
     std::cout << "BM_Solve*/<n>             : full solves through cli::solve_spot with n worker threads\n";
-    std::cout << "cfr_iterations_per_second : CFR+ iterations/sec (every player updated once per iteration)\n";
-    std::cout << "terminal_evals_per_second : terminal-leaf evaluations/sec (the parallelised work)\n";
+    std::cout << "cfr_ms_per_iteration      : CFR time per iteration (every player updated once)\n";
+    std::cout << "cfr_iterations_per_second : CFR+ iterations/sec, over CFR time only\n";
+    std::cout << "terminal_evals_per_second : terminal-leaf evaluations/sec, over CFR time only\n";
+    std::cout << "graph_build_ms, setup_ms, extraction_ms : the rest of a solve, averaged per solve\n";
     std::cout << "BM_SizeFlopRealistic      : exact shape and pre-build memory estimate, no solve\n\n";
 
     benchmark::Initialize(&argc, argv);

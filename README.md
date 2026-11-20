@@ -58,21 +58,30 @@ The roadmap from here to a complete analysis tool is in [next_steps](doc/holdem/
 #### Benchmark baseline (solver)
 
 `zeta-bench-holdem-solve` times complete solves on the production solver. Each
-benchmark's argument is `worker_threads`:
-
-| Benchmark | Spot | Iterations |
-|---|---|---:|
-| `BM_SolveRiverHeadsUp/{1,4,8}` | Heads-up river | 50 |
-| `BM_SolveRiverThreeWay/{1,4,8}` | Three-way river | 10 |
-| `BM_SolveTurnHeadsUp/{1,4,8}` | Heads-up turn | 10 |
-| `BM_SolveFlopHeadsUp/{1,4,8}` | Heads-up flop | 2 |
-| `BM_SizeFlopRealistic` | Memory pre-flight for a realistic flop tree | - |
+benchmark's argument is `worker_threads`, and each reports where a solve's time goes:
+`graph_build_ms`, `setup_ms` (river caches, reach indices, labels and locks),
+`extraction_ms`, and `cfr_ms_per_iteration`. Its iteration and terminal-evaluation
+rates are over CFR time only.
 
 ```sh
 cmake --build build --target zeta-bench-holdem-solve-json
 ```
 
-Results are pending a fresh Release run.
+Medians of three runs, Release (MSVC), 16 logical CPUs, 2026-11-20. The benchmarks run
+only a few iterations, so a whole solve is mostly setup and extraction; the CFR time
+per iteration is the figure that scales to real solves of hundreds of iterations.
+
+| Benchmark | Spot (nodes / leaves) | Iterations | Solve ms, 1 / 4 / 8 / 16 threads | CFR ms per iteration, 1 / 4 / 8 / 16 threads |
+|---|---|---:|---:|---:|
+| `BM_SolveRiverHeadsUp` | Heads-up river (75 / 49) | 50 | 59.6 / 33.1 / 29.1 / 27.9 | 1.10 / 0.59 / 0.52 / 0.49 |
+| `BM_SolveRiverThreeWay` | Three-way river (25 / 13) | 10 | 49.4 / 28.4 / 26.9 / 32.2 | 3.76 / 2.21 / 2.14 / 2.59 |
+| `BM_SolveTurnHeadsUp` | Heads-up turn (2,085 / 1,302) | 10 | 369 / 320 / 266 / 212 | 26.8 / 21.6 / 17.1 / 12.9 |
+| `BM_SolveFlopHeadsUp` | Heads-up flop (31,124 / 21,268) | 2 | 2,085 / 1,007 / 909 / 819 | 447 / 189 / 149 / 129 |
+| `BM_SizeFlopRealistic` | Memory pre-flight for a realistic flop tree, no solve | - | - | - |
+
+At 16 threads the flop solve splits into 43 ms graph build, 276 ms setup, 259 ms of CFR
+(2 iterations) and 207 ms extraction; setup is now its largest serial cost. The small
+rivers stop scaling at about 8 threads, where there is too little work per pass to share.
 
 ### Evaluator benchmark summary
 
