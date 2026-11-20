@@ -716,6 +716,81 @@ namespace zeta::holdem::cli {
             }
         }
 
+        // ---------------------------------------------------------------------
+        // Hand-parallel passes.
+        //
+        // Strategy normalisation, reach propagation, value backup and the regret update
+        // all treat each hand (combo) independently, so they run on the worker pool with
+        // each task owning a contiguous slice of combo indices. A combo's arithmetic is
+        // the same whichever slice it lands in, so results are bit-identical for any
+        // worker count. Slices are 16-combo aligned so tasks never share a cache line of
+        // a per-combo row.
+        // ---------------------------------------------------------------------
+
+        template <std::size_t N>
+        struct combo_parallel {
+            cfr::scheduler::worker_pool& pool;
+            /** Per slice, each seat's active combos that fall in the slice. */
+            std::vector<std::array<std::vector<combination_index>, N>> slices;
+
+            template <typename Body>
+            void for_each_slice(Body&& body) const
+            {
+                pool.run(slices.size(), [&](uint32_t, const uint64_t slice) {
+                    body(slices[static_cast<std::size_t>(slice)]);
+                });
+            }
+
+            /** Leaves per task for a batch of `count` leaves, so workers are not fetching one at a time. */
+            [[nodiscard]] uint32_t leaf_chunk(const std::size_t count) const noexcept
+            {
+                const auto per_worker = count / (static_cast<std::size_t>(pool.worker_count()) * 8u);
+                return static_cast<uint32_t>(std::clamp<std::size_t>(per_worker, 1u, 64u));
+            }
+        };
+
+        /**
+         * Below this many node-combo cells a per-hand pass is too small to share: waking
+         * the workers costs more than the pass, so it runs as one slice on the calling
+         * thread. Terminal leaves are still spread across the pool.
+         */
+        inline constexpr std::size_t min_parallel_node_combos = std::size_t{1} << 18;
+
+        template <std::size_t N>
+        [[nodiscard]] inline combo_parallel<N> make_combo_parallel(
+            cfr::scheduler::worker_pool& pool,
+            const std::array<std::vector<combination_index>, N>& active_combos,
+            const uint32_t node_count)
+        {
+            combo_parallel<N> parallel{.pool = pool, .slices = {}};
+            std::size_t combos = 0;
+            for (const auto& seat : active_combos) {
+                combos += seat.size();
+            }
+            const auto workers = static_cast<std::size_t>(pool.worker_count());
+            std::size_t width = combination_count;
+            if (workers > 1u && static_cast<std::size_t>(node_count) * combos >= min_parallel_node_combos) {
+                // About four slices per worker for balance, rounded up to 16 combos.
+                width = (combination_count + workers * 4u - 1u) / (workers * 4u);
+                width = std::max<std::size_t>(16u, (width + 15u) / 16u * 16u);
+            }
+            for (std::size_t begin = 0; begin < combination_count; begin += width) {
+                const auto end = std::min<std::size_t>(begin + width, combination_count);
+                std::array<std::vector<combination_index>, N> slice{};
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    for (const auto combo : active_combos[seat]) {
+                        if (combo >= begin && combo < end) {
+                            slice[seat].push_back(combo);
+                        }
+                    }
+                }
+                parallel.slices.push_back(std::move(slice));
+            }
+            return parallel;
+        }
+
+        // Writes every action of each listed combo's row at every player infoset; rows of
+        // combos a seat does not hold are never written and stay zero.
         template <std::size_t N>
         inline void normalize_combo_action_table(
             const cfr::game_graph& graph,
@@ -726,7 +801,6 @@ namespace zeta::holdem::cli {
             const pruning_runtime* pruning = nullptr,
             const lock_runtime* locks = nullptr)
         {
-            std::ranges::fill(destination.values, 0.0f);
             std::vector<uint8_t> seen_infosets(graph.infoset_count, 0u);
             for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
                 if (!graph.is_player_node(node_id)) {
@@ -794,43 +868,77 @@ namespace zeta::holdem::cli {
         }
 
         template <std::size_t N>
+        inline void normalize_combo_action_table(
+            const cfr::game_graph& graph,
+            const cfr::solver::solver_graph_annotations& annotations,
+            const combo_action_table& source,
+            combo_action_table& destination,
+            const combo_parallel<N>& parallel,
+            const pruning_runtime* pruning = nullptr,
+            const lock_runtime* locks = nullptr)
+        {
+            parallel.for_each_slice([&](const std::array<std::vector<combination_index>, N>& slice) {
+                normalize_combo_action_table<N>(graph, annotations, source, destination, slice, pruning, locks);
+            });
+        }
+
+        // Each seat's reach at every node: its root reach times its own action
+        // probabilities along the path. Node ids are DFS post-order, so walking them
+        // downwards visits every parent before its children. An edge pruned out leaves
+        // its child's reach zero for every seat, and so the whole subtree below it.
+        template <std::size_t N>
         inline void build_node_reach_vectors(
             const cfr::game_graph& graph,
             const cfr::solver::solver_graph_annotations& annotations,
             const combo_action_table& strategy_profile,
             const std::array<reach_vector, N>& root_reach,
-            const std::array<std::vector<combination_index>, N>& active_combos,
+            const combo_parallel<N>& parallel,
             std::vector<std::array<reach_vector, N>>& node_reach,
             const pruning_runtime* pruning = nullptr)
         {
-            node_reach.assign(graph.node_count, {});
-            node_reach[graph.root_node] = root_reach;
-            std::vector<uint32_t> stack{graph.root_node};
-            while (!stack.empty()) {
-                const auto node_id = stack.back();
-                stack.pop_back();
-                const auto& parent_reach = node_reach[node_id];
-                const auto kind = graph.node_types[node_id];
-                if (kind == cfr::node_kind::terminal) {
-                    continue;
+            // Every node is rewritten for every active combo below, so the buffer is only
+            // cleared when it is (re)allocated; inactive combos stay zero.
+            if (node_reach.size() != graph.node_count) {
+                node_reach.assign(graph.node_count, {});
+            }
+            parallel.for_each_slice([&](const std::array<std::vector<combination_index>, N>& slice) {
+                for (std::size_t seat = 0; seat < N; ++seat) {
+                    for (const auto combo : slice[seat]) {
+                        node_reach[graph.root_node][seat][combo] = root_reach[seat][combo];
+                    }
                 }
-                const auto actor = kind == cfr::node_kind::chance ? cfr::solver::INVALID_PLAYER : annotations.actor_by_node[node_id];
-                const auto infoset_id = kind == cfr::node_kind::chance ? cfr::game_graph::INVALID_INFOSET : graph.infoset_id[node_id];
-                const auto* active = (pruning && kind != cfr::node_kind::chance) ? &pruning->action_active[infoset_id] : nullptr;
-                for (const auto& edge : graph.out_edges(node_id)) {
-                    if (active != nullptr && (*active)[edge.action_index] == 0u) {
+                for (uint32_t node_id = graph.root_node + 1u; node_id-- > 0u;) {
+                    const auto kind = graph.node_types[node_id];
+                    if (kind == cfr::node_kind::terminal) {
                         continue;
                     }
-                    auto child_reach = parent_reach;
-                    if (kind != cfr::node_kind::chance) {
-                        for (const auto combo : active_combos[actor]) {
-                            child_reach[actor][combo] *= strategy_profile.value(combo, infoset_id, edge.action_index);
+                    const bool chance = kind == cfr::node_kind::chance;
+                    const auto actor = chance ? cfr::solver::INVALID_PLAYER : annotations.actor_by_node[node_id];
+                    const auto infoset_id = chance ? cfr::game_graph::INVALID_INFOSET : graph.infoset_id[node_id];
+                    const auto* active = (pruning != nullptr && !chance) ? &pruning->action_active[infoset_id] : nullptr;
+                    const auto& parent = node_reach[node_id];
+                    for (const auto& edge : graph.out_edges(node_id)) {
+                        auto& child = node_reach[edge.child_node];
+                        const bool pruned = active != nullptr && (*active)[edge.action_index] == 0u;
+                        for (std::size_t seat = 0; seat < N; ++seat) {
+                            if (pruned) {
+                                for (const auto combo : slice[seat]) {
+                                    child[seat][combo] = 0.0f;
+                                }
+                            } else if (seat == actor) {
+                                for (const auto combo : slice[seat]) {
+                                    child[seat][combo] = parent[seat][combo]
+                                        * strategy_profile.value(combo, infoset_id, edge.action_index);
+                                }
+                            } else {
+                                for (const auto combo : slice[seat]) {
+                                    child[seat][combo] = parent[seat][combo];
+                                }
+                            }
                         }
                     }
-                    node_reach[edge.child_node] = child_reach;
-                    stack.push_back(edge.child_node);
                 }
-            }
+            });
         }
 
         // Graph nodes that are terminal leaves, in ascending id order. Terminal
@@ -923,10 +1031,33 @@ namespace zeta::holdem::cli {
             }
         }
 
+        // Zeroes the updating player's values at every node, one slice per task. The
+        // backup accumulates into chance and opponent nodes and fold leaves skip blocked
+        // hands, so both rely on starting from zero.
+        template <std::size_t N>
+        inline void clear_node_values(
+            const uint32_t node_count,
+            const uint8_t updating_player,
+            const combo_parallel<N>& parallel,
+            std::vector<reach_vector>& node_values)
+        {
+            if (node_values.size() != node_count) {
+                node_values.assign(node_count, {});
+                return;
+            }
+            parallel.for_each_slice([&](const std::array<std::vector<combination_index>, N>& slice) {
+                for (auto& values : node_values) {
+                    for (const auto combo : slice[updating_player]) {
+                        values[combo] = 0.0f;
+                    }
+                }
+            });
+        }
+
         // Counterfactual values for the updating player over a single-street river
-        // betting tree, for any player count. Terminal leaves are evaluated in parallel
-        // (each writes only its own node's values, so results do not depend on the
-        // worker count); the backup then runs in post-order.
+        // betting tree, for any player count. Terminal leaves are evaluated in parallel,
+        // each writing only its own node; the post-order backup then runs in parallel
+        // over hands. Neither depends on the worker count.
         template <std::size_t N>
         inline void evaluate_combo_profile(
             const cfr::holdem_betting_graph<N>& lowered,
@@ -938,13 +1069,13 @@ namespace zeta::holdem::cli {
             const std::vector<uint32_t>& terminal_nodes,
             const uint8_t updating_player,
             std::vector<reach_vector>& node_values,
-            cfr::scheduler::worker_pool& pool,
+            const combo_parallel<N>& parallel,
             const bool best_response = false,
             const lock_runtime* locks = nullptr)
         {
-            node_values.assign(lowered.graph.node_count, {});
+            clear_node_values(lowered.graph.node_count, updating_player, parallel, node_values);
             const terminal_engine<N> engine{};
-            pool.run(terminal_nodes.size(), [&](uint32_t, const uint64_t task_index) {
+            parallel.pool.run(terminal_nodes.size(), [&](uint32_t, const uint64_t task_index) {
                 const auto node_id = terminal_nodes[task_index];
                 const auto& terminal_state = lowered.terminal_states[lowered.terminal_leaves[node_id].terminal_state_id];
                 // The updating player's leaf values must not depend on its own reach,
@@ -972,17 +1103,19 @@ namespace zeta::holdem::cli {
                 for (const auto combo : active_combos[updating_player]) {
                     node_values[node_id][combo] = values[updating_player][combo];
                 }
-            });
+            }, parallel.leaf_chunk(terminal_nodes.size()));
 
-            for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
-                if (lowered.graph.node_types[node_id] == cfr::node_kind::terminal) {
-                    continue;
+            parallel.for_each_slice([&](const std::array<std::vector<combination_index>, N>& slice) {
+                for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
+                    if (lowered.graph.node_types[node_id] == cfr::node_kind::terminal) {
+                        continue;
+                    }
+                    backup_combo_node(
+                        lowered.graph, lowered.annotations, strategy_profile, slice[updating_player],
+                        updating_player, node_id, node_values, best_response, locks,
+                        [](const cfr::edge&) { return 1.0f; });
                 }
-                backup_combo_node(
-                    lowered.graph, lowered.annotations, strategy_profile, active_combos[updating_player],
-                    updating_player, node_id, node_values, best_response, locks,
-                    [](const cfr::edge&) { return 1.0f; });
-            }
+            });
         }
 
         // Blocker-aware opponent mass for a fold terminal on any street. Aggregates the
@@ -1092,16 +1225,16 @@ namespace zeta::holdem::cli {
             const std::vector<uint32_t>& terminal_nodes,
             const uint8_t updating_player,
             std::vector<reach_vector>& node_values,
-            cfr::scheduler::worker_pool& pool,
+            const combo_parallel<N>& parallel,
             const pruning_runtime* pruning = nullptr,
             const bool best_response = false,
             const lock_runtime* locks = nullptr)
         {
             static_assert(N == 2, "multi-street public-game CFR is heads-up only");
-            node_values.assign(lowered.graph.node_count, {});
+            clear_node_values(lowered.graph.node_count, updating_player, parallel, node_values);
             const terminal_engine<N> engine{};
             const auto opponent = static_cast<uint8_t>(1u - updating_player);
-            pool.run(terminal_nodes.size(), [&](uint32_t, const uint64_t task_index) {
+            parallel.pool.run(terminal_nodes.size(), [&](uint32_t, const uint64_t task_index) {
                 const auto node_id = terminal_nodes[task_index];
                 if (pruning != nullptr && pruning->node_live[node_id] == 0u) {
                     return;
@@ -1138,26 +1271,28 @@ namespace zeta::holdem::cli {
                             + static_cast<double>(self_weight));
                     node_values[node_id][combo] = static_cast<float>(compatible * payoff[updating_player]);
                 }
-            });
+            }, parallel.leaf_chunk(terminal_nodes.size()));
 
-            for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
-                if (lowered.graph.node_types[node_id] == cfr::node_kind::terminal
-                    || (pruning != nullptr && pruning->node_live[node_id] == 0u)) {
-                    continue;
+            parallel.for_each_slice([&](const std::array<std::vector<combination_index>, N>& slice) {
+                for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
+                    if (lowered.graph.node_types[node_id] == cfr::node_kind::terminal
+                        || (pruning != nullptr && pruning->node_live[node_id] == 0u)) {
+                        continue;
+                    }
+                    // Public outcome probabilities ignore the hole cards; rescale so each
+                    // outcome compatible with a hand pair carries its true conditional weight.
+                    const auto* event = lowered.chance_events.event_for_node(node_id);
+                    const auto private_scale = event == nullptr
+                        ? 1.0
+                        : cfr::private_hand_chance_scale(*event, static_cast<uint32_t>(N));
+                    backup_combo_node(
+                        lowered.graph, lowered.annotations, strategy_profile, slice[updating_player],
+                        updating_player, node_id, node_values, best_response, locks,
+                        [&](const cfr::edge& edge) {
+                            return static_cast<float>(private_scale * lowered.chance_events.probability_for_edge(node_id, edge));
+                        });
                 }
-                // Public outcome probabilities ignore the hole cards; rescale so each
-                // outcome compatible with a hand pair carries its true conditional weight.
-                const auto* event = lowered.chance_events.event_for_node(node_id);
-                const auto private_scale = event == nullptr
-                    ? 1.0
-                    : cfr::private_hand_chance_scale(*event, static_cast<uint32_t>(N));
-                backup_combo_node(
-                    lowered.graph, lowered.annotations, strategy_profile, active_combos[updating_player],
-                    updating_player, node_id, node_values, best_response, locks,
-                    [&](const cfr::edge& edge) {
-                        return static_cast<float>(private_scale * lowered.chance_events.probability_for_edge(node_id, edge));
-                    });
-            }
+            });
         }
 
         template <std::size_t N>
@@ -1230,6 +1365,27 @@ namespace zeta::holdem::cli {
                     }
                 }
             }
+        }
+
+        template <std::size_t N>
+        inline void update_combo_cfr_tables(
+            const cfr::game_graph& graph,
+            const cfr::solver::solver_graph_annotations& annotations,
+            const combo_action_table& current_strategy,
+            const combo_parallel<N>& parallel,
+            const uint8_t updating_player,
+            const std::vector<std::array<reach_vector, N>>& node_reach,
+            const std::vector<reach_vector>& node_values,
+            combo_action_table& regrets,
+            combo_action_table& strategy_sums,
+            const pruning_runtime* pruning = nullptr,
+            const lock_runtime* locks = nullptr)
+        {
+            parallel.for_each_slice([&](const std::array<std::vector<combination_index>, N>& slice) {
+                update_combo_cfr_tables<N>(
+                    graph, annotations, current_strategy, slice, updating_player, node_reach, node_values,
+                    regrets, strategy_sums, pruning, locks);
+            });
         }
 
         // ---------------------------------------------------------------------
@@ -1478,17 +1634,17 @@ namespace zeta::holdem::cli {
             const std::vector<uint32_t>& terminal_nodes,
             std::vector<std::array<reach_vector, 2>>& node_reach_scratch,
             std::vector<reach_vector>& value_scratch,
-            cfr::scheduler::worker_pool& pool,
+            const combo_parallel<2>& parallel,
             const lock_runtime* locks = nullptr)
         {
             build_node_reach_vectors(
-                lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach_scratch);
+                lowered.graph, lowered.annotations, average_strategy, reach_vectors, parallel, node_reach_scratch);
             return measure_heads_up_exploitability(
                 lowered.graph.root_node, cache.river_board.mask, reach_vectors, active_combos, value_scratch,
                 [&](const uint8_t seat, const bool best_response, std::vector<reach_vector>& values) {
                     evaluate_combo_profile(
                         lowered, average_strategy, active_combos, node_reach_scratch, cache, base_indices,
-                        terminal_nodes, seat, values, pool, best_response, locks);
+                        terminal_nodes, seat, values, parallel, best_response, locks);
                 });
         }
 
@@ -1505,11 +1661,11 @@ namespace zeta::holdem::cli {
             const std::vector<uint32_t>& terminal_nodes,
             std::vector<std::array<reach_vector, 2>>& node_reach_scratch,
             std::vector<reach_vector>& value_scratch,
-            cfr::scheduler::worker_pool& pool,
+            const combo_parallel<2>& parallel,
             const lock_runtime* locks = nullptr)
         {
             build_node_reach_vectors(
-                lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach_scratch);
+                lowered.graph, lowered.annotations, average_strategy, reach_vectors, parallel, node_reach_scratch);
             const auto root_state = lowered.annotations.state_by_node[lowered.graph.root_node].public_state_id;
             return measure_heads_up_exploitability(
                 lowered.graph.root_node, lowered.public_states.states[root_state].board_cards, reach_vectors,
@@ -1517,7 +1673,7 @@ namespace zeta::holdem::cli {
                 [&](const uint8_t seat, const bool best_response, std::vector<reach_vector>& values) {
                     evaluate_multi_street_combo_profile(
                         lowered, average_strategy, active_combos, node_reach_scratch, terminal_table,
-                        river_base_index_by_state, terminal_nodes, seat, values, pool, nullptr, best_response, locks);
+                        river_base_index_by_state, terminal_nodes, seat, values, parallel, nullptr, best_response, locks);
                 });
         }
 
@@ -2213,6 +2369,7 @@ namespace zeta::holdem::cli {
                 const auto terminal_nodes = terminal_node_ids(graph);
                 cfr::scheduler::worker_pool pool{resolve_worker_count(runtime)};
                 stop_pool_on_cancel(pool, runtime);
+                const auto parallel = make_combo_parallel<N>(pool, active_combos, graph.node_count);
 
                 // Materialize one river terminal cache per distinct river board and, for
                 // each seat, the range-weighted reach index into that cache. These stay
@@ -2275,8 +2432,8 @@ namespace zeta::holdem::cli {
                         return std::unexpected(solve_cancelled_error());
                     }
                     if (pruning_state && i > 0 && (i % pruning_state->reconsider_interval()) == 0) {
-                        normalize_combo_action_table(graph, annotations, regrets, current_strategy, active_combos, pruning, locks);
-                        build_node_reach_vectors(graph, annotations, current_strategy, reach_vectors, active_combos, node_reach, pruning);
+                        normalize_combo_action_table(graph, annotations, regrets, current_strategy, parallel, pruning, locks);
+                        build_node_reach_vectors(graph, annotations, current_strategy, reach_vectors, parallel, node_reach, pruning);
                         reconsider_active_actions(graph, annotations, regrets, active_combos, node_reach, *pruning_state, locks);
                         recompute_node_live(graph, *pruning_state);
                     }
@@ -2293,8 +2450,8 @@ namespace zeta::holdem::cli {
                                     std::chrono::steady_clock::now() - iter_begin).count(),
                                 "Multi-street CFR+ player update.");
                         }
-                        normalize_combo_action_table(graph, annotations, regrets, current_strategy, active_combos, pruning, locks);
-                        build_node_reach_vectors(graph, annotations, current_strategy, reach_vectors, active_combos, node_reach, pruning);
+                        normalize_combo_action_table(graph, annotations, regrets, current_strategy, parallel, pruning, locks);
+                        build_node_reach_vectors(graph, annotations, current_strategy, reach_vectors, parallel, node_reach, pruning);
                         evaluate_multi_street_combo_profile(
                             public_game,
                             current_strategy,
@@ -2305,13 +2462,13 @@ namespace zeta::holdem::cli {
                             terminal_nodes,
                             updating_player,
                             node_values,
-                            pool,
+                            parallel,
                             pruning);
                         update_combo_cfr_tables(
                             graph,
                             annotations,
                             current_strategy,
-                            active_combos,
+                            parallel,
                             updating_player,
                             node_reach,
                             node_values,
@@ -2324,10 +2481,10 @@ namespace zeta::holdem::cli {
                     const bool at_final = done == iterations;
                     const bool at_check = measurement_interval > 0 && (done % measurement_interval == 0);
                     if (measure && (at_check || at_final)) {
-                        normalize_combo_action_table(graph, annotations, strategy_sums, measure_average, active_combos, nullptr, locks);
+                        normalize_combo_action_table(graph, annotations, strategy_sums, measure_average, parallel, nullptr, locks);
                         final_exploitability = measure_multi_street_exploitability(
                             public_game, measure_average, reach_vectors, active_combos, terminal_table,
-                            river_base_index_by_state, terminal_nodes, measure_reach, measure_values, pool, locks);
+                            river_base_index_by_state, terminal_nodes, measure_reach, measure_values, parallel, locks);
                         have_exploitability = true;
                         if (at_check && convergence_curve.size() < runtime.convergence.max_curve_samples) {
                             convergence_curve.push_back(convergence_sample{
@@ -2375,8 +2532,8 @@ namespace zeta::holdem::cli {
                     0.0,
                     "Extracting combo strategies.");
 
-                normalize_combo_action_table(graph, annotations, strategy_sums, average_strategy, active_combos, pruning, locks);
-                build_node_reach_vectors(graph, annotations, average_strategy, reach_vectors, active_combos, node_reach, pruning);
+                normalize_combo_action_table(graph, annotations, strategy_sums, average_strategy, parallel, pruning, locks);
+                build_node_reach_vectors(graph, annotations, average_strategy, reach_vectors, parallel, node_reach, pruning);
                 const auto hero = static_cast<uint8_t>(spot.hero_seat);
                 std::array<std::vector<reach_vector>, N> node_values_by_seat{};
                 for (uint8_t seat = 0; seat < N; ++seat) {
@@ -2390,7 +2547,7 @@ namespace zeta::holdem::cli {
                         terminal_nodes,
                         seat,
                         node_values_by_seat[seat],
-                        pool,
+                        parallel,
                         pruning);
                 }
                 if (solve_stopped(runtime, pool)) {
@@ -2518,6 +2675,7 @@ namespace zeta::holdem::cli {
             const auto terminal_nodes = terminal_node_ids(lowered.graph);
             cfr::scheduler::worker_pool pool{resolve_worker_count(runtime)};
             stop_pool_on_cancel(pool, runtime);
+            const auto parallel = make_combo_parallel<N>(pool, active_combos, lowered.graph.node_count);
             const auto cache = make_river_terminal_cache(public_board);
             std::array<river_reach_index, N> base_indices{};
             for (std::size_t seat = 0; seat < N; ++seat) {
@@ -2565,8 +2723,8 @@ namespace zeta::holdem::cli {
                                 std::chrono::steady_clock::now() - iter_begin).count(),
                             "River CFR+ player update.");
                     }
-                    normalize_combo_action_table(lowered.graph, lowered.annotations, regrets, current_strategy, active_combos, nullptr, locks);
-                    build_node_reach_vectors(lowered.graph, lowered.annotations, current_strategy, reach_vectors, active_combos, node_reach);
+                    normalize_combo_action_table(lowered.graph, lowered.annotations, regrets, current_strategy, parallel, nullptr, locks);
+                    build_node_reach_vectors(lowered.graph, lowered.annotations, current_strategy, reach_vectors, parallel, node_reach);
                     evaluate_combo_profile(
                         lowered,
                         current_strategy,
@@ -2577,12 +2735,12 @@ namespace zeta::holdem::cli {
                         terminal_nodes,
                         updating_player,
                         node_values,
-                        pool);
+                        parallel);
                     update_combo_cfr_tables(
                         lowered.graph,
                         lowered.annotations,
                         current_strategy,
-                        active_combos,
+                        parallel,
                         updating_player,
                         node_reach,
                         node_values,
@@ -2597,10 +2755,10 @@ namespace zeta::holdem::cli {
                 if constexpr (exploitability_supported) {
                     if (measure && (at_check || at_final)) {
                         normalize_combo_action_table(
-                            lowered.graph, lowered.annotations, strategy_sums, measure_average, active_combos, nullptr, locks);
+                            lowered.graph, lowered.annotations, strategy_sums, measure_average, parallel, nullptr, locks);
                         final_exploitability = measure_river_exploitability(
                             lowered, measure_average, reach_vectors, active_combos, cache, base_indices,
-                            terminal_nodes, measure_reach, measure_values, pool, locks);
+                            terminal_nodes, measure_reach, measure_values, parallel, locks);
                         have_exploitability = true;
                         if (at_check && convergence_curve.size() < runtime.convergence.max_curve_samples) {
                             convergence_curve.push_back(convergence_sample{
@@ -2650,8 +2808,8 @@ namespace zeta::holdem::cli {
                 "Extracting combo strategies.");
 
             normalize_combo_action_table(
-                lowered.graph, lowered.annotations, strategy_sums, average_strategy, active_combos, nullptr, locks);
-            build_node_reach_vectors(lowered.graph, lowered.annotations, average_strategy, reach_vectors, active_combos, node_reach);
+                lowered.graph, lowered.annotations, strategy_sums, average_strategy, parallel, nullptr, locks);
+            build_node_reach_vectors(lowered.graph, lowered.annotations, average_strategy, reach_vectors, parallel, node_reach);
             const auto hero = static_cast<uint8_t>(spot.hero_seat);
             std::array<std::vector<reach_vector>, N> node_values_by_seat{};
             for (uint8_t seat = 0; seat < N; ++seat) {
@@ -2665,7 +2823,7 @@ namespace zeta::holdem::cli {
                     terminal_nodes,
                     seat,
                     node_values_by_seat[seat],
-                    pool);
+                    parallel);
             }
             if (solve_stopped(runtime, pool)) {
                 return std::unexpected(solve_cancelled_error());

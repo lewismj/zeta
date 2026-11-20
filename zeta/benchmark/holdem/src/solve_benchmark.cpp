@@ -227,10 +227,10 @@ namespace {
 
 }
 
-BENCHMARK(BM_SolveRiverHeadsUp)->Arg(1)->Arg(4)->Arg(8)->Unit(benchmark::kMillisecond)->UseRealTime();
-BENCHMARK(BM_SolveRiverThreeWay)->Arg(1)->Arg(4)->Arg(8)->Unit(benchmark::kMillisecond)->UseRealTime();
-BENCHMARK(BM_SolveTurnHeadsUp)->Arg(1)->Arg(4)->Arg(8)->Unit(benchmark::kMillisecond)->UseRealTime();
-BENCHMARK(BM_SolveFlopHeadsUp)->Arg(1)->Arg(4)->Arg(8)->Unit(benchmark::kMillisecond)->UseRealTime();
+BENCHMARK(BM_SolveRiverHeadsUp)->Arg(1)->Arg(4)->Arg(8)->Arg(16)->Unit(benchmark::kMillisecond)->UseRealTime();
+BENCHMARK(BM_SolveRiverThreeWay)->Arg(1)->Arg(4)->Arg(8)->Arg(16)->Unit(benchmark::kMillisecond)->UseRealTime();
+BENCHMARK(BM_SolveTurnHeadsUp)->Arg(1)->Arg(4)->Arg(8)->Arg(16)->Unit(benchmark::kMillisecond)->UseRealTime();
+BENCHMARK(BM_SolveFlopHeadsUp)->Arg(1)->Arg(4)->Arg(8)->Arg(16)->Unit(benchmark::kMillisecond)->UseRealTime();
 BENCHMARK(BM_SizeFlopRealistic)->Unit(benchmark::kMicrosecond);
 
 int main(int argc, char** argv) {
