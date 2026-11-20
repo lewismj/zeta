@@ -106,3 +106,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         )
     endif()
 endif()
+
+target_link_libraries(zeta-bench-holdem-evaluator PRIVATE zeta_warnings)
+target_link_libraries(zeta-bench-holdem-range-parser PRIVATE zeta_warnings)
+target_link_libraries(zeta-bench-holdem-terminal PRIVATE zeta_warnings)
+target_link_libraries(zeta-bench-holdem-solve PRIVATE zeta_warnings)

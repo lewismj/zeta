@@ -187,7 +187,16 @@ namespace zeta::holdem::cfr {
             if (event == nullptr) {
                 return 0.0f;
             }
-            for (const auto& outcome : event_outcomes(*event)) {
+            const auto event_outcome_list = event_outcomes(*event);
+            // Outcomes are stored in edge order, so the edge's own slot is checked first;
+            // the scan only runs for a table built some other way.
+            if (child_edge.action_index < event_outcome_list.size()) {
+                const auto& outcome = event_outcome_list[child_edge.action_index];
+                if (outcome.child_node == child_edge.child_node && outcome.action_index == child_edge.action_index) {
+                    return outcome.probability;
+                }
+            }
+            for (const auto& outcome : event_outcome_list) {
                 if (outcome.child_node == child_edge.child_node
                     && outcome.action_index == child_edge.action_index) {
                     return outcome.probability;
@@ -578,7 +587,17 @@ namespace zeta::holdem::cfr {
        return {};
     }
 
-    [[nodiscard]] inline runout_terminal_table make_runout_terminal_table(std::span<const public_board_state> states)
+    /**
+     * As make_runout_terminal_table(states), but builds the per-board caches through
+     * `parallel_for(count, build)`, which must call build(i) once for each i in
+     * [0, count). Each cache depends only on its own board, so they can be built in any
+     * order or concurrently. A parallel_for that stops early leaves later caches empty;
+     * the caller must then discard the table.
+     */
+    template <typename ParallelFor>
+    [[nodiscard]] runout_terminal_table make_runout_terminal_table(
+        std::span<const public_board_state> states,
+        ParallelFor&& parallel_for)
     {
        runout_terminal_table table;
        public_state_id max_state_id = 0;
@@ -594,15 +613,27 @@ namespace zeta::holdem::cfr {
                continue;
            }
            const auto entry_index = static_cast<public_state_id>(table.entries.size());
-           const auto river_board = board{state.board_cards};
            table.entries.push_back(runout_terminal_entry{
                .public_state = state.id,
-               .river_board = river_board,
-               .cache = make_river_terminal_cache(river_board)
+               .river_board = board{state.board_cards},
+               .cache = {}
            });
            table.entry_id_by_public_state[state.id] = entry_index;
        }
+       parallel_for(table.entries.size(), [&table](const std::size_t index) {
+           auto& entry = table.entries[index];
+           entry.cache = make_river_terminal_cache(entry.river_board);
+       });
        return table;
+    }
+
+    [[nodiscard]] inline runout_terminal_table make_runout_terminal_table(std::span<const public_board_state> states)
+    {
+       return make_runout_terminal_table(states, [](const std::size_t count, auto&& build) {
+           for (std::size_t index = 0; index < count; ++index) {
+               build(index);
+           }
+       });
     }
 
     /**

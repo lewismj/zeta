@@ -6,147 +6,28 @@ add every UI feature first; it is to build the solver capabilities that unlock
 useful, accurate analysis.
 
 
-## 1. Per-street betting expansion for flop/turn solves (delivered)
+## Delivered
 
-**Status: Delivered.** Flop and turn spots now lower to an exact multi-street
-public game that interleaves a betting round on every street with the chance
-deals (flop bet round -> turn card -> turn bet round -> river card -> river bet
-round -> showdown), and a single unified CFR+ solve path traverses river, turn,
-and flop. The vectorized/templated river terminal evaluation is now only a
-low-level leaf optimisation, not a distinct solve path, so `iterations`
-meaningfully drives convergence for flop/turn spots. Multi-way (N > 2) non-river
-spots are rejected with a clear unsupported-solver error. Pre-build memory
-budgeting and exact suit-isomorphism reduction bound the tree size, and an
-opt-in dynamic action-pruning policy (default off, bit-identical to the exact
-solver when disabled) trades a bounded strategy/EV tolerance for speed on large
-trees.
+The core solver foundation is in place:
 
-The runout / chance-expansion infrastructure this built on -- blocker-aware
-public-card enumeration, the public-state / chance-event / runout identity model
-and registries, per-runout terminal cache reuse, deterministic board
-partitioning with multi-worker determinism, and schema-3 runout-aware
-persistence and inspection -- remains in place and is exercised by the unified
-solve.
+- **Multi-street solving.** Flop and turn spots solve as one exact game: a betting
+  round on every street, chance deals between them, exact suit isomorphism, a memory
+  budget checked before the tree is built, and optional dynamic pruning. See
+  [core algorithms](../core_algorithms.md).
+- **Convergence reporting.** Heads-up solves report best-response exploitability
+  (half of NashConv, in chips) with an optional convergence curve and an early stop
+  at a target; multiway solves report normalised average regret. Every artifact
+  carries input hashes and warnings. See the [CLI guide](../cli_usage.md).
+- **Strategy and EV surfaces.** Every solved node carries action frequencies,
+  per-hand strategy and EV in chips, range EV by seat, action EVs and hand-category
+  summaries, all shown in the Strategy Explorer.
+- **Node locking.** Fixed action frequencies at chosen decisions, for the whole range
+  or named hands, re-solved so the other player exploits them. See
+  [node locking](../node_locking.md).
+- **Speed and control.** Solves use every worker thread (with identical results for
+  any thread count) and can be cancelled at any stage.
 
-Delivered tests:
-
-- convergence / correctness tests for small flop and turn spots that assert
-  betting frequencies and per-hand EV (including a hand-computed golden nuts EV)
-- a test asserting `iterations` changes non-river solve output once betting exists
-- a multi-way (N > 2) non-river test asserting the supported / rejected contract
-- an end-to-end test asserting the lowered flop/turn graph produces exactly the
-  legal set of streets, betting nodes, and runouts (each legal board once)
-- pruning-tolerance tests bounding the pruned solve to the exact solve, and a UI
-  test asserting completed flop/turn solves surface real `"cfr+"` solve metadata
-
-Board abstraction/bucketing for large multiway solves remains deferred until a
-multiway solve path is in place.
-
-The full implementation record, including the four-step breakdown and per-step
-status, is in [`per_street_betting_plan.md`](per_street_betting_plan.md); every
-step is marked done.
-
-Why it matters: serious postflop analysis needs real flop and turn solves with
-betting, not single-river terminal states or check-down equity. This is also the
-foundation for aggregated reports by turn/river class.
-
-## 2. Robust convergence and exploitability reporting (delivered)
-
-**Status: Delivered.** Every solve now carries user-facing confidence signals
-alongside the strategy. For heads-up solves (river, turn and flop) the solver
-computes an exact
-best-response exploitability -- half of NashConv, expressed in EV (chip) units --
-by backing up a per-combo best response against each seat's average strategy and
-reporting the per-seat best-response gaps, the aggregate exploitability, and its
-fraction of the gross pot. Multiway river spots, where an exact best response is
-expensive, instead report a normalized average-regret metric (mean max positive
-regret per infoset divided by iterations) and flag that exact exploitability is
-unavailable.
-
-Exploitability measurement is opt-in (`runtime.convergence.measure_exploitability`,
-default off) so existing solve timings are unchanged. When enabled, a positive
-`measurement_interval` records a convergence curve (iteration, metric, elapsed
-time) capped at `max_curve_samples`, and a positive `target_exploitability` stops
-the solve early once the measured exploitability drops to or below the threshold,
-recording the reduced iteration count and a `reached_target` flag.
-
-Every solve -- regardless of the measurement toggle -- records reproducible input
-hashes (tree, range, board, betting-policy, solver-config, and a combined solve
-hash; stable FNV-1a digests serialized as hex) so two solves can be compared for
-equivalence without replaying them, plus warnings whenever a solve is
-abstraction-limited, multiway/normalized-regret-only, or approximate due to lossy
-card isomorphism or dynamic pruning. All fields
-round-trip through the schema-3 artifact JSON.
-
-Delivered tests:
-
-- heads-up exploitability is reported, non-negative, equals NashConv/2, and is
-  near-zero for a hand-computed nuts spot; it decreases as iterations increase
-- the convergence curve is populated and ordered for a positive interval, and the
-  retained sample count honours `max_curve_samples`
-- a quality target stops the solve early and records the reduced iteration count
-- multiway solves report a normalized-regret metric with exploitability
-  unavailable and the corresponding warning
-- input hashes are stable across identical solves and change when the board,
-  range, betting policy, or iteration budget changes
-- the reporting runtime knobs parse from the spot JSON (defaulting off, rejecting a
-  negative target), and hashes/convergence/warnings round-trip through artifact JSON
-
-Why it matters: users need to know whether a strategy is stable enough to trust.
-This is more valuable than simply running more iterations blindly.
-
-## 3. Strategy and EV result surfaces (delivered)
-
-**Status: Delivered.** Solved-node outputs now expose the full strategy/EV
-inspection surfaces needed for postflop analysis workflows: per-node action
-frequencies, per-hand strategy/EV/equity, range-level EV by player, action EV
-and regret summaries, hand-category aggregation, and versioned solved-node JSON
-payloads.
-
-The solver should emit enough structured data for detailed inspection, not just
-a flat hand/action table.
-
-Core deliverables:
-
-- per-node action frequencies
-- per-hand strategy, EV, and equity
-- range-level EV by player
-- action EV and regret summaries
-- hand-category aggregation: pair, two pair, draw, blocker, showdown class
-- JSON schema versioning for solved-node payloads
-
-Why it matters: GTO-style analysis is driven by comparing frequencies and EVs at
-each node. The UI can only become powerful if the solver artifact carries these
-surfaces cleanly.
-
-## 4. Node locking and strategy constraints (delivered)
-
-**Status: Delivered.** Spots carry a `locks` array. Each lock fixes some action
-frequencies at a decision, given by its action path from the root, with `"*"` for
-every dealt card. A lock covers the whole range or named hands, and the actions it
-doesn't list stay free. Locks are checked against the lowered tree before the solve
-starts. They are then enforced inside CFR+: the played strategy keeps the fixed
-frequencies, and free regrets are updated against the free-only value. The opponent
-best-responds, and exploitability is measured in the locked game. Artifacts
-(schema 7) record the locks, a locks hash, which locks applied at each node, and
-which hands they fixed; every action now carries its real label. In the UI, locks
-are added from the Strategy Explorer and listed in the Spot Builder. See
-[`node_locking_plan.md`](node_locking_plan.md) and the CLI usage guide.
-
-Core deliverables:
-
-- fixed action frequencies at selected nodes
-- per-hand locks and range-level locks
-- validation that locks match legal actions and hand domains
-- re-solve from locked strategy constraints
-- artifact metadata that records all locks
-- UI/CLI schema for lock input
-
-Why it matters: users often want to answer exploitative questions: "What if
-villain over-folds?", "What if BTN never raises?", or "How should OOP respond to
-this population strategy?"
-
-Detailed phased implementation plan: [`node_locking_plan.md`](node_locking_plan.md).
+The items below turn this into a complete analysis tool.
 
 ## 5. Range editing beyond preflop syntax
 
@@ -212,11 +93,11 @@ To keep Zeta clean, performant, and maintainable, Item 8 should not duplicate CF
 
 A trainer mode has entirely different responsibilities, runtime lifecycles, and state management compared to the CFR solver engine:
 
-| Characteristic | Core CFR Solver Engine (`zeta::solver`) | Trainer / Drill Engine (`zeta::trainer`) |
+| Characteristic | CFR solver (`cli/combo_cfr.h`) | Trainer / Drill Engine (`zeta::trainer`) |
 | :--- | :--- | :--- |
 | **Primary Goal** | Compute equilibrium strategies, EVs, and counterfactual regrets via CFR+ iterations. | Sample game states, validate user choices, track drill sessions, and evaluate EV loss. |
 | **Workload Type** | Compute-heavy, multi-threaded numerical batch processing. | Interactive, low-latency, stateful turn-by-turn game simulation and scoring. |
-| **Inputs** | Raw game parameters (ranges, board, tree configuration, stopping criteria). | Solved game trees / artifacts (from Item 3 & Item 6), drill configuration/filters. |
+| **Inputs** | Raw game parameters (ranges, board, tree configuration, stopping criteria). | Solve artifacts (from the solver and the spot library, item 6), drill configuration/filters. |
 | **Outputs** | Strategy tensors, reach probabilities, exploitability metrics, EV tables. | Feedback metrics (EV loss, blunders, frequency divergence), user session stats, drill queues. |
 
 Placing drill logic directly into the solver engine would pollute the numerical CFR core, while placing it directly inside Qt UI widgets would make drills impossible to test headless, script via CLI, or reuse across web/desktop frontends.
@@ -255,7 +136,7 @@ The trainer engine should be structured around three primary functional subsyste
                ▼                          ▼
 ┌──────────────────────────────┐ ┌──────────────────────────────┐
 │  Spot Library & Cache        │ │  Result Surfaces & Data      │
-│  (`zeta_library` / Item 6)   │ │  (`zeta_artifacts` / Item 3) │
+│  (item 6)                    │ │  (solve artifacts)           │
 │  - Pre-solved trees          │ │  - Per-node strategy / EV    │
 │  - Canonical spot queries    │ │  - Hand categories / equity  │
 └──────────────────────────────┘ └──────────────────────────────┘
@@ -273,15 +154,10 @@ Why it matters: this turns solver output into an interactive study and practice 
 
 ## Recommended implementation order
 
-1. Per-street betting expansion for flop/turn solves. (delivered)
-2. Robust convergence and exploitability reporting. (delivered)
-3. Strategy and EV result surfaces. (delivered)
-4. Node locking. (delivered)
 5. Postflop range tools.
 6. Saved spot library and solve cache.
 7. Compare mode and reports.
 8. Trainer/drill mode.
 
-The first four items are the core solver foundation, and all four are delivered.
-Items five through eight are what make the solver feel like a complete analysis
-product.
+Range tools come first because locks, compare mode and the trainer all want to name
+hands by what they make on the board rather than by preflop class.

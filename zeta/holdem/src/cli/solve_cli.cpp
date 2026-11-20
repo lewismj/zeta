@@ -1475,14 +1475,14 @@ namespace zeta::holdem::cli {
             const auto& hashes_object = hashes_value->as_object();
             auto tree = optional_string(hashes_object, "tree", "");
             auto range = optional_string(hashes_object, "range", "");
-            auto board = optional_string(hashes_object, "board", "");
+            auto board_hash_text = optional_string(hashes_object, "board", "");
             auto betting_policy = optional_string(hashes_object, "betting_policy", "");
             auto solver_config = optional_string(hashes_object, "solver_config", "");
             auto locks = optional_string(hashes_object, "locks", "");
             auto solve = optional_string(hashes_object, "solve", "");
             if (!tree) { return std::unexpected(tree.error()); }
             if (!range) { return std::unexpected(range.error()); }
-            if (!board) { return std::unexpected(board.error()); }
+            if (!board_hash_text) { return std::unexpected(board_hash_text.error()); }
             if (!betting_policy) { return std::unexpected(betting_policy.error()); }
             if (!solver_config) { return std::unexpected(solver_config.error()); }
             if (!locks) { return std::unexpected(locks.error()); }
@@ -1490,7 +1490,7 @@ namespace zeta::holdem::cli {
             artifact.solver.hashes.locks_hash = hash_from_hex(*locks);
             artifact.solver.hashes.tree_hash = hash_from_hex(*tree);
             artifact.solver.hashes.range_hash = hash_from_hex(*range);
-            artifact.solver.hashes.board_hash = hash_from_hex(*board);
+            artifact.solver.hashes.board_hash = hash_from_hex(*board_hash_text);
             artifact.solver.hashes.betting_policy_hash = hash_from_hex(*betting_policy);
             artifact.solver.hashes.solver_config_hash = hash_from_hex(*solver_config);
             artifact.solver.hashes.solve_hash = hash_from_hex(*solve);
@@ -1601,21 +1601,21 @@ namespace zeta::holdem::cli {
                 }
                 const auto& object = state_value.as_object();
                 auto id = required_uint<uint32_t>(object, "id");
-                auto street = required_string(object, "street");
-                auto board = required_string_array(object, "board");
+                auto state_street = required_string(object, "street");
+                auto state_board = required_string_array(object, "board");
                 auto parent = nullable_uint32(object, "parent_state_id", cfr::INVALID_PUBLIC_STATE_ID);
                 auto event = nullable_uint32(object, "chance_event_id_from_parent", cfr::INVALID_CHANCE_EVENT);
                 auto outcome = nullable_uint32(object, "chance_outcome_id_from_parent", cfr::INVALID_CHANCE_OUTCOME_ID);
                 if (!id) return std::unexpected(id.error());
-                if (!street) return std::unexpected(street.error());
-                if (!board) return std::unexpected(board.error());
+                if (!state_street) return std::unexpected(state_street.error());
+                if (!state_board) return std::unexpected(state_board.error());
                 if (!parent) return std::unexpected(parent.error());
                 if (!event) return std::unexpected(event.error());
                 if (!outcome) return std::unexpected(outcome.error());
                 artifact.public_states.push_back(solve_artifact_public_state{
                     .id = *id,
-                    .street = std::move(*street),
-                    .board = std::move(*board),
+                    .street = std::move(*state_street),
+                    .board = std::move(*state_board),
                     .parent_state_id = *parent,
                     .chance_event_id_from_parent = *event,
                     .chance_outcome_id_from_parent = *outcome,
@@ -1637,16 +1637,16 @@ namespace zeta::holdem::cli {
                 auto id = required_uint<uint32_t>(object, "id");
                 auto node_id = required_uint<uint32_t>(object, "node_id");
                 auto kind = required_string(object, "kind");
-                auto board = required_string_array(object, "board");
+                auto event_board = required_string_array(object, "board");
                 if (!id) return std::unexpected(id.error());
                 if (!node_id) return std::unexpected(node_id.error());
                 if (!kind) return std::unexpected(kind.error());
-                if (!board) return std::unexpected(board.error());
+                if (!event_board) return std::unexpected(event_board.error());
                 solve_artifact_chance_event event_record{
                     .id = *id,
                     .node_id = *node_id,
                     .kind = std::move(*kind),
-                    .board = std::move(*board)
+                    .board = std::move(*event_board)
                 };
                 if (const auto* outcomes = find_value(object, "outcomes"); outcomes != nullptr) {
                     if (!outcomes->is_array()) {
@@ -1707,13 +1707,13 @@ namespace zeta::holdem::cli {
                 auto public_state_id = nullable_uint32(object, "public_state_id", cfr::INVALID_PUBLIC_STATE_ID);
                 auto parent_node_id = nullable_uint32(object, "parent_node_id", cfr::game_graph::INVALID_NODE);
                 auto acting_seat = nullable_uint8(object, "acting_seat", cfr::solver::INVALID_PLAYER);
-                auto board = required_string_array(object, "board");
+                auto node_board = required_string_array(object, "board");
                 if (!node_id) return std::unexpected(node_id.error());
                 if (!kind) return std::unexpected(kind.error());
                 if (!public_state_id) return std::unexpected(public_state_id.error());
                 if (!parent_node_id) return std::unexpected(parent_node_id.error());
                 if (!acting_seat) return std::unexpected(acting_seat.error());
-                if (!board) return std::unexpected(board.error());
+                if (!node_board) return std::unexpected(node_board.error());
                 solved_node node{
                     .node_id = *node_id,
                     .kind = std::move(*kind),
@@ -1721,7 +1721,7 @@ namespace zeta::holdem::cli {
                     .parent_node_id = *parent_node_id,
                     .acting_seat = *acting_seat,
                     .terminal = object.if_contains("terminal") != nullptr && object.at("terminal").as_bool(),
-                    .board = std::move(*board)
+                    .board = std::move(*node_board)
                 };
                 if (const auto* actions_value = find_value(object, "actions"); actions_value != nullptr) {
                     if (!actions_value->is_array()) {
@@ -1735,11 +1735,11 @@ namespace zeta::holdem::cli {
                         node.actions.push_back(std::move(*parsed));
                     }
                 }
-                if (const auto* strategy_value = find_value(object, "range_action_frequencies"); strategy_value != nullptr) {
-                    if (!strategy_value->is_array()) {
+                if (const auto* frequencies_value = find_value(object, "range_action_frequencies"); frequencies_value != nullptr) {
+                    if (!frequencies_value->is_array()) {
                         return std::unexpected(cli_error{cli_error_kind::parse, "solved_nodes.range_action_frequencies must be an array."});
                     }
-                    for (const auto& action_value : strategy_value->as_array()) {
+                    for (const auto& action_value : frequencies_value->as_array()) {
                         auto action = parse_action_strategy(action_value);
                         if (!action) {
                             return std::unexpected(action.error());

@@ -3,8 +3,8 @@ project(zeta_ui_holdem LANGUAGES CXX)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-add_executable(zeta-ui-holdem
-    src/main.cpp
+# Everything but main(): the app and the tests link the same compiled UI code.
+add_library(zeta-ui-holdem-lib STATIC
     src/main_window.h
     src/main_window.cpp
     src/main_window_shell.cpp
@@ -59,21 +59,32 @@ add_executable(zeta-ui-holdem
     src/widgets/strategy_explorer.cpp
     src/widgets/table_state_view.h
     src/widgets/table_state_view.cpp
-    resources/holdem.qrc
 )
-
-target_link_libraries(zeta-ui-holdem
-    PRIVATE
+target_include_directories(zeta-ui-holdem-lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(zeta-ui-holdem-lib
+    PUBLIC
     zeta-holdem
     Boost::json
     Qt6::Widgets
 )
 if(TARGET Qt6::Svg)
-    target_link_libraries(zeta-ui-holdem PRIVATE Qt6::Svg)
+    target_link_libraries(zeta-ui-holdem-lib PUBLIC Qt6::Svg)
+endif()
+target_compile_features(zeta-ui-holdem-lib PUBLIC cxx_std_23)
+if(WIN32)
+    target_link_libraries(zeta-ui-holdem-lib PUBLIC dwmapi)
+endif()
+if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_link_libraries(zeta-ui-holdem-lib PUBLIC m)
 endif()
 
-target_include_directories(zeta-ui-holdem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_features(zeta-ui-holdem PRIVATE cxx_std_23)
+# Resources stay with each executable: a static library's Qt resources would need
+# Q_INIT_RESOURCE in every main().
+add_executable(zeta-ui-holdem
+    src/main.cpp
+    resources/holdem.qrc
+)
+target_link_libraries(zeta-ui-holdem PRIVATE zeta-ui-holdem-lib)
 
 add_custom_command(TARGET zeta-ui-holdem POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -83,86 +94,7 @@ add_custom_command(TARGET zeta-ui-holdem POST_BUILD
     VERBATIM
 )
 
-if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_link_libraries(zeta-ui-holdem PRIVATE m)
-endif()
+zeta_deploy_runtime(zeta-ui-holdem QT_PLATFORM qwindows)
 
-if(WIN32)
-    target_link_libraries(zeta-ui-holdem PRIVATE dwmapi)
-
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        set(ZETA_QT_RUNTIME_BIN "${Qt6_DIR}/../../debug/bin")
-        set(ZETA_QWINDOWS_PLUGIN_NAMES qwindowsd.dll qwindows.dll)
-        set(ZETA_QSVGICON_PLUGIN_NAMES qsvgicond.dll qsvgicon.dll)
-        set(ZETA_QSVG_PLUGIN_NAMES qsvgd.dll qsvg.dll)
-        set(ZETA_QT_PLUGIN_HINT_ROOTS
-            "${Qt6_DIR}/../../debug/Qt6/plugins"
-            "${Qt6_DIR}/../../../debug/Qt6/plugins"
-        )
-    else()
-        set(ZETA_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
-        set(ZETA_QWINDOWS_PLUGIN_NAMES qwindows.dll qwindowsd.dll)
-        set(ZETA_QSVGICON_PLUGIN_NAMES qsvgicon.dll qsvgicond.dll)
-        set(ZETA_QSVG_PLUGIN_NAMES qsvg.dll qsvgd.dll)
-        set(ZETA_QT_PLUGIN_HINT_ROOTS
-            "${Qt6_DIR}/../../Qt6/plugins"
-            "${Qt6_DIR}/../../../Qt6/plugins"
-        )
-    endif()
-    cmake_path(NORMAL_PATH ZETA_QT_RUNTIME_BIN)
-    foreach(_zeta_qt_plugin_hint_root IN LISTS ZETA_QT_PLUGIN_HINT_ROOTS)
-        cmake_path(NORMAL_PATH _zeta_qt_plugin_hint_root)
-        list(APPEND ZETA_QT_PLATFORM_PLUGIN_HINTS "${_zeta_qt_plugin_hint_root}/platforms")
-        list(APPEND ZETA_QT_ICON_PLUGIN_HINTS "${_zeta_qt_plugin_hint_root}/iconengines")
-        list(APPEND ZETA_QT_IMAGE_PLUGIN_HINTS "${_zeta_qt_plugin_hint_root}/imageformats")
-    endforeach()
-
-    unset(ZETA_QWINDOWS_PLUGIN CACHE)
-    unset(ZETA_QSVGICON_PLUGIN CACHE)
-    unset(ZETA_QSVG_PLUGIN CACHE)
-    find_file(ZETA_QWINDOWS_PLUGIN
-        NAMES ${ZETA_QWINDOWS_PLUGIN_NAMES}
-        HINTS ${ZETA_QT_PLATFORM_PLUGIN_HINTS}
-        REQUIRED
-    )
-    find_file(ZETA_QSVGICON_PLUGIN
-        NAMES ${ZETA_QSVGICON_PLUGIN_NAMES}
-        HINTS ${ZETA_QT_ICON_PLUGIN_HINTS}
-        REQUIRED
-    )
-    find_file(ZETA_QSVG_PLUGIN
-        NAMES ${ZETA_QSVG_PLUGIN_NAMES}
-        HINTS ${ZETA_QT_IMAGE_PLUGIN_HINTS}
-        REQUIRED
-    )
-
-    file(GLOB ZETA_HOLDEM_RUNTIME_DLL_PATHS "${ZETA_QT_RUNTIME_BIN}/*.dll")
-    if(NOT ZETA_HOLDEM_RUNTIME_DLL_PATHS)
-        message(FATAL_ERROR "No Qt runtime dependencies found in: ${ZETA_QT_RUNTIME_BIN}")
-    endif()
-
-    add_custom_command(TARGET zeta-ui-holdem POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_RUNTIME_DLLS:zeta-ui-holdem>
-            ${ZETA_HOLDEM_RUNTIME_DLL_PATHS}
-            $<TARGET_FILE_DIR:zeta-ui-holdem>
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:zeta-ui-holdem>/platforms
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:zeta-ui-holdem>/iconengines
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:zeta-ui-holdem>/imageformats
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ZETA_QWINDOWS_PLUGIN}"
-            $<TARGET_FILE_DIR:zeta-ui-holdem>/platforms
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ZETA_QSVGICON_PLUGIN}"
-            $<TARGET_FILE_DIR:zeta-ui-holdem>/iconengines
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ZETA_QSVG_PLUGIN}"
-            $<TARGET_FILE_DIR:zeta-ui-holdem>/imageformats
-        COMMENT "Deploying Qt runtime dependencies for zeta-ui-holdem"
-        COMMAND_EXPAND_LISTS
-        VERBATIM
-    )
-endif()
+target_link_libraries(zeta-ui-holdem-lib PRIVATE zeta_warnings)
+target_link_libraries(zeta-ui-holdem PRIVATE zeta_warnings)

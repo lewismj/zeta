@@ -1075,7 +1075,11 @@ namespace zeta::holdem::cli {
         {
             clear_node_values(lowered.graph.node_count, updating_player, parallel, node_values);
             const terminal_engine<N> engine{};
-            parallel.pool.run(terminal_nodes.size(), [&](uint32_t, const uint64_t task_index) {
+            // Multiway leaves need N reach indices (about 130 KB each); each worker reuses
+            // one heap array for the whole pass instead of allocating one per leaf.
+            std::vector<std::unique_ptr<std::array<river_reach_index, N>>> reach_scratch(
+                N == 2 ? 0u : parallel.pool.worker_count());
+            parallel.pool.run(terminal_nodes.size(), [&](const uint32_t worker_id, const uint64_t task_index) {
                 const auto node_id = terminal_nodes[task_index];
                 const auto& terminal_state = lowered.terminal_states[lowered.terminal_leaves[node_id].terminal_state_id];
                 // The updating player's leaf values must not depend on its own reach,
@@ -1093,7 +1097,10 @@ namespace zeta::holdem::cli {
                     }
                     return;
                 }
-                auto reach = std::make_unique<std::array<river_reach_index, N>>();
+                auto& reach = reach_scratch[worker_id];
+                if (!reach) {
+                    reach = std::make_unique<std::array<river_reach_index, N>>();
+                }
                 for (std::size_t seat = 0; seat < N; ++seat) {
                     (*reach)[seat] = seat == updating_player
                         ? base_indices[seat]
@@ -1483,7 +1490,6 @@ namespace zeta::holdem::cli {
         }
 
         [[nodiscard]] inline uint64_t hash_solver_configuration(
-            const struct solve_spot& spot,
             const solve_runtime_options& runtime,
             const uint64_t requested_iterations) noexcept
         {
@@ -1516,7 +1522,7 @@ namespace zeta::holdem::cli {
             hashes.range_hash = hash_reach_vectors(std::span<const reach_vector>{reach_vectors.data(), N});
             hashes.board_hash = hash_board(public_board);
             hashes.betting_policy_hash = hash_spot_configuration(spot, config);
-            hashes.solver_config_hash = hash_solver_configuration(spot, runtime, requested_iterations);
+            hashes.solver_config_hash = hash_solver_configuration(runtime, requested_iterations);
             hashes.locks_hash = hash_node_locks(spot.locks);
 
             cfr::solver::compatibility_hasher combined;
@@ -1955,10 +1961,16 @@ namespace zeta::holdem::cli {
             const std::array<std::vector<reach_vector>, N>& node_values_by_seat,
             const std::vector<card_mask>& board_by_node,
             const std::vector<std::vector<std::string>>& labels,
-            const lock_runtime* locks)
+            const lock_runtime* locks,
+            cfr::scheduler::worker_pool& pool)
         {
+            // Each node's surfaces depend only on that node, so nodes run in parallel.
             const auto hero_seat = static_cast<uint8_t>(std::min<std::size_t>(artifact.hero_seat, N - 1u));
-            for (auto& node : artifact.solved_nodes) {
+            const auto node_count = artifact.solved_nodes.size();
+            const auto chunk = static_cast<uint32_t>(std::clamp<std::size_t>(
+                node_count / (static_cast<std::size_t>(pool.worker_count()) * 8u), 1u, 256u));
+            pool.run(node_count, [&](uint32_t, const uint64_t index) {
+                auto& node = artifact.solved_nodes[static_cast<std::size_t>(index)];
                 if (locks != nullptr) {
                     node.lock_indices = locks->lock_indices_by_node[node.node_id];
                 }
@@ -1985,7 +1997,7 @@ namespace zeta::holdem::cli {
                     locks);
                 node.category_summary_derivation_version = 1;
                 node.category_summaries = compute_category_summaries(node.strategy_rows);
-            }
+            }, chunk);
         }
 
         inline void append_solved_graph_payload(
@@ -2052,11 +2064,21 @@ namespace zeta::holdem::cli {
                 }
             }
 
+            // Parent of every node, from one pass over the edges.
+            std::vector<uint32_t> parent_by_node(graph.node_count, cfr::game_graph::INVALID_NODE);
+            for (uint32_t parent = 0; parent < graph.node_count; ++parent) {
+                for (const auto& edge : graph.out_edges(parent)) {
+                    if (parent_by_node[edge.child_node] == cfr::game_graph::INVALID_NODE) {
+                        parent_by_node[edge.child_node] = parent;
+                    }
+                }
+            }
+
             artifact.solved_nodes.reserve(graph.node_count);
             for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
                 solved_node persisted{};
                 persisted.node_id = node_id;
-                persisted.parent_node_id = cfr::game_graph::INVALID_NODE;
+                persisted.parent_node_id = parent_by_node[node_id];
                 persisted.kind = graph.is_terminal(node_id)
                     ? "terminal"
                     : (graph.node_types[node_id] == cfr::node_kind::chance ? "chance" : "player");
@@ -2065,14 +2087,6 @@ namespace zeta::holdem::cli {
                 persisted.terminal = graph.is_terminal(node_id);
                 if (public_states != nullptr && persisted.public_state_id < public_states->states.size()) {
                     persisted.board = card_texts_from_mask(public_states->states[persisted.public_state_id].board_cards);
-                }
-                for (uint32_t parent = 0; parent < graph.node_count && persisted.parent_node_id == cfr::game_graph::INVALID_NODE; ++parent) {
-                    for (const auto& edge : graph.out_edges(parent)) {
-                        if (edge.child_node == node_id) {
-                            persisted.parent_node_id = parent;
-                            break;
-                        }
-                    }
                 }
 
                 if (graph.is_player_node(node_id)) {
@@ -2282,12 +2296,16 @@ namespace zeta::holdem::cli {
             const combo_action_table& average_strategy,
             const std::array<std::vector<combination_index>, N>& active_combos,
             const std::vector<std::array<reach_vector, N>>& node_reach,
-            const std::vector<std::vector<std::string>>& labels)
+            const std::vector<std::vector<std::string>>& labels,
+            cfr::scheduler::worker_pool& pool)
         {
             std::vector<std::vector<action_strategy>> node_strategies(graph.node_count);
-            for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
+            const auto chunk = static_cast<uint32_t>(std::clamp<std::size_t>(
+                graph.node_count / (static_cast<std::size_t>(pool.worker_count()) * 8u), 1u, 256u));
+            pool.run(graph.node_count, [&](uint32_t, const uint64_t index) {
+                const auto node_id = static_cast<uint32_t>(index);
                 if (!graph.is_player_node(node_id)) {
-                    continue;
+                    return;
                 }
                 const auto actor = annotations.actor_by_node[node_id];
                 const auto infoset_id = graph.infoset_id[node_id];
@@ -2317,7 +2335,7 @@ namespace zeta::holdem::cli {
                             : (edges.empty() ? 0.0 : 1.0 / static_cast<double>(edges.size()))
                     });
                 }
-            }
+            }, chunk);
             return node_strategies;
         }
 
@@ -2375,25 +2393,39 @@ namespace zeta::holdem::cli {
                 // each seat, the range-weighted reach index into that cache. These stay
                 // outside the CFR loop so showdown leaves reuse the vectorized river
                 // terminal evaluation instead of rebuilding equity every iteration.
+                // Every board is independent, so both are built on the pool.
+                const auto parallel_for = [&pool](const std::size_t count, auto&& build) {
+                    const auto chunk = static_cast<uint32_t>(std::clamp<std::size_t>(
+                        count / (static_cast<std::size_t>(pool.worker_count()) * 8u), 1u, 64u));
+                    pool.run(count, [&build](uint32_t, const uint64_t index) {
+                        build(static_cast<std::size_t>(index));
+                    }, chunk);
+                };
                 const auto terminal_table =
-                    cfr::make_runout_terminal_table(public_game.public_states.states);
-                std::vector<std::array<river_reach_index, N>> river_base_index_by_state(
-                    public_game.public_states.states.size());
-                for (const auto& state : public_game.public_states.states) {
-                    if (!state.is_terminal_river_state) {
-                        continue;
-                    }
-                    const auto* entry = terminal_table.find(state.id);
-                    if (entry == nullptr) {
+                    cfr::make_runout_terminal_table(public_game.public_states.states, parallel_for);
+                const auto& states = public_game.public_states.states;
+                for (const auto& state : states) {
+                    if (state.is_terminal_river_state && terminal_table.find(state.id) == nullptr) {
                         return std::unexpected(cli_error{
                             cli_error_kind::solver,
                             "River public state is missing its materialized terminal cache."
                         });
                     }
+                }
+                std::vector<std::array<river_reach_index, N>> river_base_index_by_state(states.size());
+                parallel_for(states.size(), [&](const std::size_t index) {
+                    const auto& state = states[index];
+                    if (!state.is_terminal_river_state) {
+                        return;
+                    }
+                    const auto* entry = terminal_table.find(state.id);
                     for (std::size_t seat = 0; seat < N; ++seat) {
                         river_base_index_by_state[state.id][seat] =
                             make_river_reach_index(entry->cache, reach_vectors[seat]);
                     }
+                });
+                if (solve_stopped(runtime, pool)) {
+                    return std::unexpected(solve_cancelled_error());
                 }
 
                 auto initial_state = cfr::make_initial_betting_state(config);
@@ -2611,7 +2643,7 @@ namespace zeta::holdem::cli {
                     &public_game.public_states,
                     &public_game.chance_events,
                     &public_game.runouts,
-                    make_node_strategies<N>(graph, annotations, average_strategy, active_combos, node_reach, labels));
+                    make_node_strategies<N>(graph, annotations, average_strategy, active_combos, node_reach, labels, pool));
                 populate_solved_node_profiles(
                     artifact,
                     graph,
@@ -2623,7 +2655,12 @@ namespace zeta::holdem::cli {
                     node_values_by_seat,
                     board_by_node,
                     labels,
-                    locks);
+                    locks,
+                    pool);
+                // Extraction runs on the pool; a cancel during it leaves the artifact incomplete.
+                if (solve_stopped(runtime, pool)) {
+                    return std::unexpected(solve_cancelled_error());
+                }
                 output.artifact = std::move(artifact);
                 output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - extraction_begin).count();
@@ -2881,7 +2918,12 @@ namespace zeta::holdem::cli {
                 nullptr,
                 nullptr,
                 make_node_strategies<N>(
-                    lowered.graph, lowered.annotations, average_strategy, active_combos, node_reach, labels));
+                    lowered.graph, lowered.annotations, average_strategy, active_combos, node_reach, labels, pool));
+            // A river tree has no public-state registry; every node shares the river board.
+            const auto river_board_cards = card_texts_from_mask(public_board.mask);
+            for (auto& node : artifact.solved_nodes) {
+                node.board = river_board_cards;
+            }
             populate_solved_node_profiles(
                 artifact,
                 lowered.graph,
@@ -2893,7 +2935,12 @@ namespace zeta::holdem::cli {
                 node_values_by_seat,
                 std::vector<card_mask>(lowered.graph.node_count, public_board.mask),
                 labels,
-                locks);
+                locks,
+                pool);
+            // Extraction runs on the pool; a cancel during it leaves the artifact incomplete.
+            if (solve_stopped(runtime, pool)) {
+                return std::unexpected(solve_cancelled_error());
+            }
             output.artifact = std::move(artifact);
             output.timing.extraction_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - extraction_begin).count();

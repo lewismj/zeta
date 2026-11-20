@@ -73,7 +73,7 @@ The top command bar contains:
 | **Save** | Saves the active document. If no path exists, it prompts for a path. |
 | **Validate** | Parses the active **Spot JSON** and validates the structured spot. |
 | **Solve** | Starts CFR+ for the active validated spot. |
-| **Cancel** | Requests cancellation. Cancellation is only effective before solver work has started. |
+| **Cancel** | Stops the running solve. It stops within a fraction of a second, at any stage, and no solution is stored. |
 | **Configuration** | Opens UI and solver settings. |
 
 Only one solve can run at a time. While a solve is running, the active document's JSON editor is read-only and the status bar reports progress state.
@@ -271,7 +271,7 @@ Open **Configuration** from the command bar.
 |---|---|
 | **Iterations** | CFR+ iterations for the next solve. |
 | **Progress batch iterations** | Number of CFR iterations between progress updates. |
-| **Worker threads** | Threads that evaluate terminal leaves in parallel, capped by available hardware threads and the UI maximum. Results are identical for any thread count. |
+| **Worker threads** | Threads the solve runs on, capped by available hardware threads and the UI maximum. Results are identical for any thread count. |
 | **Card isomorphism** | Collapse suit-isomorphic turn/river runouts to shrink the game. Lossless only for suit-symmetric ranges. |
 | **Allow lossy isomorphism** | Permit isomorphism even when ranges are not suit-symmetric (approximate). Enabled only when **Card isomorphism** is on. |
 | **Dynamic action pruning** | Opt-in approximate solve: freeze low-regret actions and skip their subtrees. When off, the solve is exact. |
@@ -304,10 +304,9 @@ When you click **Solve**, the UI:
 7. Adds a solve-history entry with timestamp, iteration count, and outcome.
 8. Refreshes the document so **Strategy Explorer** becomes available.
 
-The solve console reports graph-build time, CFR iteration time, extraction time, finish timestamp, and final status.
+The status bar shows live progress (the stage, and the iteration once CFR starts). The solve console reports graph-build time, CFR iteration time, extraction time, finish timestamp, and final status.
 
-> [!WARNING]
-> **Cancel** only prevents a solve that has not started solver work yet. It is not an interrupt for a solve already inside CFR work.
+**Cancel** stops a running solve at any stage, usually within a fraction of a second, and nothing is stored. Closing the window while a solve runs offers to cancel it and close once it has stopped.
 
 ## Exploring Strategy
 

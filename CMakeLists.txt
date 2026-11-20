@@ -11,6 +11,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(ZETA_BUILD_TESTS "Build Zeta test targets" ON)
 option(ZETA_BUILD_TOOLS "Build Zeta tool targets" ON)
 option(ZETA_BUILD_BENCHMARKS "Build Zeta benchmark targets" ON)
+option(ZETA_BUILD_UI "Build the Qt hold'em UI (and its tests); needs Qt 6" ON)
+
+include(GNUInstallDirs)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(ZetaDeploy)
 
 set(_zeta_boost_components json)
 if(ZETA_BUILD_TESTS)
@@ -21,8 +26,10 @@ if(NOT Boost_FOUND)
     message(FATAL_ERROR "Boost not found.")
 endif()
 
-find_package(Qt6 CONFIG REQUIRED COMPONENTS Widgets)
-find_package(Qt6 CONFIG QUIET COMPONENTS Svg)
+if(ZETA_BUILD_UI)
+    find_package(Qt6 CONFIG REQUIRED COMPONENTS Widgets)
+    find_package(Qt6 CONFIG QUIET COMPONENTS Svg)
+endif()
 
 if(ZETA_BUILD_BENCHMARKS)
     find_package(benchmark 1.9.5 CONFIG QUIET)
@@ -91,6 +98,17 @@ elseif(ZETA_NATIVE_OPTIMIZATIONS AND MSVC)
         "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/arch:AVX2>"
         "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/favor:INTEL64>"
     )
+endif()
+
+# Warning flags for Zeta's own targets only; third-party headers come in as system
+# includes, so their warnings stay out.
+add_library(zeta_warnings INTERFACE)
+if(MSVC)
+    # C4324 ("structure was padded due to alignment specifier") reports the padding
+    # that the deliberate cache-line alignment of types such as hand_range asks for.
+    target_compile_options(zeta_warnings INTERFACE /W4 /wd4324)
+else()
+    target_compile_options(zeta_warnings INTERFACE -Wall -Wextra -Wswitch-enum)
 endif()
 
 if(ZETA_BUILD_TESTS)

@@ -83,8 +83,8 @@ int main(int argc, char** argv)
         } else {
             return fail(parsed_runtime.error());
         }
-        if (const char* revision = std::getenv("ZETA_GIT_REVISION")) {
-            runtime.git_revision = revision;
+        if (auto revision = detail::environment_variable("ZETA_GIT_REVISION")) {
+            runtime.git_revision = std::move(*revision);
         }
 
         const auto total_begin = std::chrono::steady_clock::now();

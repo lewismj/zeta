@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <expected>
 #include <filesystem>
 #include <fstream>
@@ -584,6 +585,24 @@ namespace zeta::holdem::cli {
                 }
             }
             return river;
+        }
+
+        /** The environment variable's value, or nullopt when it is not set. */
+        [[nodiscard]] inline std::optional<std::string> environment_variable(const char* name)
+        {
+#if defined(_MSC_VER)
+            char* value = nullptr;
+            std::size_t size = 0;
+            if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
+                return std::nullopt;
+            }
+            std::string out{value};
+            std::free(value);
+            return out;
+#else
+            const char* value = std::getenv(name);
+            return value == nullptr ? std::nullopt : std::optional<std::string>{value};
+#endif
         }
 
         [[nodiscard]] inline std::string now_utc_iso8601()

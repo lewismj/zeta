@@ -123,7 +123,7 @@ in `solved_nodes` show every seat's decisions.
 ### Solver runtime knobs (`runtime` object)
 
 Solves accept an optional `runtime` object that tunes the solver without changing
-the game being solved. When it is omitted the solver runs single-threaded with an
+the game being solved. When it is omitted the solver runs on one thread with an
 auto-derived memory budget.
 
 ```json
@@ -159,7 +159,7 @@ auto-derived memory budget.
 
 | Field                                    | Type    | Default        | Notes                                                                                     |
 | ---------------------------------------- | ------- | -------------- | ----------------------------------------------------------------------------------------- |
-| `worker_threads`                         | integer | `1`            | Threads that evaluate terminal leaves in parallel (clamped to `1..64`); results are bit-identical for any value |
+| `worker_threads`                         | integer | `1`            | Threads the solve runs on (clamped to `1..64`): terminal leaves, the per-hand passes, setup and extraction; results are bit-identical for any value |
 | `memory_budget_bytes`                    | integer | `0`            | Pre-build footprint cap; `0` derives `0.8 x` detected available memory (fallback 4 GiB)   |
 | `card_isomorphism`                       | boolean | `false`        | Collapse suit-isomorphic turn/river boards (lossless only for suit-symmetric ranges)      |
 | `allow_lossy_card_isomorphism`           | boolean | `false`        | Permit isomorphism even when ranges are not suit-symmetric (approximate)                  |

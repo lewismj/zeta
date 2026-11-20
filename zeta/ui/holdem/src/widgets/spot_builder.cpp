@@ -721,8 +721,8 @@ namespace zeta::holdem::ui::widgets {
             root_actor_->addItem(seat_selector_text(spot_, seat), static_cast<int>(seat));
             hero_seat_->addItem(seat_selector_text(spot_, seat), static_cast<int>(seat));
         }
-        root_actor_->setCurrentIndex(std::min<std::size_t>(spot_.root_actor, spot_.players.empty() ? 0u : spot_.players.size() - 1u));
-        hero_seat_->setCurrentIndex(std::min<std::size_t>(spot_.hero_seat, spot_.players.empty() ? 0u : spot_.players.size() - 1u));
+        root_actor_->setCurrentIndex(static_cast<int>(std::min<std::size_t>(spot_.root_actor, spot_.players.empty() ? 0u : spot_.players.size() - 1u)));
+        hero_seat_->setCurrentIndex(static_cast<int>(std::min<std::size_t>(spot_.hero_seat, spot_.players.empty() ? 0u : spot_.players.size() - 1u)));
     }
 
     void spot_builder::refresh_betting_policy_controls()

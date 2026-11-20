@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 project(zeta_core LANGUAGES CXX)
 
-set(CMAKE_CXX_SCAN_FOR_MODULES ON)
-
 add_library(zeta-core STATIC
         src/repr.h
         include/core.h
@@ -29,9 +27,6 @@ if(ZETA_USE_PEXT)
     else()
         set(CMAKE_REQUIRED_FLAGS "-mbmi2")
     endif()
-    set(CMAKE_CXX_SCAN_FOR_MODULES_OLD ${CMAKE_CXX_SCAN_FOR_MODULES})
-    set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
-
     check_cxx_source_compiles("
         #include <immintrin.h>
         int main() {
@@ -42,8 +37,6 @@ if(ZETA_USE_PEXT)
             (void)dep;
             return 0;
         }" PEXT_SUPPORTED)
-
-    set(CMAKE_CXX_SCAN_FOR_MODULES ${CMAKE_CXX_SCAN_FOR_MODULES_OLD})
 
     if(PEXT_SUPPORTED)
         message(STATUS "PEXT/PDEP intrinsics enabled.")
@@ -69,11 +62,7 @@ else()
     message(STATUS "Unknown C++ compiler is being used: ${CMAKE_CXX_COMPILER_ID}")
 endif()
 
-# Enforce exhaustiveness on enum switches for Clang/GCC
-if (NOT MSVC)
-    target_compile_options(zeta-core PRIVATE -Wswitch-enum)
-endif()
+target_link_libraries(zeta-core PRIVATE zeta_warnings)
 
 install(TARGETS zeta-core
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

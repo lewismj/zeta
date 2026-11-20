@@ -42,8 +42,8 @@ namespace zeta::holdem::ui {
         request.runtime.pruning.prune_threshold = pruning_threshold_;
         request.runtime.pruning.minimum_active_actions = static_cast<uint32_t>(pruning_minimum_active_actions_);
         request.runtime.pruning.reconsider_interval = static_cast<uint32_t>(pruning_reconsider_interval_);
-        if (const char* revision = std::getenv("ZETA_GIT_REVISION")) {
-            request.runtime.git_revision = revision;
+        if (auto revision = cli::detail::environment_variable("ZETA_GIT_REVISION")) {
+            request.runtime.git_revision = std::move(*revision);
         }
 
         active_session_ = std::make_shared<solver::solver_session>(std::move(request));

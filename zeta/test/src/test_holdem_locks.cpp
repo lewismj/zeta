@@ -365,8 +365,9 @@ BOOST_AUTO_TEST_CASE(exploitability_is_measured_in_the_locked_game) {
 BOOST_AUTO_TEST_CASE(locked_solves_are_deterministic_across_worker_counts) {
     auto spot = parse(turn_spot);
     spot.locks = {lock({"check"}, {{"bet_50", 0.5}}), lock({"check", "check", "*"}, {{"all_in", 0.0}})};
-    const auto single = solve(spot, 12, {.worker_threads = 1});
-    const auto parallel = solve(spot, 12, {.worker_threads = 6});
+    // A fixed timestamp, so two solves that straddle a second still serialise alike.
+    const auto single = solve(spot, 12, {.timestamp_utc = "2026-01-01T00:00:00Z", .worker_threads = 1});
+    const auto parallel = solve(spot, 12, {.timestamp_utc = "2026-01-01T00:00:00Z", .worker_threads = 6});
     BOOST_CHECK_EQUAL(
         cli::serialize_artifact_json(single, cli::solve_artifact_export_mode::full),
         cli::serialize_artifact_json(parallel, cli::solve_artifact_export_mode::full));

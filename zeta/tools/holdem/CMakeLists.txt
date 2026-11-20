@@ -44,3 +44,6 @@ if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta-gen-holdem-tables PRIVATE stdc++ m)
     target_link_libraries(zeta-solve PRIVATE stdc++ m)
 endif()
+
+target_link_libraries(zeta-gen-holdem-tables PRIVATE zeta_warnings)
+target_link_libraries(zeta-solve PRIVATE zeta_warnings)

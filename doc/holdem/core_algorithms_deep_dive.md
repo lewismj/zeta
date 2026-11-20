@@ -348,17 +348,28 @@ regret(a) = max(0, regret(a) + V(child_a, h) - V(n, h))
 Players update in turn (alternating updates); each update recomputes the current
 strategy, reach and values first.
 
-## 10. Parallel terminal evaluation
+## 10. Parallelism
 
-Terminal evaluation dominates each pass, and every leaf reads only shared,
-immutable inputs and writes only its own node's values. The evaluators run all
-leaves as one batch on a `scheduler::worker_pool` with `worker_threads` threads
-(the calling thread included); the pool hands out leaves in chunks from an atomic
-counter so uneven leaves balance. The post-order backup and the table updates run
-on one thread afterwards.
+Everything runs on one persistent `scheduler::worker_pool` with `worker_threads`
+threads (the calling thread included):
 
-No two tasks write the same memory and every floating-point operation keeps its
-order, so a solve is bit-identical for any worker count.
+- **Terminal leaves** read only shared, immutable inputs and write only their own
+  node's values; each pass runs them as one batch, handed out in chunks from an
+  atomic counter so uneven leaves balance.
+- **Per-hand passes** (`normalize_combo_action_table`, `build_node_reach_vectors`,
+  the backup in the two evaluators, `update_combo_cfr_tables`) work per combo, so
+  `combo_parallel` splits the active combos into 16-aligned slices and each task
+  runs a whole pass for its slice. Reach propagation walks node ids downwards (DFS
+  post-order puts parents above their children); the backup walks them upwards.
+  Below about 2^18 node-combo cells the passes stay on one thread.
+- **Setup and extraction**: the per-river terminal caches, the per-board reach
+  indices and each solved node's surfaces are independent, so they run on the pool
+  too.
+
+No two tasks write the same memory and each combo's operations keep their order,
+so a solve is bit-identical for any worker count. The pool's stop condition polls
+`cancellation_requested` before each chunk, which is what lets a cancel land
+during setup and extraction as well as the iterations.
 
 ## 11. Terminal engine dispatch contracts
 
@@ -385,7 +396,7 @@ Unsupported terminal kinds are treated as an internal invariant violation and cu
 | 7-card evaluator | O(1) table lookups with small fixed arithmetic/bitwise work |
 | HU showdown | Near-linear in active rank buckets and active combos with blocker-corrected mass arithmetic |
 | N-way exact showdown | Exponential in active opponent branching (exact combinatorial enumeration) |
-| CFR iteration | Terminal evaluation (parallel) plus O(edges x active hands) backup and updates per player |
+| CFR iteration | Terminal evaluation plus O(edges x active hands) backup and updates per player, all parallel |
 
 ## 13. Formal strategy/EV mathematics
 

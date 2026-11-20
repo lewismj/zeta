@@ -5,48 +5,24 @@ set(ZETA_TEST_SOURCES
     src/test_holdem.cpp
     src/test_holdem_cli.cpp
     src/test_holdem_locks.cpp
-    src/test_holdem_ui.cpp
-    src/test_holdem_ui_locks.cpp
     src/test_cfr_graph.cpp
 )
+if(ZETA_BUILD_UI)
+    list(APPEND ZETA_TEST_SOURCES
+        src/test_holdem_ui.cpp
+        src/test_holdem_ui_locks.cpp
+    )
+endif()
 
 add_executable(zeta_tests
     src/test_main.cpp
     ${ZETA_TEST_SOURCES}
-    ../ui/holdem/src/app/app_settings.cpp
-    ../ui/holdem/src/document/document_json.cpp
-    ../ui/holdem/src/main_window.cpp
-    ../ui/holdem/src/main_window_shell.cpp
-    ../ui/holdem/src/main_window_documents.cpp
-    ../ui/holdem/src/main_window_solver.cpp
-    ../ui/holdem/src/main_window_settings_dialog.cpp
-    ../ui/holdem/src/main_window_dialogs.cpp
-    ../ui/holdem/src/main_window_visuals.cpp
-    ../ui/holdem/src/spot_summary_helpers.cpp
-    ../ui/holdem/src/configuration_dialog.cpp
-    ../ui/holdem/src/document_workspace_widget.cpp
-    ../ui/holdem/src/solver/solution_store.cpp
-    ../ui/holdem/src/solver/solver_session.cpp
-    ../ui/holdem/src/solver_state.cpp
-    ../ui/holdem/src/spot_document.cpp
-    ../ui/holdem/src/theme/theme_registry.cpp
-    ../ui/holdem/src/theme/theme_styles.cpp
-    ../ui/holdem/src/viewmodels/range_view_model.cpp
-    ../ui/holdem/src/viewmodels/spot_view_model.cpp
-    ../ui/holdem/src/viewmodels/strategy_view_model.cpp
-    ../ui/holdem/src/viewmodels/lock_view_model.cpp
-    ../ui/holdem/src/widgets/range_editor.cpp
-    ../ui/holdem/src/widgets/spot_json_editor.cpp
-    ../ui/holdem/src/widgets/spot_builder.cpp
-    ../ui/holdem/src/widgets/node_lock_dialog.cpp
-    ../ui/holdem/src/widgets/strategy_explorer.cpp
-    ../ui/holdem/src/widgets/table_state_view.cpp
-    ../ui/holdem/resources/holdem.qrc
 )
-target_include_directories(zeta_tests PRIVATE ${CMAKE_SOURCE_DIR}/zeta/ui/holdem/src)
-target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json Qt6::Widgets)
-if(TARGET Qt6::Svg)
-    target_link_libraries(zeta_tests PRIVATE Qt6::Svg)
+target_link_libraries(zeta_tests PRIVATE zeta_core zeta-holdem Boost::unit_test_framework Boost::json)
+if(ZETA_BUILD_UI)
+    # The UI tests link the app's own UI library; only the resources are added here.
+    target_sources(zeta_tests PRIVATE ../ui/holdem/resources/holdem.qrc)
+    target_link_libraries(zeta_tests PRIVATE zeta-ui-holdem-lib)
 endif()
 target_compile_definitions(zeta_tests PRIVATE BOOST_TEST_DYN_LINK)
 target_compile_features(zeta_tests PRIVATE cxx_std_23)
@@ -126,83 +102,6 @@ if(TARGET zeta-check-holdem-tables)
 endif()
 
 if(WIN32)
-    target_link_libraries(zeta_tests PRIVATE dwmapi)
-
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        set(ZETA_TEST_QT_RUNTIME_BIN "${Qt6_DIR}/../../debug/bin")
-        set(ZETA_QOFFSCREEN_PLUGIN_NAMES qoffscreend.dll qoffscreen.dll)
-        set(ZETA_TEST_QSVGICON_PLUGIN_NAMES qsvgicond.dll qsvgicon.dll)
-        set(ZETA_TEST_QSVG_PLUGIN_NAMES qsvgd.dll qsvg.dll)
-        set(ZETA_TEST_QT_PLUGIN_HINT_ROOTS
-            "${Qt6_DIR}/../../debug/Qt6/plugins"
-            "${Qt6_DIR}/../../../debug/Qt6/plugins"
-        )
-    else()
-        set(ZETA_TEST_QT_RUNTIME_BIN "${Qt6_DIR}/../../bin")
-        set(ZETA_QOFFSCREEN_PLUGIN_NAMES qoffscreen.dll qoffscreend.dll)
-        set(ZETA_TEST_QSVGICON_PLUGIN_NAMES qsvgicon.dll qsvgicond.dll)
-        set(ZETA_TEST_QSVG_PLUGIN_NAMES qsvg.dll qsvgd.dll)
-        set(ZETA_TEST_QT_PLUGIN_HINT_ROOTS
-            "${Qt6_DIR}/../../Qt6/plugins"
-            "${Qt6_DIR}/../../../Qt6/plugins"
-        )
-    endif()
-    cmake_path(NORMAL_PATH ZETA_TEST_QT_RUNTIME_BIN)
-    foreach(_zeta_test_qt_plugin_hint_root IN LISTS ZETA_TEST_QT_PLUGIN_HINT_ROOTS)
-        cmake_path(NORMAL_PATH _zeta_test_qt_plugin_hint_root)
-        list(APPEND ZETA_TEST_QT_PLATFORM_PLUGIN_HINTS "${_zeta_test_qt_plugin_hint_root}/platforms")
-        list(APPEND ZETA_TEST_QT_ICON_PLUGIN_HINTS "${_zeta_test_qt_plugin_hint_root}/iconengines")
-        list(APPEND ZETA_TEST_QT_IMAGE_PLUGIN_HINTS "${_zeta_test_qt_plugin_hint_root}/imageformats")
-    endforeach()
-
-    file(GLOB ZETA_TEST_QT_RUNTIME_DLL_PATHS "${ZETA_TEST_QT_RUNTIME_BIN}/*.dll")
-    if(NOT ZETA_TEST_QT_RUNTIME_DLL_PATHS)
-        message(FATAL_ERROR "No Qt test runtime dependencies found in: ${ZETA_TEST_QT_RUNTIME_BIN}")
-    endif()
-
-    unset(ZETA_QOFFSCREEN_PLUGIN CACHE)
-    unset(ZETA_TEST_QSVGICON_PLUGIN CACHE)
-    unset(ZETA_TEST_QSVG_PLUGIN CACHE)
-    find_file(ZETA_QOFFSCREEN_PLUGIN
-        NAMES ${ZETA_QOFFSCREEN_PLUGIN_NAMES}
-        HINTS ${ZETA_TEST_QT_PLATFORM_PLUGIN_HINTS}
-        REQUIRED
-    )
-    find_file(ZETA_TEST_QSVGICON_PLUGIN
-        NAMES ${ZETA_TEST_QSVGICON_PLUGIN_NAMES}
-        HINTS ${ZETA_TEST_QT_ICON_PLUGIN_HINTS}
-        REQUIRED
-    )
-    find_file(ZETA_TEST_QSVG_PLUGIN
-        NAMES ${ZETA_TEST_QSVG_PLUGIN_NAMES}
-        HINTS ${ZETA_TEST_QT_IMAGE_PLUGIN_HINTS}
-        REQUIRED
-    )
-
-    add_custom_command(TARGET zeta_tests POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_RUNTIME_DLLS:zeta_tests>
-            ${ZETA_TEST_QT_RUNTIME_DLL_PATHS}
-            $<TARGET_FILE_DIR:zeta_tests>
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:zeta_tests>/platforms
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:zeta_tests>/iconengines
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:zeta_tests>/imageformats
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ZETA_QOFFSCREEN_PLUGIN}"
-            $<TARGET_FILE_DIR:zeta_tests>/platforms
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ZETA_TEST_QSVGICON_PLUGIN}"
-            $<TARGET_FILE_DIR:zeta_tests>/iconengines
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ZETA_TEST_QSVG_PLUGIN}"
-            $<TARGET_FILE_DIR:zeta_tests>/imageformats
-        COMMAND_EXPAND_LISTS
-        COMMENT "Copying Qt runtime dependencies for zeta_tests"
-    )
-
     if(NOT DEFINED BOOST_ROOT)
         if(DEFINED ENV{BOOST_ROOT})
             set(BOOST_ROOT "$ENV{BOOST_ROOT}")
@@ -217,21 +116,11 @@ if(WIN32)
         endif()
     endif()
 
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        set(BOOST_DLL_PATH "${BOOST_ROOT}/debug/bin")
+    if(ZETA_BUILD_UI)
+        zeta_deploy_runtime(zeta_tests QT_PLATFORM qoffscreen BOOST_ROOT "${BOOST_ROOT}")
     else()
-        set(BOOST_DLL_PATH "${BOOST_ROOT}/bin")
-    endif()
-    message(STATUS "Looking for Boost DLLs in: ${BOOST_DLL_PATH}")
-    file(GLOB BOOST_RUNTIME_DLLS "${BOOST_DLL_PATH}/boost_*.dll")
-
-    if(BOOST_RUNTIME_DLLS)
-        add_custom_command(TARGET zeta_tests POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${BOOST_RUNTIME_DLLS}
-                $<TARGET_FILE_DIR:zeta_tests>
-            COMMAND_EXPAND_LISTS
-            COMMENT "Copying Boost runtime DLLs to zeta_tests output directory"
-        )
+        zeta_deploy_runtime(zeta_tests BOOST_ROOT "${BOOST_ROOT}")
     endif()
 endif()
+
+target_link_libraries(zeta_tests PRIVATE zeta_warnings)

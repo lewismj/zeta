@@ -214,18 +214,31 @@ Values are counterfactual: they are weighted by the opponents' reach, so EVs in
 chips are the counterfactual value divided by the reach mass of opponent hands
 compatible with the hand.
 
-## 10. Parallel terminal evaluation
+## 10. Parallelism and cancellation
 
-Terminal evaluation dominates the cost of an iteration, and every leaf is
-independent: it reads shared, immutable inputs and writes only its own node's
-values. Each evaluation pass therefore runs the leaves as one batch on a
-`scheduler::worker_pool`, with `worker_threads` threads (the calling thread
-included). The pool hands out leaves in chunks from a shared counter, so leaves of
-uneven cost balance across threads. The backup and table updates that follow stay
-on one thread: they are cheap, and nodes can share an infoset.
+A solve runs on one persistent `scheduler::worker_pool` with `worker_threads`
+threads (the calling thread included). Two kinds of work are spread across it:
 
-Because no two tasks write the same memory and every floating-point operation
-happens in the same order, a solve is bit-identical for any worker count.
+- **Terminal leaves.** Every leaf reads shared, immutable inputs and writes only its
+  own node's values, so each evaluation pass runs the leaves as one batch, handed
+  out in chunks from a shared counter.
+- **Per-hand passes.** Strategy normalisation, reach propagation, the post-order
+  value backup and the regret / strategy-sum update all treat each hand (combo)
+  independently. Each task owns a contiguous slice of combo indices and runs the
+  whole pass for those hands. Small trees keep these passes on one thread, where
+  waking the pool would cost more than the work.
+
+Setup (the per-river terminal caches and reach indices) and extraction (each solved
+node's surfaces) also run on the pool, since each board and each node is
+independent.
+
+No two tasks write the same memory and each hand's floating-point operations keep
+their order, so a solve is bit-identical for any worker count.
+
+`runtime.cancellation_requested` is polled before each iteration and by the pool
+before each chunk of work, so a cancel lands within one chunk during setup, the
+iterations and extraction alike. A cancelled solve returns `cancelled` and no
+artifact.
 
 ## 11. Multi-street unified solve, memory budgeting, isomorphism, and dynamic pruning
 

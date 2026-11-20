@@ -18,15 +18,16 @@ can be used to implement trick taking card games. The Texas Hold'em module has i
 
 ## Texas Hold'em
 
-The Hold'em module currently includes a lookup-based native 7-card evaluator and supporting card/board structures.
+The Hold'em module has a lookup-based 7-card evaluator, a PokerStove-style range parser, and a CFR+ postflop solver with a CLI and a Qt UI.
 
-- [Core algorithms (math + implementation deep dive)](doc/holdem/core_algorithms_deep_dive.md)
+- [Core algorithms](doc/holdem/core_algorithms.md) and the [implementation deep dive](doc/holdem/core_algorithms_deep_dive.md)
 - [Core structures](doc/holdem/core_structures.md)
 - [Lookup-based 7-card evaluator](doc/holdem/post_flop_hand_evaluator.md)
 - [PokerStove-compatible range parser](doc/holdem/range_parser.md)
 - [River terminal evaluator](doc/holdem/terminal_evaluator.md)
 - [zeta-solve CLI](doc/holdem/cli_usage.md)
 - [Hold'em solver UI user guide](doc/holdem/ui/user_guide.md)
+- [Node locking](doc/holdem/node_locking.md)
 - [Hold'em solver next steps](doc/holdem/plans/next_steps.md)
 
 ### GTO postflop analyser
@@ -36,7 +37,7 @@ Zeta includes a combo-vectorised CFR+ solver for Hold'em postflop analysis: head
 is exposed through both the `zeta-solve` CLI and the solver UI. Node locks fix part of a
 player's strategy at chosen decisions (for the whole range or named hands) and re-solve,
 so you can see how the other player exploits that play; see the
-[node locks section of the CLI guide](doc/holdem/cli_usage.md#node-locks-locks-array). River leaves are
+[node locking guide](doc/holdem/node_locking.md). River leaves are
 evaluated by the terminal evaluator documented in
 [River terminal evaluator](doc/holdem/terminal_evaluator.md), which currently
 implements:
@@ -46,13 +47,13 @@ implements:
 - dedicated heads-up evaluator with exact showdown and fold kernels
 - exact N-way terminal-state evaluation for explicit showdown/fold states
 - side-pot and rake-aware terminal-state payoff distribution
-- parallel evaluation of terminal leaves (`worker_threads`), bit-identical for any thread count
+- multi-threaded solving (`worker_threads`): terminal leaves, per-hand passes, setup and extraction, bit-identical for any thread count
 
 | Solver overview | Range editor | Strategy Explorer |
 |---|---|---|
 | ![Zeta solver UI overview](doc/holdem/ui/images/solver-ui-overview.png) | ![Zeta solver UI ranges](doc/holdem/ui/images/solver-ui-overview-ranges.png) | ![Zeta solver UI strategy explorer](doc/holdem/ui/images/solver-ui-strategy-explorer.png) |
 
- The core next [next_steps](doc/holdem/plans/next_steps.md) to a useful product.
+The roadmap from here to a complete analysis tool is in [next_steps](doc/holdem/plans/next_steps.md).
 
 #### Benchmark baseline (solver)
 

@@ -1296,8 +1296,13 @@ BOOST_AUTO_TEST_CASE(generated_graph_hash_is_deterministic_for_identical_configs
 
     BOOST_REQUIRE(lhs.has_value());
     BOOST_REQUIRE(rhs.has_value());
-    BOOST_CHECK_EQUAL(lhs->deterministic_hash, rhs->deterministic_hash);
-    BOOST_CHECK_NE(lhs->deterministic_hash, 0u);
+    // The tree hash every artifact records must not vary between identical lowerings.
+    const auto lhs_hash = zeta::holdem::cfr::solver::hash_solver_graph_metadata(
+        zeta::holdem::cfr::solver::make_solver_graph_view<2>(lhs->graph, lhs->annotations));
+    const auto rhs_hash = zeta::holdem::cfr::solver::hash_solver_graph_metadata(
+        zeta::holdem::cfr::solver::make_solver_graph_view<2>(rhs->graph, rhs->annotations));
+    BOOST_CHECK_EQUAL(lhs_hash, rhs_hash);
+    BOOST_CHECK_NE(lhs_hash, 0u);
 }
 
 BOOST_AUTO_TEST_CASE(generated_graph_preflight_rejects_trees_too_large_to_count) {

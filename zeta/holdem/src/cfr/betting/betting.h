@@ -213,8 +213,6 @@ namespace zeta::holdem::cfr {
         solver::solver_graph_annotations annotations{};
         terminal_state_table<N> terminal_states{};
         std::vector<solver::cfr_terminal_leaf> terminal_leaves{};
-        std::vector<solver::solver_node_state_metadata> rich_state_metadata{};
-        uint64_t deterministic_hash = 0;
     };
 
     template <std::size_t N>
@@ -240,8 +238,6 @@ namespace zeta::holdem::cfr {
         runout_registry runouts{};
         terminal_state_table<N> terminal_states{};
         std::vector<solver::cfr_terminal_leaf> terminal_leaves{};
-        std::vector<solver::solver_node_state_metadata> rich_state_metadata{};
-        uint64_t deterministic_hash = 0;
     };
 
     namespace detail {
@@ -262,21 +258,6 @@ namespace zeta::holdem::cfr {
             }
             result = lhs * rhs;
             return true;
-        }
-
-        [[nodiscard]] inline uint64_t hash_combine(const uint64_t value, const uint64_t input) noexcept
-        {
-            uint64_t hash = value;
-            for (uint32_t shift = 0; shift < 64; shift += 8) {
-                hash ^= (input >> shift) & 0xffu;
-                hash *= solver::compatibility_hasher::PRIME;
-            }
-            return hash;
-        }
-
-        [[nodiscard]] inline uint64_t hash_utility(uint64_t hash, const utility value) noexcept
-        {
-            return hash_combine(hash, std::bit_cast<uint64_t>(value));
         }
 
         template <std::size_t N>
@@ -892,12 +873,12 @@ namespace zeta::holdem::cfr {
             if (!max_by_street->is_object()) {
                 return std::unexpected("Field 'max_raises_by_street' must be an object.");
             }
-            for (const auto& [key, value] : max_by_street->as_object()) {
+            for (const auto& [key, street_value] : max_by_street->as_object()) {
                 const auto street = street_index_for_key(key);
                 if (street == 0u) {
                     continue;
                 }
-                auto parsed = parse_json_u16(value, "max_raises_by_street");
+                auto parsed = parse_json_u16(street_value, "max_raises_by_street");
                 if (!parsed) {
                     return std::unexpected(parsed.error());
                 }
@@ -909,12 +890,12 @@ namespace zeta::holdem::cfr {
             if (!threshold_by_street->is_object()) {
                 return std::unexpected("Field 'all_in_threshold_by_street' must be an object.");
             }
-            for (const auto& [key, value] : threshold_by_street->as_object()) {
+            for (const auto& [key, street_value] : threshold_by_street->as_object()) {
                 const auto street = street_index_for_key(key);
                 if (street == 0u) {
                     continue;
                 }
-                auto parsed = parse_json_number(value, "all_in_threshold_by_street");
+                auto parsed = parse_json_number(street_value, "all_in_threshold_by_street");
                 if (!parsed) {
                     return std::unexpected(parsed.error());
                 }
@@ -926,17 +907,17 @@ namespace zeta::holdem::cfr {
             if (!actor_sizes->is_object()) {
                 return std::unexpected("Field 'street_actor_sizes' must be an object.");
             }
-            for (const auto& [key, value] : actor_sizes->as_object()) {
+            for (const auto& [key, street_value] : actor_sizes->as_object()) {
                 const auto street = street_index_for_key(key);
                 if (street == 0u) {
                     continue;
                 }
-                if (!value.is_array()) {
+                if (!street_value.is_array()) {
                     return std::unexpected("Field 'street_actor_sizes' entries must be arrays.");
                 }
                 std::vector<actor_size_set> sets;
-                sets.reserve(value.as_array().size());
-                for (const auto& actor_value : value.as_array()) {
+                sets.reserve(street_value.as_array().size());
+                for (const auto& actor_value : street_value.as_array()) {
                     if (!actor_value.is_object()) {
                         return std::unexpected("Each actor size entry must be an object.");
                     }
@@ -1334,52 +1315,6 @@ namespace zeta::holdem::cfr {
         }
 
         return hash.value;
-    }
-
-    template <std::size_t N>
-    [[nodiscard]] uint64_t hash_betting_graph(const holdem_betting_graph<N>& lowered) noexcept
-    {
-        uint64_t hash = solver::compatibility_hasher::OFFSET;
-        const auto& graph = lowered.graph;
-        hash = detail::hash_combine(hash, N);
-        hash = detail::hash_combine(hash, graph.node_count);
-        hash = detail::hash_combine(hash, graph.root_node);
-        hash = detail::hash_combine(hash, graph.edges.size());
-        hash = detail::hash_combine(hash, graph.infoset_count);
-        hash = detail::hash_combine(hash, graph.terminal_count);
-        for (uint32_t node_id = 0; node_id < graph.node_count; ++node_id) {
-            hash = detail::hash_combine(hash, static_cast<uint64_t>(graph.node_types[node_id]));
-            hash = detail::hash_combine(hash, graph.infoset_id[node_id]);
-            hash = detail::hash_combine(hash, lowered.annotations.actor_by_node[node_id]);
-            hash = detail::hash_combine(hash, lowered.annotations.terminal_leaf_id_by_node[node_id]);
-            hash = detail::hash_combine(hash, static_cast<uint64_t>(lowered.annotations.state_by_node[node_id].street));
-            hash = detail::hash_combine(hash, lowered.annotations.state_by_node[node_id].public_state_id);
-            hash = detail::hash_combine(hash, lowered.annotations.state_by_node[node_id].betting_state_id);
-        }
-        for (const auto& edge : graph.edges) {
-            hash = detail::hash_combine(hash, edge.child_node);
-            hash = detail::hash_combine(hash, edge.action_index);
-        }
-        for (const auto& state : lowered.terminal_states.states) {
-            hash = detail::hash_combine(hash, static_cast<uint64_t>(state.kind));
-            for (const auto contribution : state.context.contribution) {
-                hash = detail::hash_utility(hash, contribution);
-            }
-            for (const auto& layer : state.pot_layers) {
-                hash = detail::hash_utility(hash, layer.amount);
-                for (std::size_t seat = 0; seat < N; ++seat) {
-                    hash = detail::hash_combine(hash, layer.eligible_mask[seat] ? 1u : 0u);
-                    hash = detail::hash_combine(hash, layer.contributors_mask[seat] ? 1u : 0u);
-                }
-            }
-            for (std::size_t seat = 0; seat < N; ++seat) {
-                hash = detail::hash_combine(hash, state.folded[seat] ? 1u : 0u);
-                hash = detail::hash_combine(hash, state.all_in_eligible_mask[seat] ? 1u : 0u);
-                hash = detail::hash_combine(hash, state.active_eligible_mask[seat] ? 1u : 0u);
-            }
-            hash = detail::hash_utility(hash, state.context.rake);
-        }
-        return hash;
     }
 
     /**
@@ -1984,7 +1919,6 @@ namespace zeta::holdem::cfr {
             lowered.annotations.terminal_leaf_id_by_node.assign(node_count, solver::INVALID_METADATA_ID);
             lowered.annotations.state_by_node.assign(node_count, {});
             lowered.terminal_leaves.assign(node_count, solver::cfr_terminal_leaf{});
-            lowered.rich_state_metadata.assign(node_count, {});
             registry.state_id_by_node.assign(node_count, INVALID_PUBLIC_STATE_ID);
 
             for (uint32_t final_node = 0; final_node < node_count; ++final_node) {
@@ -1995,7 +1929,6 @@ namespace zeta::holdem::cfr {
                     .public_state_id = ps_by_builder[builder_node],
                     .betting_state_id = final_node
                 };
-                lowered.rich_state_metadata[final_node] = lowered.annotations.state_by_node[final_node];
                 registry.state_id_by_node[final_node] = ps_by_builder[builder_node];
 
                 if (kind == node_kind::player) {
@@ -2072,7 +2005,6 @@ namespace zeta::holdem::cfr {
                 });
             }
 
-            lowered.deterministic_hash = hash_betting_abstraction_policy(config.abstraction);
             return lowered;
         }
     }
@@ -2151,7 +2083,6 @@ namespace zeta::holdem::cfr {
         lowered.annotations.terminal_leaf_id_by_node.assign(lowered.graph.node_count, solver::INVALID_METADATA_ID);
         lowered.annotations.state_by_node.assign(lowered.graph.node_count, {});
         lowered.terminal_leaves.assign(lowered.graph.node_count, solver::cfr_terminal_leaf{});
-        lowered.rich_state_metadata.assign(lowered.graph.node_count, {});
 
         uint32_t terminal_state_id = 0;
         for (uint32_t node_id = 0; node_id < lowered.graph.node_count; ++node_id) {
@@ -2160,7 +2091,6 @@ namespace zeta::holdem::cfr {
                 .public_state_id = config.public_state_id,
                 .betting_state_id = node_id
             };
-            lowered.rich_state_metadata[node_id] = lowered.annotations.state_by_node[node_id];
             if (lowered.graph.is_player_node(node_id)) {
                 lowered.annotations.actor_by_node[node_id] = actor_by_infoset[lowered.graph.infoset_id[node_id]];
             }
@@ -2185,8 +2115,6 @@ namespace zeta::holdem::cfr {
                 .node_id = result.error().node_id
             });
         }
-
-        lowered.deterministic_hash = hash_betting_graph(lowered);
         return lowered;
     }
 

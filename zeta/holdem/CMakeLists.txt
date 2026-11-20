@@ -47,10 +47,7 @@ if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_libraries(zeta-holdem PUBLIC stdc++)
 endif()
 
-if (NOT MSVC)
-    target_compile_options(zeta-holdem PRIVATE -Wswitch-enum)
-endif()
+target_link_libraries(zeta-holdem PRIVATE zeta_warnings)
 
 install(TARGETS zeta-holdem
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

@@ -1826,6 +1826,62 @@ BOOST_AUTO_TEST_CASE(holdem_cli_cancellation_is_polled_between_terminal_batches)
     }
 }
 
+BOOST_AUTO_TEST_CASE(holdem_cli_cancellation_is_honoured_during_setup_and_extraction) {
+    namespace cli = zeta::holdem::cli;
+    auto spot = cli::parse_spot_json(sample_spot_turn);
+    BOOST_REQUIRE(spot.has_value());
+    constexpr uint64_t iterations = 3;
+
+    // Polls made once extraction has started, in an uncancelled single-worker solve.
+    std::atomic<bool> extracting{false};
+    std::atomic<uint64_t> extraction_polls{0};
+    cli::solve_runtime_options runtime{.worker_threads = 1};
+    runtime.progress_callback = [&](const cli::solve_progress_event& event) {
+        if (event.stage == cli::solve_progress_stage::extraction) {
+            extracting = true;
+        }
+    };
+    runtime.cancellation_requested = [&] {
+        if (extracting) {
+            ++extraction_polls;
+        }
+        return false;
+    };
+    BOOST_REQUIRE(cli::solve_spot(*spot, iterations, runtime).has_value());
+    const auto total = extraction_polls.load();
+    BOOST_REQUIRE_GT(total, 4u);
+
+    // A cancel at any of those polls, from the first to the last, stops the solve:
+    // extraction checks for it before it hands back an artifact.
+    for (const auto at : {uint64_t{1}, total / 4u, total / 2u, (3u * total) / 4u, total}) {
+        extracting = false;
+        extraction_polls = 0;
+        runtime.cancellation_requested = [&, at] {
+            return extracting && ++extraction_polls >= at;
+        };
+        auto cancelled = cli::solve_spot(*spot, iterations, runtime);
+        BOOST_REQUIRE_MESSAGE(!cancelled.has_value(), "cancel at extraction poll " << at << " of " << total << " was ignored");
+        BOOST_CHECK(cancelled.error().kind == cli::cli_error_kind::cancelled);
+    }
+
+    // Cancelled while the river caches are being built, before the first iteration.
+    for (const uint32_t workers : {1u, 4u}) {
+        std::atomic<bool> built{false};
+        std::atomic<bool> iterated{false};
+        cli::solve_runtime_options setup{.worker_threads = workers};
+        setup.progress_callback = [&](const cli::solve_progress_event& event) {
+            built = built || event.stage == cli::solve_progress_stage::graph_build;
+            iterated = iterated || event.stage == cli::solve_progress_stage::cfr;
+        };
+        std::atomic<uint64_t> polls{0};
+        setup.cancellation_requested = [&] { return built && ++polls > 1u; };
+        auto cancelled = cli::solve_spot(*spot, iterations, setup);
+        BOOST_REQUIRE(!cancelled.has_value());
+        BOOST_CHECK(cancelled.error().kind == cli::cli_error_kind::cancelled);
+        BOOST_CHECK(!iterated);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(holdem_cli_three_way_river_checkdown_matches_brute_force_reference) {
     using namespace zeta::holdem;
     auto spot = cli::parse_spot_json(sample_spot_three_way_river_checkdown);

@@ -55,3 +55,6 @@ artifacts/
 
 REVIEW.md
 
+
+# Machine-specific CMake presets (see CMakePresets.json).
+CMakeUserPresets.json
